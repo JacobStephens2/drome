@@ -190,6 +190,45 @@ struct DayState: Identifiable, Sendable, Hashable {
     }
 }
 
+// MARK: - Workout slot -> entry mapping (single shared implementation)
+
+/// Maps a day's logged workouts onto the two workout slots ("Outdoor" /
+/// "Second"). This is THE one mapping shared by every surface that both
+/// displays a slot's backing entry and revokes it on undo (the day board's
+/// workout tile, WorkoutView's slot rows) — so a tap on a checked slot always
+/// revokes exactly the entry that slot shows. Do NOT hand-roll a second copy:
+/// two divergent copies is precisely how a display-vs-revoke cross-wiring bug
+/// happened before.
+///
+/// Semantics (`workouts` is oldest-first, straight from the event log):
+/// - Outdoor slot: the first (oldest) entry with `outdoor == true`.
+/// - Second slot: the first (oldest) entry NOT backing the outdoor slot —
+///   outdoor or indoor.
+/// Either is `nil` when no logged entry backs the slot; a slot can still be
+/// done via a backfill flag, in which case there is nothing to revoke.
+extension DayState {
+    /// Duration (minutes) logged when a user taps an open workout slot — the
+    /// ONE value behind every slot surface (the day board tile's slot rows,
+    /// WorkoutView's slot cards) and WorkoutView's form default. Kept beside
+    /// the shared slot mapping for the same reason: two copies is how the
+    /// surfaces silently fork.
+    static let slotDefaultDurationMin = 45
+
+    /// The logged workout backing the "Outdoor" slot, or nil (unfilled, or
+    /// backfill-flag-only). See the extension doc for the shared contract.
+    var outdoorSlotEntry: WorkoutEntry? {
+        workouts.first { $0.outdoor }
+    }
+
+    /// The logged workout backing the "Second" slot: the oldest entry not
+    /// already backing the outdoor slot. Nil when unfilled or
+    /// backfill-flag-only. See the extension doc for the shared contract.
+    var secondSlotEntry: WorkoutEntry? {
+        guard let outdoorId = outdoorSlotEntry?.id else { return workouts.first }
+        return workouts.first { $0.id != outdoorId }
+    }
+}
+
 // MARK: - Today / summary / history
 
 /// State of a weekly extra within the current 7-day block (week 1 = days 1–7).

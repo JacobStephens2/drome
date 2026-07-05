@@ -266,7 +266,7 @@ struct DayBoardView: View {
                 onOpen: onOpenWorkouts,
                 onLogSlot: { outdoor in
                     appModel.logWorkout(
-                        durationMin: DayBoardWorkoutsTile.defaultDurationMin,
+                        durationMin: DayState.slotDefaultDurationMin,
                         outdoor: outdoor
                     )
                 },

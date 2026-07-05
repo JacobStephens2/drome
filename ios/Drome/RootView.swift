@@ -185,9 +185,7 @@ struct RootView: View {
         case .water:
             WaterView()
         case .workouts:
-            WorkoutView { entry in
-                appModel.revoke(eventUuid: entry.id)
-            }
+            WorkoutView()
         case .reading:
             ReadingView(client: appModel.client)
         case .photo:

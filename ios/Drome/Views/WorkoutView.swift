@@ -3,9 +3,13 @@
 //  Drome
 //
 //  Workout logging. Today's two slots ("Outdoor workout" / "Second workout")
-//  as an honest status pair, a sub-10-second inline log form (45-minute
-//  default, prominent outdoor toggle, optional note, one huge primary
-//  button), and today's logged workouts with swipe-to-undo.
+//  as tap-to-toggle controls with the day board's exact semantics (tap an
+//  open slot to log a default 45-minute workout, tap a checked slot to
+//  revoke exactly the entry it displays — resolved by the SHARED
+//  DayState.outdoorSlotEntry/.secondSlotEntry mapping, no confirmations),
+//  a sub-10-second inline log form (45-minute default, prominent outdoor
+//  toggle, optional note, one huge primary button), and today's logged
+//  workouts with swipe-to-undo.
 //
 //  Flexible mode: any duration counts and order is irrelevant — an outdoor
 //  workout fills the outdoor slot, any additional workout fills the second.
@@ -18,27 +22,15 @@ import SwiftUI
 
 struct WorkoutView: View {
 
-    /// Revokes a logged workout (swipe-to-undo). AppModel does not yet expose
-    /// a per-event revoke intent, so the integration stage wires this closure
-    /// (e.g. to an `AppModel.revoke(eventUuid:)` that calls
-    /// `core.revokeEvent` + `refresh()`). When nil, swipe-to-undo is hidden
-    /// rather than wired to the wrong event. Previews wire it to the mock.
-    private let onRevoke: ((WorkoutEntry) -> Void)?
-
     @Environment(AppModel.self) private var appModel
 
-    @State private var durationMin = WorkoutView.defaultDurationMin
+    @State private var durationMin = DayState.slotDefaultDurationMin
     @State private var outdoor = true
     @State private var note = ""
     @FocusState private var noteFocused: Bool
 
-    private static let defaultDurationMin = 45
     private static let durationStepMin = 5
     private static let durationRange = 5...240
-
-    init(onRevoke: ((WorkoutEntry) -> Void)? = nil) {
-        self.onRevoke = onRevoke
-    }
 
     private var day: DayState? { appModel.todayState?.day }
     private var workouts: [WorkoutEntry] { day?.workouts ?? [] }
@@ -96,21 +88,58 @@ struct WorkoutView: View {
         .padding(.top, DromeSpacing.s)
     }
 
-    // MARK: - Slot status pair
+    // MARK: - Slot status pair (tap-to-toggle, day-board semantics)
 
+    /// The two slots are direct check controls, exactly like the day board's
+    /// workout tile: tap an open slot to log a default 45-minute workout for
+    /// it (outdoor / not per slot); tap a checked slot to revoke exactly the
+    /// entry that slot displays — resolved by the shared
+    /// `DayState.outdoorSlotEntry` / `.secondSlotEntry` mapping, so display
+    /// and revoke can never cross-wire. No confirmation either way; undo is
+    /// one tap from redo. A slot done only via a backfill flag has no entry
+    /// to revoke and doesn't respond.
     private var slotPair: some View {
         HStack(spacing: DromeSpacing.s) {
             SlotCard(
                 title: CoreTask.outdoorWorkout.title,
                 icon: "sun.max.fill",
-                done: day?.outdoorWorkoutDone ?? false
+                done: day?.outdoorWorkoutDone ?? false,
+                entry: day?.outdoorSlotEntry,
+                outdoor: true,
+                onToggle: toggleSlot
             )
             SlotCard(
                 title: CoreTask.secondWorkout.title,
                 icon: "figure.run",
-                done: day?.secondWorkoutDone ?? false
+                done: day?.secondWorkoutDone ?? false,
+                entry: day?.secondSlotEntry,
+                outdoor: false,
+                onToggle: toggleSlot
             )
         }
+    }
+
+    /// Day-board slot semantics: log a default 45-minute workout for an open
+    /// slot; revoke the displayed entry for a checked one. Intents refresh
+    /// AppModel synchronously, so the slot pair and the "logged today" list
+    /// re-render from the same fresh DayState.
+    private func toggleSlot(done: Bool, entry: WorkoutEntry?, outdoor: Bool) {
+        withAnimation(.snappy) {
+            if done {
+                // Undo acts on the entry the slot displays — never a hidden
+                // one. Backfill-flag-only slots (done, no entry) are disabled
+                // in SlotCard and never reach here.
+                guard let entry else { return }
+                appModel.revoke(eventUuid: entry.id)
+            } else {
+                appModel.logWorkout(
+                    durationMin: DayState.slotDefaultDurationMin,
+                    outdoor: outdoor,
+                    note: nil
+                )
+            }
+        }
+        resetOutdoorDefault()
     }
 
     // MARK: - Log form
@@ -246,7 +275,7 @@ struct WorkoutView: View {
         }
         note = ""
         noteFocused = false
-        durationMin = Self.defaultDurationMin
+        durationMin = DayState.slotDefaultDurationMin
         resetOutdoorDefault()
     }
 
@@ -270,14 +299,17 @@ struct WorkoutView: View {
             ForEach(workouts) { entry in
                 WorkoutRowView(entry: entry)
                     .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                        if let onRevoke {
-                            Button {
-                                withAnimation(.snappy) { onRevoke(entry) }
-                            } label: {
-                                Label("Undo", systemImage: "arrow.uturn.backward")
+                        Button {
+                            // Same undo primitive as the slot cards:
+                            // AppModel.revoke revokes exactly this row's
+                            // event and refreshes synchronously.
+                            withAnimation(.snappy) {
+                                appModel.revoke(eventUuid: entry.id)
                             }
-                            .tint(Color.dromeClay)
+                        } label: {
+                            Label("Undo", systemImage: "arrow.uturn.backward")
                         }
+                        .tint(Color.dromeClay)
                     }
             }
         }
@@ -307,43 +339,87 @@ struct WorkoutView: View {
     }
 }
 
-// MARK: - Slot status card
+// MARK: - Slot status card (tap-to-toggle)
 
+/// A tappable slot check control. Tap open -> log a default 45-minute
+/// workout for the slot; tap checked -> revoke the entry it displays.
+/// Done-without-entry = backfilled flag: rendered done, not toggleable.
 private struct SlotCard: View {
     let title: String
     let icon: String
     let done: Bool
+    /// The logged entry backing this slot (shared DayState slot mapping);
+    /// nil when the slot is open or satisfied only by a backfill flag.
+    let entry: WorkoutEntry?
+    let outdoor: Bool
+    let onToggle: (_ done: Bool, _ entry: WorkoutEntry?, _ outdoor: Bool) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: DromeSpacing.s) {
-            HStack {
-                Image(systemName: icon)
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(done ? Color.dromeDone : Color.dromeInk.opacity(0.35))
-                Spacer(minLength: 0)
-                Image(systemName: done ? "checkmark.circle.fill" : "circle.dashed")
-                    .font(.system(size: 18, weight: .bold))
-                    .foregroundStyle(done ? Color.dromeDone : Color.dromeInk.opacity(0.3))
+        Button {
+            onToggle(done, entry, outdoor)
+        } label: {
+            VStack(alignment: .leading, spacing: DromeSpacing.s) {
+                HStack {
+                    Image(systemName: icon)
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(done ? Color.dromeDone : Color.dromeInk.opacity(0.35))
+                    Spacer(minLength: 0)
+                    Image(systemName: done ? "checkmark.circle.fill" : "circle.dashed")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(done ? Color.dromeDone : Color.dromeInk.opacity(0.3))
+                        .contentTransition(.symbolEffect(.replace))
+                        .animation(.spring(response: 0.3, dampingFraction: 0.55), value: done)
+                }
+                Text(title)
+                    .font(.system(size: 14, weight: .heavy))
+                    .tracking(-0.2)
+                    .foregroundStyle(Color.dromeInk)
+                    .lineLimit(2, reservesSpace: true)
+                // Honest states, plainly labeled — an open slot is not a
+                // failure. The status line says what a tap does.
+                Text(statusText)
+                    .font(.system(size: 11, weight: .heavy))
+                    .tracking(0.8)
+                    .monospacedDigit()
+                    .foregroundStyle(done ? Color.dromeDone : Color.dromeInk.opacity(0.5))
+                    .lineLimit(1)
             }
-            Text(title)
-                .font(.system(size: 14, weight: .heavy))
-                .tracking(-0.2)
-                .foregroundStyle(Color.dromeInk)
-                .lineLimit(2, reservesSpace: true)
-            // Honest states, plainly labeled — an open slot is not a failure.
-            Text(done ? "DONE" : "OPEN")
-                .font(.system(size: 11, weight: .heavy))
-                .tracking(0.8)
-                .foregroundStyle(done ? Color.dromeDone : Color.dromeInk.opacity(0.5))
+            .padding(DromeSpacing.m)
+            .frame(maxWidth: .infinity, minHeight: DromeSpacing.tapTarget, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(done ? Color.dromeDone.opacity(0.10) : Color.dromeInk.opacity(0.06))
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
-        .padding(DromeSpacing.m)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(done ? Color.dromeDone.opacity(0.10) : Color.dromeInk.opacity(0.06))
-        )
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(title): \(done ? "done" : "open")")
+        .buttonStyle(.plain)
+        .disabled(done && entry == nil)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var statusText: String {
+        guard done else {
+            // An open slot can still have a backing entry: the second slot
+            // with exactly one workout logged (never the outdoor slot — its
+            // entry and its done flag both mean "≥1 outdoor workout").
+            // Surface it like the day board's slot row does, so the first
+            // tap's log lands visibly on this card instead of re-rendering
+            // "OPEN" and inviting a duplicate.
+            if let entry { return "1 OF 2 · \(entry.durationMin) MIN" }
+            return "OPEN · TAP TO LOG"
+        }
+        if let entry { return "DONE · \(entry.durationMin) MIN" }
+        return "DONE"
+    }
+
+    /// States the ACTION a tap performs (log / undo), not just the state.
+    private var accessibilityLabel: String {
+        guard done else {
+            return outdoor
+                ? "Log a \(DayState.slotDefaultDurationMin) minute outdoor workout"
+                : "Log a \(DayState.slotDefaultDurationMin) minute second workout"
+        }
+        return entry != nil ? "Undo \(title.lowercased())" : "\(title) done"
     }
 }
 
@@ -418,22 +494,12 @@ private struct OutdoorBadge: View {
 // MARK: - Previews
 
 #Preview("Workouts") {
-    let core = MockDromeCore()
-    let model = AppModel(core: core)
-    return WorkoutView { entry in
-        try? core.revokeEvent(eventUuid: entry.id)
-        model.refresh()
-    }
-    .environment(model)
+    WorkoutView()
+        .environment(AppModel(core: MockDromeCore()))
 }
 
 #Preview("Workouts — dark") {
-    let core = MockDromeCore()
-    let model = AppModel(core: core)
-    return WorkoutView { entry in
-        try? core.revokeEvent(eventUuid: entry.id)
-        model.refresh()
-    }
-    .environment(model)
-    .preferredColorScheme(.dark)
+    WorkoutView()
+        .environment(AppModel(core: MockDromeCore()))
+        .preferredColorScheme(.dark)
 }

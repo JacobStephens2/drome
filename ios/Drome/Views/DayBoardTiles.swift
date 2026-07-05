@@ -180,26 +180,14 @@ struct DayBoardWorkoutsTile: View {
     /// Revoke the workout entry backing a tapped checked slot.
     var onUndoEntry: (WorkoutEntry) -> Void
 
-    /// Default duration for a slot-tap log.
-    static let defaultDurationMin = 45
-
     private var bothDone: Bool { day.outdoorWorkoutDone && day.secondWorkoutDone }
 
-    /// Maps today's logged workouts onto the two slots — ONE mapping shared
-    /// by display and undo, so a tap always revokes exactly the entry the
-    /// row shows: the first outdoor workout fills "Outdoor"; the first
-    /// remaining workout fills "Second" (`day.workouts` is oldest-first,
-    /// straight from the event log). After revoking a displayed outdoor
-    /// entry the check may legitimately stay on — another outdoor workout
-    /// then backs the slot and the row shows that survivor.
-    private var slotEntries: (outdoor: WorkoutEntry?, second: WorkoutEntry?) {
-        let outdoor = day.workouts.first { $0.outdoor }
-        var rest = day.workouts
-        if let outdoor, let idx = rest.firstIndex(where: { $0.id == outdoor.id }) {
-            rest.remove(at: idx)
-        }
-        return (outdoor, rest.first)
-    }
+    // Slot -> entry resolution lives in the SHARED DayState.outdoorSlotEntry /
+    // .secondSlotEntry extension (DromeShared/Models.swift) — one mapping used
+    // by display and undo here AND by WorkoutView's slot rows, so a tap always
+    // revokes exactly the entry the row shows. After revoking a displayed
+    // outdoor entry the check may legitimately stay on — another outdoor
+    // workout then backs the slot and the row shows that survivor.
 
     var body: some View {
         DayBoardTileChrome(done: bothDone) {
@@ -216,11 +204,11 @@ struct DayBoardWorkoutsTile: View {
                 .accessibilityLabel("Workouts, open durations and notes")
                 slotRow(
                     label: "Outdoor", done: day.outdoorWorkoutDone,
-                    entry: slotEntries.outdoor, outdoor: true
+                    entry: day.outdoorSlotEntry, outdoor: true
                 )
                 slotRow(
                     label: "Second", done: day.secondWorkoutDone,
-                    entry: slotEntries.second, outdoor: false
+                    entry: day.secondSlotEntry, outdoor: false
                 )
             }
         }
@@ -271,7 +259,7 @@ struct DayBoardWorkoutsTile: View {
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(Color.dromeDone)
                 } else {
-                    Text("tap to log \(Self.defaultDurationMin) min")
+                    Text("tap to log \(DayState.slotDefaultDurationMin) min")
                         .font(.footnote.weight(.semibold))
                         .monospacedDigit()
                         .foregroundStyle(Color.dromeInk.opacity(0.5))
@@ -293,8 +281,8 @@ struct DayBoardWorkoutsTile: View {
     ) -> String {
         guard done else {
             return outdoor
-                ? "Log a \(Self.defaultDurationMin) minute outdoor workout"
-                : "Log a \(Self.defaultDurationMin) minute second workout"
+                ? "Log a \(DayState.slotDefaultDurationMin) minute outdoor workout"
+                : "Log a \(DayState.slotDefaultDurationMin) minute second workout"
         }
         return canUndo ? "Undo \(label.lowercased()) workout" : "\(label) workout done"
     }
