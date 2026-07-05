@@ -55,6 +55,22 @@
 			);
 			target = DA0000000000000000000002 /* DromeWidget */;
 		};
+		DA0000000000000000000036 /* Exceptions for "DromeShared" folder in "Drome" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Generated/drome_coreFFI.h,
+				Generated/drome_coreFFI.modulemap,
+			);
+			target = DA0000000000000000000001 /* Drome */;
+		};
+		DA0000000000000000000037 /* Exceptions for "DromeShared" folder in "DromeWidget" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Generated/drome_coreFFI.h,
+				Generated/drome_coreFFI.modulemap,
+			);
+			target = DA0000000000000000000002 /* DromeWidget */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -68,6 +84,10 @@
 		};
 		DA0000000000000000000032 /* DromeShared */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				DA0000000000000000000036 /* Exceptions for "DromeShared" folder in "Drome" target */,
+				DA0000000000000000000037 /* Exceptions for "DromeShared" folder in "DromeWidget" target */,
+			);
 			path = DromeShared;
 			sourceTree = "<group>";
 		};
@@ -390,7 +410,16 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/Frameworks",
+				);
 				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-ldrome_core",
+				);
+				OTHER_SWIFT_FLAGS = "$(inherited) -Xcc -fmodule-map-file=$(SRCROOT)/DromeShared/Generated/drome_coreFFI.modulemap";
 				PRODUCT_BUNDLE_IDENTIFIER = day.drome.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -418,7 +447,16 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/Frameworks",
+				);
 				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-ldrome_core",
+				);
+				OTHER_SWIFT_FLAGS = "$(inherited) -Xcc -fmodule-map-file=$(SRCROOT)/DromeShared/Generated/drome_coreFFI.modulemap";
 				PRODUCT_BUNDLE_IDENTIFIER = day.drome.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -442,7 +480,16 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/Frameworks",
+				);
 				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-ldrome_core",
+				);
+				OTHER_SWIFT_FLAGS = "$(inherited) -Xcc -fmodule-map-file=$(SRCROOT)/DromeShared/Generated/drome_coreFFI.modulemap";
 				PRODUCT_BUNDLE_IDENTIFIER = day.drome.app.widget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -467,7 +514,16 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/Frameworks",
+				);
 				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-ldrome_core",
+				);
+				OTHER_SWIFT_FLAGS = "$(inherited) -Xcc -fmodule-map-file=$(SRCROOT)/DromeShared/Generated/drome_coreFFI.modulemap";
 				PRODUCT_BUNDLE_IDENTIFIER = day.drome.app.widget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;

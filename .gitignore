@@ -3,6 +3,7 @@ core/target/
 
 # Apple / Xcode
 ios/Frameworks/DromeCore.xcframework/
+ios/Frameworks/*.a
 ios/DromeShared/Generated/*.h
 ios/DromeShared/Generated/*.modulemap
 DerivedData/

@@ -1,0 +1,28 @@
+# Swift bindgen config (picked up automatically by uniffi-bindgen library mode).
+#
+# The generated Swift compiles into the SAME Xcode module as the hand-written
+# Swift-native mirrors in ios/DromeShared/Models.swift, so every generated type
+# whose Rust name matches a Models.swift name is renamed with a `Uni` prefix to
+# avoid invalid-redeclaration errors. Only LiveDromeCore.swift may reference the
+# renamed types; views use the Models.swift ones.
+#
+# Non-colliding names (DromeStore, LocalInstant, Cadence, RulesetKind,
+# ShareCardWorkout) keep their Rust names.
+
+[bindings.swift.rename]
+Challenge = "UniChallenge"
+NewChallenge = "UniNewChallenge"
+ContainerPreset = "UniContainerPreset"
+ExtraDef = "UniExtraDef"
+BackfilledDay = "UniBackfilledDay"
+WorkoutEntry = "UniWorkoutEntry"
+DayState = "UniDayState"
+WeekExtraState = "UniWeekExtraState"
+TodayState = "UniTodayState"
+ChallengeSummary = "UniChallengeSummary"
+DayBrief = "UniDayBrief"
+ShareCardData = "UniShareCardData"
+LogResult = "UniLogResult"
+WaterState = "UniWaterState"
+ChugCheck = "UniChugCheck"
+DromeError = "UniDromeError"
