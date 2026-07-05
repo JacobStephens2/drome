@@ -72,7 +72,7 @@ struct OnboardingView: View {
     @State private var pastStartDate = Date()
     @State private var dietDescription = ""
     @State private var waterGoalOz = 128
-    @State private var presetRows = [PresetRow(name: "24 oz bottle", oz: "24")]
+    @State private var presetRows = [PresetRow(name: "32 oz bottle", oz: "32")]
     @State private var jobExtraEnabled = false
     @State private var errorMessage: String?
     @State private var restoreImporterPresented = false

@@ -54,7 +54,7 @@ enum DromeDebugLaunch {
             let challenge = try client.createChallenge(cfg)
 
             try client.updatePresets([
-                ContainerPreset(id: "bottle-24oz", name: "24 oz bottle", ml: 710, sortOrder: 0),
+                ContainerPreset(id: "bottle-32oz", name: "32 oz bottle", ml: 946, sortOrder: 0),
                 ContainerPreset(id: "glass", name: "Glass", ml: 350, sortOrder: 1),
             ])
             // Fixed Phase 1 weekly-extra preset def; tolerate a core without it.
@@ -77,8 +77,8 @@ enum DromeDebugLaunch {
 
             // Today (Day 14): partial. LogResults (incl. any chug flag from
             // two quick pours) are intentionally ignored — this is seeding.
-            _ = try client.logWater(ml: 710, effectiveDate: nil)
-            _ = try client.logWater(ml: 710, effectiveDate: nil)
+            _ = try client.logWater(ml: 946, effectiveDate: nil)
+            _ = try client.logWater(ml: 946, effectiveDate: nil)
             _ = try client.logWorkout(durationMin: 45, outdoor: true, note: "Morning run", effectiveDate: nil)
         } catch {
             // A failed seed must never take down a debug launch; the app just

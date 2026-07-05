@@ -86,7 +86,7 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
             active: true
         )
         presets = [
-            ContainerPreset(id: "bottle-24oz", name: "24 oz bottle", ml: 710, sortOrder: 0),
+            ContainerPreset(id: "bottle-32oz", name: "32 oz bottle", ml: 946, sortOrder: 0),
             ContainerPreset(id: "glass", name: "Glass", ml: 350, sortOrder: 1),
         ]
         extras = [
@@ -126,11 +126,11 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
         events.append(Event(uuid: UUID().uuidString, date: day13, kind: .dietOk, loggedAt: y(1)))
         events.append(Event(uuid: UUID().uuidString, date: day13, kind: .photoDone(ref: nil), loggedAt: y(1.2)))
 
-        // Day 14 (today): ~40% water + one outdoor workout, hours ago so the
-        // trailing-hour chug window starts empty.
-        events.append(Event(uuid: UUID().uuidString, date: todayDate, kind: .water(ml: 710),
+        // Day 14 (today): two default-bottle pours (~half the gallon) + one
+        // outdoor workout, hours ago so the trailing-hour chug window starts empty.
+        events.append(Event(uuid: UUID().uuidString, date: todayDate, kind: .water(ml: 946),
                             loggedAt: now.addingTimeInterval(-5 * 3600)))
-        events.append(Event(uuid: UUID().uuidString, date: todayDate, kind: .water(ml: 710),
+        events.append(Event(uuid: UUID().uuidString, date: todayDate, kind: .water(ml: 946),
                             loggedAt: now.addingTimeInterval(-2.5 * 3600)))
         events.append(Event(uuid: UUID().uuidString, date: todayDate,
                             kind: .workout(durationMin: 35, outdoor: true, note: "Morning walk"),

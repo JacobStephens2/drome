@@ -91,7 +91,7 @@ struct WaterEntry: TimelineEntry {
         discourageCatchUp: false
     )
     static let placeholderPresets = [
-        ContainerPreset(id: "bottle-24oz", name: "24 oz bottle", ml: 710, sortOrder: 0),
+        ContainerPreset(id: "bottle-32oz", name: "32 oz bottle", ml: 946, sortOrder: 0),
         ContainerPreset(id: "glass", name: "Glass", ml: 350, sortOrder: 1),
     ]
     static let placeholder = WaterEntry(
