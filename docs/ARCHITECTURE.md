@@ -140,7 +140,9 @@ DromeStore::open(db_path: String) -> Result<Arc<DromeStore>>
 active_challenge() -> Option<Challenge>
 create_challenge(cfg: NewChallenge) -> Challenge        // NewChallenge includes optional past start_date
 update_presets(presets: Vec<ContainerPreset>) / set_extra_enabled(id, bool)
+container_presets() -> Vec<ContainerPreset> / extra_defs() -> Vec<ExtraDef>
 set_current_book(title) / set_water_goal(ml, now)       // goal change = event
+import_json(snapshot: String) -> ()   // restore an export_json snapshot; only into a store with no active challenge
 log_water(ml, now, effective_date: Option<String>) -> LogResult
 log_workout(duration_min, outdoor, note, now, effective_date) -> LogResult
 log_reading(book_title, pages, now, effective_date) -> LogResult
@@ -210,17 +212,18 @@ Feature views never edit shared files; integration stage wires RootView.
 
 ## Build & verify commands
 
-- Core: `cd core && cargo test` — on this machine host cargo REQUIRES
-  `CARGO_TARGET_DIR` pointed into the DerivedData simulator-products path (see
-  CLAUDE.md: Santa Lockdown kills binaries built elsewhere). CI runs plain cargo on
-  Linux. Also `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`.
+- Core: `cd core && cargo test` (plain cargo, default target dir — the Santa profile
+  allowlists this repo's `core/target/`; see CLAUDE.md). Also `cargo fmt --check`,
+  `cargo clippy --all-targets -- -D warnings`. CI runs the same on Linux.
 - Sim static lib + bindings: `core/build-ios-lib.sh` (aarch64-apple-ios-sim staticlib +
   uniffi-bindgen swift output → `ios/DromeShared/Generated/`), invoked standalone or by
-  the app target's run-script phase. Device (`aarch64-apple-ios`) builds are a week-4
-  item (need a Santa profile edit).
+  the app target's run-script phase. Device (`aarch64-apple-ios`) static libs build the
+  same way (never executed on host); TestFlight at week 4 needs only App Store Connect
+  access.
 - App: `xcodebuild -project ios/Drome.xcodeproj -scheme Drome -destination
-  'platform=iOS Simulator,name=iPhone 17' build` (agents: use a private
-  `-derivedDataPath` under the session scratchpad to allow parallel builds).
+  'platform=iOS Simulator,name=Chart35iPhone' build` — Chart35iPhone (iOS 26.5) is the
+  only simulator on this machine. (Agents: use a private `-derivedDataPath` under the
+  session scratchpad to allow parallel builds.)
 
 ## Binding guardrails (from the research; enforced at review)
 

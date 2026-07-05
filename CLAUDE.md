@@ -18,16 +18,16 @@ Build & contracts:
 
 - **`docs/ARCHITECTURE.md` pins the Phase 1 contracts** (event schema, day attribution,
   core API, Swift facade, design tokens, file ownership). Read it before writing code.
-- **Santa + cargo on this machine (Jacob-approved 2026-07-04):** Santa Lockdown kills
-  freshly-built host binaries (test runners, crate build scripts), but the Lockdown
-  profile allows execution under Xcode's DerivedData simulator-products paths. So EVERY
-  host cargo invocation (test/build/clippy) must run with:
-  `export CARGO_TARGET_DIR="$HOME/Library/Developer/Xcode/DerivedData/Drome/Build/Products/Debug-iphonesimulator/cargo-target"`
-  (`cargo fmt` doesn't need it). Plain `cargo test` in-repo WILL fail with SIGKILL —
-  that is Santa, not a bug. CI (Linux) runs cargo normally. Week-4 device/TestFlight
-  builds need a Santa profile edit first (simulator paths don't cover `-iphoneos`).
-- Core: `cd core && cargo test` (with the export above). Bindings + sim static lib:
-  Xcode run-script phase / `core/build-ios-lib.sh`. App: `xcodebuild -project
-  ios/Drome.xcodeproj -scheme Drome -destination 'platform=iOS Simulator,name=iPhone 17'
-  build` (use a private -derivedDataPath when building in parallel with other agents).
+- **Santa + cargo on this machine:** Santa Lockdown kills freshly-built host binaries,
+  but the Lockdown profile (updated by Jacob 2026-07-04) allowlists execution from THIS
+  repo's `core/target/(debug|release)/` — so plain `cargo test`/`build`/`clippy` work
+  normally in `core/` with the default target dir (verified). Do NOT set a custom
+  CARGO_TARGET_DIR outside the repo; a `signal: 9 SIGKILL` from a build tool means it
+  executed from a non-allowlisted path. This covers crate build scripts for any
+  `--target` (incl. device `aarch64-apple-ios`), since those always run from
+  `core/target/{debug,release}/build/`.
+- Core: `cd core && cargo test`. Bindings + sim static lib: `core/build-ios-lib.sh`.
+  App: `xcodebuild -project ios/Drome.xcodeproj -scheme Drome -destination 'platform=iOS
+  Simulator,name=Chart35iPhone' build` (use a private -derivedDataPath when building in
+  parallel with other agents).
 - Bundle IDs: `day.drome.app` / `day.drome.app.widget`; App Group `group.day.drome.app`.
