@@ -261,7 +261,7 @@ struct OnboardingView: View {
                                 Text(Self.jobExtraName)
                                     .font(.system(size: 16, weight: .bold))
                                     .foregroundStyle(Color.dromeInk)
-                                Text("Weekly extra: apply to one job a week")
+                                Text("An optional weekly goal: apply to one job a week")
                                     .font(.system(size: 12, weight: .medium))
                                     .foregroundStyle(Color.dromeInk.opacity(0.55))
                             }
