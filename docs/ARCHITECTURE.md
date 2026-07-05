@@ -138,13 +138,13 @@ One exported object, `DromeStore` (internally `Mutex<rusqlite::Connection>`):
 ```
 DromeStore::open(db_path: String) -> Result<Arc<DromeStore>>
 active_challenge() -> Option<Challenge>
-create_challenge(cfg: NewChallenge) -> Challenge        // NewChallenge includes optional past start_date
+create_challenge(cfg: NewChallenge) -> Challenge        // NewChallenge includes optional past start_date + created_at: LocalInstant (core is clock-free)
 update_presets(presets: Vec<ContainerPreset>) / set_extra_enabled(id, bool)
 container_presets() -> Vec<ContainerPreset> / extra_defs() -> Vec<ExtraDef>
 set_current_book(title) / set_water_goal(ml, now)       // goal change = event
 import_json(snapshot: String) -> ()   // restore an export_json snapshot; only into a store with no active challenge
 log_water(ml, now, effective_date: Option<String>) -> LogResult
-log_workout(duration_min, outdoor, note, now, effective_date) -> LogResult
+log_workout(duration_min, outdoor, note, started_at: Option<LocalInstant>, now, effective_date) -> LogResult
 log_reading(book_title, pages, now, effective_date) -> LogResult
 log_diet_ok(now, effective_date) -> LogResult
 log_photo_done(photo_ref, now, effective_date) -> LogResult

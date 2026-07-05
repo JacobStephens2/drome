@@ -1,0 +1,842 @@
+//! Integration tests against the public `DromeStore` API, including the demo
+//! fixture from docs/ARCHITECTURE.md (start 2026-06-21, days 1–12 backfilled
+//! complete, day 13 missing reading, day 14 live).
+
+use std::sync::Arc;
+
+use drome_core::{
+    BackfilledDay, DromeError, DromeStore, LocalInstant, NewChallenge, RulesetKind, JOB_EXTRA_ID,
+};
+use tempfile::TempDir;
+
+const TZ: i32 = -18_000; // US Central daylight time
+const GALLON_ML: i64 = 3_785;
+
+fn at(date: &str, hour: i64, minute: i64) -> LocalInstant {
+    let d = drome_core::time::parse_date(date).expect("test date");
+    let wall =
+        drome_core::time::wall_secs_at_midnight(d).expect("in range") + hour * 3_600 + minute * 60;
+    LocalInstant {
+        epoch_secs: wall - i64::from(TZ),
+        tz_offset_secs: TZ,
+    }
+}
+
+fn plus_min(li: LocalInstant, minutes: i64) -> LocalInstant {
+    LocalInstant {
+        epoch_secs: li.epoch_secs + minutes * 60,
+        tz_offset_secs: li.tz_offset_secs,
+    }
+}
+
+fn open_store() -> (TempDir, String, Arc<DromeStore>) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir
+        .path()
+        .join("drome.sqlite")
+        .to_string_lossy()
+        .into_owned();
+    let store = DromeStore::open(path.clone()).expect("open store");
+    (dir, path, store)
+}
+
+fn challenge_cfg(ruleset: RulesetKind, start_date: &str, created_at: LocalInstant) -> NewChallenge {
+    NewChallenge {
+        ruleset,
+        start_date: start_date.into(),
+        length_days: 75,
+        day_cutoff_minutes: 240,
+        waking_start_minutes: 420,
+        waking_end_minutes: 1320,
+        initial_water_goal_ml: GALLON_ML,
+        diet_description: Some("no sweets, no alcohol".into()),
+        current_book: Some("Deep Work".into()),
+        created_at,
+    }
+}
+
+/// Calendar date of fixture day N (start 2026-06-21).
+fn fixture_date(day: u32) -> String {
+    assert!((1..=40).contains(&day));
+    if day <= 10 {
+        format!("2026-06-{}", 20 + day)
+    } else {
+        format!("2026-07-{:02}", day - 10)
+    }
+}
+
+/// Demo persona: mid-challenge onboarding on day 14 (2026-07-04). Days 1–12 complete
+/// (job extra done on day 3 = week 1), day 13 complete except reading.
+fn demo_store() -> (TempDir, String, Arc<DromeStore>) {
+    let (dir, path, store) = open_store();
+    store
+        .create_challenge(challenge_cfg(
+            RulesetKind::Flexible,
+            "2026-06-21",
+            at("2026-07-04", 9, 0),
+        ))
+        .expect("create challenge");
+    store
+        .set_extra_enabled(JOB_EXTRA_ID.into(), true)
+        .expect("enable extra");
+    let days: Vec<BackfilledDay> = (1..=13)
+        .map(|i| BackfilledDay {
+            date: fixture_date(i),
+            water: true,
+            outdoor_workout: true,
+            second_workout: true,
+            reading: i != 13,
+            diet: true,
+            photo: true,
+            extra_ids: if i == 3 {
+                vec![JOB_EXTRA_ID.into()]
+            } else {
+                vec![]
+            },
+        })
+        .collect();
+    store
+        .backfill_days(days, at("2026-07-04", 9, 5))
+        .expect("backfill");
+    (dir, path, store)
+}
+
+#[test]
+fn demo_fixture_day_indexing_and_counts() {
+    let (_dir, _path, store) = demo_store();
+    let now = at("2026-07-04", 10, 0);
+
+    let today = store.today(now).expect("today");
+    assert_eq!(today.date, "2026-07-04");
+    assert_eq!(today.day_index, 14);
+    assert!(!today.out_of_range);
+    assert!(!today.day.is_backfilled);
+
+    let summary = store.summary(now).expect("summary");
+    assert_eq!(summary.days_complete_count, 12);
+    assert_eq!(summary.current_run, 0); // day 13 broke the run, day 14 open
+    assert_eq!(summary.today_day_index, 14);
+    assert!(!summary.today_out_of_range);
+
+    let day13 = store
+        .day_state("2026-07-03".into(), now)
+        .expect("day state");
+    assert!(day13.is_backfilled);
+    assert!(!day13.reading_done);
+    assert!(day13.water_done);
+    assert!(day13.outdoor_workout_done);
+    assert!(day13.second_workout_done);
+    assert!(day13.diet_done);
+    assert!(day13.photo_done);
+    assert!(!day13.core_complete);
+
+    let day12 = store
+        .day_state("2026-07-02".into(), now)
+        .expect("day state");
+    assert!(day12.core_complete);
+    assert!(day12.is_backfilled);
+}
+
+#[test]
+fn demo_completion_moment_fires_exactly_once() {
+    let (_dir, _path, store) = demo_store();
+    let mut flips = Vec::new();
+
+    // Water to (past) the goal, spread across the day: crossing the goal alone
+    // must not fire the completion moment while other tasks are open.
+    for (hour, ml) in [(10, 950), (11, 950), (12, 950), (13, 950)] {
+        let r = store
+            .log_water(ml, at("2026-07-04", hour, 0), None)
+            .expect("log water");
+        assert!(r.chug_warning.is_none());
+        flips.push(r.day_became_complete);
+    }
+    let water_done_state = store
+        .day_state("2026-07-04".into(), at("2026-07-04", 13, 30))
+        .expect("day state");
+    assert!(water_done_state.water_done);
+    assert!(!water_done_state.core_complete);
+
+    let r = store
+        .log_workout(45, true, None, None, at("2026-07-04", 15, 0), None)
+        .expect("log workout");
+    flips.push(r.day_became_complete);
+    let r = store
+        .log_workout(
+            30,
+            false,
+            Some("bike trainer".into()),
+            None,
+            at("2026-07-04", 18, 30),
+            None,
+        )
+        .expect("log workout");
+    flips.push(r.day_became_complete);
+    let r = store
+        .log_reading("Deep Work".into(), 12, at("2026-07-04", 20, 0), None)
+        .expect("log reading");
+    flips.push(r.day_became_complete);
+    let r = store
+        .log_diet_ok(at("2026-07-04", 21, 0), None)
+        .expect("log diet");
+    flips.push(r.day_became_complete);
+
+    // The final open task: this one fires the completion moment.
+    let r = store
+        .log_photo_done(None, at("2026-07-04", 21, 30), None)
+        .expect("log photo");
+    flips.push(r.day_became_complete);
+    assert!(r.day_state.core_complete);
+    assert!(!r.week_extra_became_complete);
+
+    // Logging more afterwards never re-fires it.
+    let r = store
+        .log_water(200, at("2026-07-04", 21, 45), None)
+        .expect("log water");
+    flips.push(r.day_became_complete);
+
+    assert_eq!(flips.iter().filter(|f| **f).count(), 1);
+    assert_eq!(flips.pop(), Some(false)); // the post-completion water log
+    assert_eq!(flips.last(), Some(&true)); // the photo log fired the moment
+
+    let summary = store.summary(at("2026-07-04", 22, 0)).expect("summary");
+    assert_eq!(summary.days_complete_count, 13);
+    assert_eq!(summary.current_run, 1); // day 13 is incomplete behind it
+}
+
+#[test]
+fn attribution_early_morning_close_and_effective_date() {
+    let (_dir, _path, store) = open_store();
+    store
+        .create_challenge(challenge_cfg(
+            RulesetKind::Flexible,
+            "2026-06-21",
+            at("2026-06-21", 8, 0),
+        ))
+        .expect("create");
+
+    // 1:30 AM with the 4:00 AM cutoff belongs to the previous date.
+    let r = store
+        .log_water(500, at("2026-06-22", 1, 30), None)
+        .expect("log");
+    assert_eq!(r.day_state.date, "2026-06-21");
+
+    // Closing a day pushes later same-window events to the next date...
+    store
+        .close_day("2026-06-22".into(), at("2026-06-22", 21, 0))
+        .expect("close");
+    let r = store
+        .log_water(300, at("2026-06-22", 23, 0), None)
+        .expect("log");
+    assert_eq!(r.day_state.date, "2026-06-23");
+
+    // ...but an explicit effective_date still lands on the closed day.
+    let r = store
+        .log_water(200, at("2026-06-22", 23, 30), Some("2026-06-22".into()))
+        .expect("log");
+    assert_eq!(r.day_state.date, "2026-06-22");
+
+    let day22 = store
+        .day_state("2026-06-22".into(), at("2026-06-23", 9, 0))
+        .expect("day state");
+    assert!(day22.is_closed);
+    assert_eq!(day22.water_ml, 200);
+}
+
+#[test]
+fn water_goal_is_evaluated_as_of_each_day() {
+    let (_dir, _path, store) = open_store();
+    store
+        .create_challenge(challenge_cfg(
+            RulesetKind::Flexible,
+            "2026-06-21",
+            at("2026-06-21", 8, 0),
+        ))
+        .expect("create");
+
+    store
+        .set_water_goal(3_000, at("2026-06-25", 10, 0))
+        .expect("set goal");
+    let now = at("2026-06-25", 11, 0);
+    let day24 = store.day_state("2026-06-24".into(), now).expect("state");
+    assert_eq!(day24.water_goal_ml, GALLON_ML);
+    let day25 = store.day_state("2026-06-25".into(), now).expect("state");
+    assert_eq!(day25.water_goal_ml, 3_000);
+    let day26 = store.day_state("2026-06-26".into(), now).expect("state");
+    assert_eq!(day26.water_goal_ml, 3_000);
+
+    // A later change on the same day wins for that day; earlier days keep theirs.
+    store
+        .set_water_goal(2_500, at("2026-06-25", 12, 0))
+        .expect("set goal");
+    let now = at("2026-06-25", 13, 0);
+    let day25 = store.day_state("2026-06-25".into(), now).expect("state");
+    assert_eq!(day25.water_goal_ml, 2_500);
+    let day24 = store.day_state("2026-06-24".into(), now).expect("state");
+    assert_eq!(day24.water_goal_ml, GALLON_ML);
+}
+
+#[test]
+fn revocation_hides_events_and_backfills_from_projections() {
+    let (_dir, _path, store) = open_store();
+    store
+        .create_challenge(challenge_cfg(
+            RulesetKind::Flexible,
+            "2026-06-21",
+            at("2026-06-21", 8, 0),
+        ))
+        .expect("create");
+    let now = at("2026-06-21", 12, 0);
+
+    let r = store
+        .log_water(900, at("2026-06-21", 9, 0), None)
+        .expect("log");
+    assert_eq!(r.day_state.water_ml, 900);
+    store
+        .revoke_event(r.event_uuid, at("2026-06-21", 9, 5))
+        .expect("revoke");
+    let day = store.day_state("2026-06-21".into(), now).expect("state");
+    assert_eq!(day.water_ml, 0);
+
+    store
+        .backfill_days(
+            vec![BackfilledDay {
+                date: "2026-06-21".into(),
+                water: true,
+                outdoor_workout: true,
+                second_workout: true,
+                reading: true,
+                diet: true,
+                photo: true,
+                extra_ids: vec![],
+            }],
+            at("2026-06-21", 10, 0),
+        )
+        .expect("backfill");
+    let day = store.day_state("2026-06-21".into(), now).expect("state");
+    assert!(day.core_complete);
+    assert!(day.is_backfilled);
+
+    // Find the backfill's uuid through the export, then revoke it.
+    let json = store.export_json(now).expect("export");
+    let doc: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+    let backfill_uuid = doc["events"]
+        .as_array()
+        .expect("events array")
+        .iter()
+        .find(|e| e["kind"] == "day_backfilled")
+        .and_then(|e| e["uuid"].as_str())
+        .expect("backfill event")
+        .to_owned();
+    store
+        .revoke_event(backfill_uuid, at("2026-06-21", 11, 0))
+        .expect("revoke backfill");
+    let day = store.day_state("2026-06-21".into(), now).expect("state");
+    assert!(!day.core_complete);
+    assert!(!day.is_backfilled);
+
+    let missing = store.revoke_event("no-such-uuid".into(), now);
+    assert!(matches!(missing, Err(DromeError::EventNotFound(_))));
+}
+
+#[test]
+fn events_table_rejects_update_and_delete() {
+    let (_dir, path, store) = demo_store();
+    drop(store);
+
+    let conn = rusqlite::Connection::open(&path).expect("raw open");
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+        .expect("count");
+    assert!(count > 0);
+
+    let update = conn.execute("UPDATE events SET kind = 'tampered'", []);
+    let err = update.expect_err("update must be rejected").to_string();
+    assert!(err.contains("append-only"), "unexpected error: {err}");
+
+    let delete = conn.execute("DELETE FROM events", []);
+    let err = delete.expect_err("delete must be rejected").to_string();
+    assert!(err.contains("append-only"), "unexpected error: {err}");
+
+    // Same row count afterwards, and appends still work.
+    let after: i64 = conn
+        .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+        .expect("count");
+    assert_eq!(count, after);
+}
+
+#[test]
+fn weekly_extra_binds_to_week_and_never_gates_core() {
+    let (_dir, _path, store) = demo_store();
+
+    // Week 1 (days 1–7) got the extra via the day-3 backfill; days 1–12 are
+    // core-complete regardless of the extra: it never gates core_complete.
+    let now = at("2026-07-04", 10, 0);
+    let day5 = store.day_state("2026-06-25".into(), now).expect("state");
+    assert!(day5.core_complete);
+
+    // Day 14 is in week 2 (days 8–14); the extra is still open there.
+    let today = store.today(now).expect("today");
+    assert_eq!(today.week_extras.len(), 1);
+    let extra = &today.week_extras[0];
+    assert_eq!(extra.extra_id, JOB_EXTRA_ID);
+    assert_eq!(extra.week_index, 2);
+    assert!(!extra.done);
+
+    let r = store
+        .log_extra_done(JOB_EXTRA_ID.into(), at("2026-07-04", 14, 0), None)
+        .expect("log extra");
+    assert!(r.week_extra_became_complete);
+    assert!(!r.day_became_complete);
+
+    // Logging it again in the same week does not re-fire the weekly moment.
+    let r = store
+        .log_extra_done(JOB_EXTRA_ID.into(), at("2026-07-04", 15, 0), None)
+        .expect("log extra");
+    assert!(!r.week_extra_became_complete);
+
+    let today = store.today(at("2026-07-04", 16, 0)).expect("today");
+    assert!(today.week_extras[0].done);
+
+    let unknown = store.log_extra_done("meditation".into(), now, None);
+    assert!(matches!(unknown, Err(DromeError::UnknownExtra(_))));
+}
+
+#[test]
+fn csv_export_mirrors_the_sheet() {
+    let (_dir, _path, store) = demo_store();
+    let csv = store.export_csv(at("2026-07-04", 10, 0)).expect("csv");
+    let lines: Vec<&str> = csv.lines().collect();
+    assert_eq!(lines.len(), 15); // header + days 1..=14
+    assert_eq!(
+        lines[0],
+        "Date,Day,Workout (Outside),Workout (Inside),Nutrition/Diet,Read (10 Pages),\
+         Progress Picture,Water (oz),Apply to 1 job/week,Complete"
+    );
+    // Day 3 carries the weekly extra; backfilled days export 0 oz (flags only).
+    assert_eq!(
+        lines[3],
+        "2026-06-23,3,TRUE,TRUE,TRUE,TRUE,TRUE,0,TRUE,TRUE"
+    );
+    // Day 13: everything but reading.
+    assert_eq!(
+        lines[13],
+        "2026-07-03,13,TRUE,TRUE,TRUE,FALSE,TRUE,0,,FALSE"
+    );
+    // Day 14 is live and still empty at 10:00.
+    assert_eq!(
+        lines[14],
+        "2026-07-04,14,FALSE,FALSE,FALSE,FALSE,FALSE,0,,FALSE"
+    );
+}
+
+#[test]
+fn json_export_carries_config_events_and_day_states() {
+    let (_dir, _path, store) = demo_store();
+    store
+        .log_water(500, at("2026-07-04", 10, 0), None)
+        .expect("log");
+    let json = store.export_json(at("2026-07-04", 11, 0)).expect("json");
+    let doc: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+
+    assert_eq!(doc["challenge"]["ruleset"], "flexible");
+    assert_eq!(doc["challenge"]["start_date"], "2026-06-21");
+    assert_eq!(doc["summary"]["days_complete_count"], 12);
+    assert_eq!(doc["days"].as_array().expect("days").len(), 14);
+    let events = doc["events"].as_array().expect("events");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e["kind"] == "day_backfilled")
+            .count(),
+        13
+    );
+    assert!(events.iter().any(|e| e["kind"] == "water_add"));
+    assert!(events.iter().all(|e| e["revoked"] == false));
+}
+
+#[test]
+fn purist_rules_workouts_and_fixed_goal() {
+    let (_dir, _path, store) = open_store();
+    store
+        .create_challenge(challenge_cfg(
+            RulesetKind::Purist,
+            "2026-06-21",
+            at("2026-06-21", 6, 0),
+        ))
+        .expect("create");
+    let d = "2026-06-21";
+
+    // Two 45-minute workouts only 2h apart (start times present): not enough.
+    store
+        .log_workout(45, true, None, Some(at(d, 8, 0)), at(d, 9, 0), None)
+        .expect("workout 1");
+    let r = store
+        .log_workout(45, false, None, Some(at(d, 10, 0)), at(d, 11, 0), None)
+        .expect("workout 2");
+    assert!(r.day_state.outdoor_workout_done);
+    assert!(!r.day_state.second_workout_done);
+
+    // A third qualifying workout 5h after the first satisfies the 3h gap.
+    let r = store
+        .log_workout(50, false, None, Some(at(d, 13, 0)), at(d, 14, 0), None)
+        .expect("workout 3");
+    assert!(r.day_state.second_workout_done);
+
+    // Sub-45-minute workouts never qualify in purist mode.
+    let r = store
+        .log_workout(44, true, None, None, at("2026-06-22", 9, 0), None)
+        .expect("short workout");
+    assert!(!r.day_state.outdoor_workout_done);
+
+    // The purist goal is a fixed gallon, whatever the configured goal says.
+    store
+        .set_water_goal(2_000, at("2026-06-22", 10, 0))
+        .expect("set goal");
+    let r = store
+        .log_water(2_000, at("2026-06-22", 11, 0), None)
+        .expect("log water");
+    assert_eq!(r.day_state.water_goal_ml, GALLON_ML);
+    assert!(!r.day_state.water_done);
+    let r = store
+        .log_water(1_785, at("2026-06-22", 13, 0), None)
+        .expect("log water");
+    assert!(r.day_state.water_done);
+}
+
+#[test]
+fn chug_guard_watches_the_trailing_hour() {
+    let (_dir, _path, store) = open_store();
+    store
+        .create_challenge(challenge_cfg(
+            RulesetKind::Flexible,
+            "2026-06-21",
+            at("2026-06-21", 6, 0),
+        ))
+        .expect("create");
+    let t0 = at("2026-06-21", 10, 0);
+
+    let r = store.log_water(800, t0, None).expect("log");
+    assert!(r.chug_warning.is_none());
+
+    // 30 minutes later: 800 already in the window, +300 crosses 1000.
+    let r = store.log_water(300, plus_min(t0, 30), None).expect("log");
+    let warning = r.chug_warning.expect("chug warning");
+    assert!(warning.warn);
+    assert_eq!(warning.trailing_60min_ml, 800);
+    assert_eq!(warning.add_ml, 300);
+
+    // 70 minutes after t0 the 800 has aged out; only the 300 remains.
+    let check = store.check_chug(plus_min(t0, 70), 300).expect("check");
+    assert!(!check.warn);
+    assert_eq!(check.trailing_60min_ml, 300);
+
+    // An event exactly 60 minutes old is outside the window.
+    let check = store.check_chug(plus_min(t0, 89), 0).expect("check");
+    assert_eq!(check.trailing_60min_ml, 300);
+    let check = store.check_chug(plus_min(t0, 90), 0).expect("check");
+    assert_eq!(check.trailing_60min_ml, 0);
+    assert!(!check.warn);
+}
+
+#[test]
+fn day_index_clamps_and_flags_out_of_range() {
+    let (_dir, _path, store) = open_store();
+    store
+        .create_challenge(challenge_cfg(
+            RulesetKind::Flexible,
+            "2026-06-21",
+            at("2026-06-19", 9, 0),
+        ))
+        .expect("create");
+
+    // Before the start date.
+    let before = at("2026-06-19", 10, 0);
+    let summary = store.summary(before).expect("summary");
+    assert_eq!(summary.today_day_index, 1);
+    assert!(summary.today_out_of_range);
+    let today = store.today(before).expect("today");
+    assert!(today.out_of_range);
+    assert_eq!(today.day.day_index, -1);
+    assert!(!today.day.in_range);
+
+    // Day 100, far past the end of the 75.
+    let after = at("2026-09-28", 10, 0);
+    let summary = store.summary(after).expect("summary");
+    assert_eq!(summary.today_day_index, 75);
+    assert!(summary.today_out_of_range);
+    let day = store.day_state("2026-09-28".into(), after).expect("state");
+    assert_eq!(day.day_index, 100);
+    assert!(!day.in_range);
+}
+
+#[test]
+fn share_card_shows_the_day_without_photo_refs() {
+    let (_dir, _path, store) = demo_store();
+    store
+        .log_workout(
+            45,
+            true,
+            Some("morning run".into()),
+            None,
+            at("2026-07-04", 8, 0),
+            None,
+        )
+        .expect("workout");
+    store
+        .log_photo_done(
+            Some("photos/day14.jpg".into()),
+            at("2026-07-04", 9, 30),
+            None,
+        )
+        .expect("photo");
+
+    let card = store
+        .share_card("2026-07-04".into(), at("2026-07-04", 10, 0))
+        .expect("share card");
+    assert_eq!(card.ruleset_label, "flexible");
+    assert_eq!(card.day_index, 14);
+    assert!(!card.is_backfilled);
+    assert_eq!(card.current_run, 0);
+    assert!(card.photo_done);
+    assert_eq!(card.workouts.len(), 1);
+    assert_eq!(card.workouts[0].duration_min, 45);
+    assert!(card.workouts[0].outdoor);
+
+    // Backfilled days are labelled honestly.
+    let card = store
+        .share_card("2026-07-02".into(), at("2026-07-04", 10, 0))
+        .expect("share card");
+    assert!(card.is_backfilled);
+    assert!(card.core_complete);
+}
+
+#[test]
+fn validation_and_missing_challenge_errors() {
+    let (_dir, _path, store) = open_store();
+    let now = at("2026-06-21", 10, 0);
+
+    assert!(matches!(
+        store.log_water(500, now, None),
+        Err(DromeError::NoActiveChallenge)
+    ));
+    assert!(matches!(
+        store.today(now),
+        Err(DromeError::NoActiveChallenge)
+    ));
+
+    let mut bad = challenge_cfg(RulesetKind::Flexible, "2026-06-21", now);
+    bad.waking_end_minutes = bad.waking_start_minutes;
+    assert!(matches!(
+        store.create_challenge(bad),
+        Err(DromeError::InvalidArgument(_))
+    ));
+
+    store
+        .create_challenge(challenge_cfg(RulesetKind::Flexible, "2026-06-21", now))
+        .expect("create");
+    assert!(matches!(
+        store.log_water(0, now, None),
+        Err(DromeError::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        store.log_water(500, now, Some("06/21/2026".into())),
+        Err(DromeError::InvalidDate(_))
+    ));
+    assert!(matches!(
+        store.day_state("not-a-date".into(), now),
+        Err(DromeError::InvalidDate(_))
+    ));
+    assert!(matches!(
+        store.calendar("2026-07-01".into(), "2026-06-01".into(), now),
+        Err(DromeError::InvalidArgument(_))
+    ));
+}
+
+#[test]
+fn calendar_returns_briefs_for_the_backfill_grid() {
+    let (_dir, _path, store) = demo_store();
+    let briefs = store
+        .calendar(
+            "2026-06-21".into(),
+            "2026-07-04".into(),
+            at("2026-07-04", 10, 0),
+        )
+        .expect("calendar");
+    assert_eq!(briefs.len(), 14);
+    assert_eq!(briefs[0].date, "2026-06-21");
+    assert_eq!(briefs[0].day_index, 1);
+    assert!(briefs[0].core_complete);
+    assert!(briefs[0].is_backfilled);
+    assert!(!briefs[12].core_complete); // day 13
+    assert!(!briefs[13].is_backfilled); // day 14 is live
+}
+
+#[test]
+fn new_challenge_replaces_active_and_isolates_events() {
+    let (_dir, _path, store) = open_store();
+    let first = store
+        .create_challenge(challenge_cfg(
+            RulesetKind::Flexible,
+            "2026-06-21",
+            at("2026-06-21", 6, 0),
+        ))
+        .expect("create first");
+    store
+        .log_water(1_000, at("2026-06-21", 10, 0), None)
+        .expect("log");
+
+    let second = store
+        .create_challenge(challenge_cfg(
+            RulesetKind::Flexible,
+            "2026-07-01",
+            at("2026-07-01", 6, 0),
+        ))
+        .expect("create second");
+    assert_ne!(first.id, second.id);
+
+    let active = store
+        .active_challenge()
+        .expect("query")
+        .expect("some challenge");
+    assert_eq!(active.id, second.id);
+    assert_eq!(active.start_date, "2026-07-01");
+
+    // The first challenge's water does not leak into the second.
+    let day = store
+        .day_state("2026-06-21".into(), at("2026-07-01", 10, 0))
+        .expect("state");
+    assert_eq!(day.water_ml, 0);
+}
+
+#[test]
+fn water_state_paces_across_the_waking_window() {
+    let (_dir, _path, store) = demo_store();
+
+    // 7:00 AM: window just opened, target 0, on pace with nothing logged.
+    let s = store.water_state(at("2026-07-04", 7, 0)).expect("state");
+    assert_eq!(s.total_ml, 0);
+    assert_eq!(s.goal_ml, GALLON_ML);
+    assert_eq!(s.pace_target_ml, 0);
+    assert!(s.on_pace);
+    assert!(!s.discourage_catch_up);
+
+    // 2:30 PM is halfway through 7:00–22:00.
+    let s = store.water_state(at("2026-07-04", 14, 30)).expect("state");
+    assert_eq!(s.pace_target_ml, GALLON_ML / 2);
+    assert!(!s.on_pace);
+
+    // 9:00 PM, nothing logged: late catch-up is discouraged, never cheered.
+    let s = store.water_state(at("2026-07-04", 21, 0)).expect("state");
+    assert!(s.discourage_catch_up);
+
+    // Final ounce: 100 ml left.
+    store
+        .log_water(GALLON_ML - 100, at("2026-07-04", 12, 0), None)
+        .expect("log");
+    let s = store.water_state(at("2026-07-04", 12, 30)).expect("state");
+    assert_eq!(s.remaining_ml, 100);
+    assert!(s.final_ounce);
+}
+
+#[test]
+fn import_json_round_trips_into_a_fresh_store() {
+    let (_d1, _p1, source) = demo_store();
+    source
+        .update_presets(vec![drome_core::ContainerPreset {
+            id: "bottle".into(),
+            name: "24 oz bottle".into(),
+            ml: 710,
+            sort_order: 0,
+        }])
+        .expect("presets");
+    // A varied live tail: water, workout, a revoked reading, a goal change,
+    // a closed day, and a post-close log that rolls to the next day.
+    source
+        .log_water(710, at("2026-07-04", 10, 0), None)
+        .expect("water");
+    source
+        .log_workout(
+            45,
+            true,
+            Some("run".into()),
+            Some(at("2026-07-04", 7, 0)),
+            at("2026-07-04", 8, 0),
+            None,
+        )
+        .expect("workout");
+    let r = source
+        .log_reading("Deep Work".into(), 11, at("2026-07-04", 12, 0), None)
+        .expect("read");
+    source
+        .revoke_event(r.event_uuid, at("2026-07-04", 12, 5))
+        .expect("revoke");
+    source
+        .set_water_goal(3_000, at("2026-07-04", 13, 0))
+        .expect("goal");
+    source
+        .close_day("2026-07-04".into(), at("2026-07-04", 22, 0))
+        .expect("close");
+    source
+        .log_water(200, at("2026-07-04", 23, 0), None)
+        .expect("late water");
+
+    let now = at("2026-07-05", 9, 0);
+    let snapshot = source.export_json(now).expect("export");
+
+    let (_d2, _p2, dest) = open_store();
+    dest.import_json(snapshot.clone()).expect("import");
+
+    // Identical projections, day by day and in aggregate.
+    for day in 1..=15 {
+        let date = fixture_date(day);
+        assert_eq!(
+            source.day_state(date.clone(), now).expect("source state"),
+            dest.day_state(date, now).expect("dest state")
+        );
+    }
+    assert_eq!(
+        source.summary(now).expect("summary"),
+        dest.summary(now).expect("summary")
+    );
+    assert_eq!(
+        source.export_csv(now).expect("csv"),
+        dest.export_csv(now).expect("csv")
+    );
+    assert_eq!(
+        source.container_presets().expect("presets"),
+        dest.container_presets().expect("presets")
+    );
+    assert_eq!(
+        source.extra_defs().expect("extras"),
+        dest.extra_defs().expect("extras")
+    );
+    assert_eq!(
+        source
+            .active_challenge()
+            .expect("query")
+            .expect("challenge"),
+        dest.active_challenge().expect("query").expect("challenge")
+    );
+
+    // A store with an active challenge refuses the import, typed.
+    assert!(matches!(
+        dest.import_json(snapshot.clone()),
+        Err(DromeError::ActiveChallengeExists)
+    ));
+
+    // Garbage and unknown schema versions are typed errors too.
+    let (_d3, _p3, fresh) = open_store();
+    assert!(matches!(
+        fresh.import_json("not json".into()),
+        Err(DromeError::Serialization(_))
+    ));
+    let mut doc: serde_json::Value = serde_json::from_str(&snapshot).expect("parse");
+    doc["export_schema_version"] = serde_json::json!(999);
+    assert!(matches!(
+        fresh.import_json(doc.to_string()),
+        Err(DromeError::InvalidArgument(_))
+    ));
+    // Nothing was written by the failed imports.
+    assert!(fresh.active_challenge().expect("query").is_none());
+}

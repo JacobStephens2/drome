@@ -9,9 +9,24 @@ publish = false
 name = "drome_core"
 crate-type = ["lib", "staticlib", "cdylib"]
 
-# Dependencies are added by the core build stage (uniffi, rusqlite bundled, serde,
-# serde_json, thiserror, uuid; dev: proptest). Kept empty in the scaffold commit so
-# CI is green from day one.
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["cli"]
+
+[features]
+cli = ["uniffi/cli"]
+
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+uniffi = "0.32"
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+proptest = "1"
+rusqlite = { version = "0.40", features = ["bundled"] }
+tempfile = "3"
