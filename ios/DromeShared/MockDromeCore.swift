@@ -219,6 +219,16 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
         let dietDone = diet || backfilled?.diet == true
         let noJunkDone = noJunk || backfilled?.noJunk == true
         let photoDone = photo || backfilled?.photo == true
+        // Revocability = a live event of the kind exists here, captured
+        // BEFORE the backfill extras merge below — backfill flags are not
+        // peelable events and never count (mirrors the core projection).
+        let revocable = RevocableTasks(
+            diet: diet,
+            noJunk: noJunk,
+            photo: photo,
+            reading: pages > 0,
+            extraIds: Array(Set(extrasDone)).sorted()
+        )
         if let backfillExtras = backfilled?.extraIds {
             extrasDone.append(contentsOf: backfillExtras.filter { !extrasDone.contains($0) })
         }
@@ -240,6 +250,7 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
             noJunkDone: noJunkDone,
             photoDone: photoDone,
             extrasDone: extrasDone,
+            revocable: revocable,
             coreComplete: waterDone && outdoorDone && secondDone && readingDone
                 && dietDone && noJunkDone && photoDone,
             isClosed: closedDates.contains(date),
@@ -295,14 +306,20 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
         return ChugCheck(shouldWarn: trailing + addMl > limit, trailingHourMl: trailing, addMl: addMl, limitMl: limit)
     }
 
-    /// Week = 7-day block by day index (week 1 = days 1–7).
+    /// Week = 7-day block by day index (week 1 = days 1–7). Mirrors the
+    /// core: prefers a date backed by a live event (revocable) over one
+    /// satisfied only by a backfill flag, so the toggle-off targets a date
+    /// where revokeTask would succeed whenever one exists.
     private func weekExtraDone(extraId: String, weekIndex: Int) -> DayDate? {
         let firstIndex = (weekIndex - 1) * 7 + 1
+        var flagOnly: DayDate?
         for offset in 0..<7 {
             let date = shift(challenge.startDate, by: firstIndex - 1 + offset)
-            if computeDayState(date: date).extrasDone.contains(extraId) { return date }
+            let day = computeDayState(date: date)
+            if day.revocable.extraIds.contains(extraId) { return date }
+            if flagOnly == nil, day.extrasDone.contains(extraId) { flagOnly = date }
         }
-        return nil
+        return flagOnly
     }
 
     private func computeWeekExtras(dayIndex: Int) -> [WeekExtraState] {
@@ -533,6 +550,60 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
             throw DromeError.notFound("event \(eventUuid)")
         }
         events[idx].revoked = true
+    }
+
+    @discardableResult
+    func revokeTask(_ kind: RevocableTask, date: DayDate) throws -> LogResult {
+        lock.lock(); defer { lock.unlock() }
+        // Mirrors the core: attest kinds (diet/no-junk/photo/extra) are
+        // idempotent, so ALL their live events on the date are revoked in
+        // one call (the task genuinely flips off); reading is additive and
+        // peels only the newest entry (`events` appends in log order,
+        // mirroring the core's (logged_at, id) ordering). Backfill flags
+        // never match: a flag is not a peelable event of the task's kind.
+        let matching = events.indices.filter { idx in
+            let event = events[idx]
+            guard !event.revoked, event.date == date else { return false }
+            switch (kind, event.kind) {
+            case (.diet, .dietOk), (.noJunk, .noJunkOk), (.photo, .photoDone), (.reading, .reading):
+                return true
+            case (.extra(let id), .extraDone(let doneId)):
+                return id == doneId
+            default:
+                return false
+            }
+        }
+        let targets: [Int]
+        if case .reading = kind {
+            targets = Array(matching.suffix(1))
+        } else {
+            targets = matching
+        }
+        guard !targets.isEmpty else {
+            throw DromeError.taskNotRevocable(
+                "no live \(kind) event attributed to \(date) "
+                    + "(backfill flags and empty days have nothing to revoke)"
+            )
+        }
+        var revokedPhotoRefs: [String] = []
+        for idx in targets.reversed() {
+            events[idx].revoked = true
+            if case .photo = kind, case .photoDone(let ref) = events[idx].kind, let ref {
+                revokedPhotoRefs.append(ref)
+            }
+        }
+        return LogResult(
+            // The core returns the last appended `revoked` event's uuid; the
+            // mock flags in place, so it synthesizes an equivalent opaque uuid.
+            eventUuid: UUID().uuidString,
+            dayState: computeDayState(date: date),
+            // Hard-false: an undo never fires the completion/weekly moments.
+            // They fire again, intentionally, on the log that re-completes.
+            dayBecameComplete: false,
+            weekExtraBecameComplete: false,
+            chugWarning: nil,
+            revokedPhotoRefs: revokedPhotoRefs
+        )
     }
 
     func backfillDays(_ days: [BackfilledDay]) throws {

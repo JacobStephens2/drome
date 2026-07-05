@@ -13,8 +13,8 @@ use crate::api::{
 };
 use crate::error::{DromeError, Result};
 use crate::events::{
-    self, EventRow, GoalChangedPayload, ReadingPayload, WaterAddPayload, WaterAdjustPayload,
-    WorkoutPayload,
+    self, EventRow, GoalChangedPayload, PhotoDonePayload, ReadingPayload, WaterAddPayload,
+    WaterAdjustPayload, WorkoutPayload,
 };
 use crate::projections::Projection;
 use crate::time::{self, LocalInstant};
@@ -130,6 +130,20 @@ fn validate_payload_bounds(e: &SnapshotEvent) -> Result<()> {
                     e.uuid
                 )));
             }
+        }
+        events::KIND_PHOTO_DONE => {
+            // Structural check only (the ref is an opaque string or null).
+            // Projection::build never parses this payload — it just flips
+            // the day's photo flag — so the pre-import projection pass
+            // cannot catch a malformed ref, but `revoke_task(_, Photo, _)`
+            // parses it later; without this arm a hand-edited snapshot
+            // could make the photo toggle-off fail with a raw storage error.
+            serde_json::from_value::<PhotoDonePayload>(e.payload.clone()).map_err(|err| {
+                DromeError::InvalidArgument(format!(
+                    "snapshot event {}: malformed photo_done payload: {err}",
+                    e.uuid
+                ))
+            })?;
         }
         // day_backfilled payloads (flags only) are structurally validated by
         // the pre-import Projection::build pass; a payload missing the

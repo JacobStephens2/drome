@@ -521,6 +521,7 @@ private func settingsErrorText(_ error: Error) -> String {
     case .invalidDate(let detail): return "Invalid date: \(detail)."
     case .invalidArgument(let detail): return detail
     case .notFound(let detail): return "Not found: \(detail)."
+    case .taskNotRevocable(let detail): return "Nothing to un-mark: \(detail)."
     case .storage(let detail): return "Storage problem: \(detail)."
     }
 }

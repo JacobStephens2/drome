@@ -3,9 +3,11 @@
 //  Drome
 //
 //  Reading tile detail: pages-read-today vs 10 with a big "+10 pages"
-//  primary action plus a stepper for other amounts, the current book
-//  (editable), and total pages across the challenge. "One book at a time"
-//  is a gentle nudge here, not enforcement (purist enforcement is later).
+//  primary action plus a stepper for other amounts, a quiet "Undo last
+//  entry" correction that peels today's newest entry while any is live
+//  (DayState.revocable.reading), the current book (editable), and total
+//  pages across the challenge. "One book at a time" is a gentle nudge here,
+//  not enforcement (purist enforcement is later).
 //
 
 import SwiftUI
@@ -31,6 +33,10 @@ struct ReadingView: View {
     private var pagesToday: Int { appModel.todayState?.day.pagesRead ?? 0 }
     private var readingDone: Bool { appModel.todayState?.day.readingDone ?? false }
     private var bookTitle: String { appModel.challenge?.currentBook ?? "" }
+
+    /// At least one live reading entry is attributed to today — "Undo last
+    /// entry" peels the newest one (backfill flags read false).
+    private var readingRevocable: Bool { appModel.todayState?.day.revocable.reading ?? false }
 
     var body: some View {
         ScrollView {
@@ -137,6 +143,24 @@ struct ReadingView: View {
                                 .stroke(Color.dromeClay, lineWidth: 2)
                         )
                 }
+            }
+
+            // Quiet correction: peels today's newest entry (revokeTask
+            // .reading), repeatable entry by entry until nothing live is
+            // left. DayState doesn't expose per-entry page counts, so the
+            // label stays generic; the total above updates on each peel.
+            if readingRevocable {
+                Button {
+                    appModel.revokeTask(.reading)
+                } label: {
+                    Label("Undo last entry", systemImage: "arrow.uturn.backward")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Color.dromeInk.opacity(0.65))
+                        .frame(maxWidth: .infinity, minHeight: DromeSpacing.tapTarget)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Undo the last reading entry")
             }
         }
     }

@@ -3,9 +3,11 @@
 //  Drome
 //
 //  Diet tile detail: the diet the user named at setup and one big attest
-//  button. Attested reads decisively done; un-attest is an immediate undo
-//  (revoke). Deliberately nothing else — no food logging, no calories,
-//  by design.
+//  button. Attested reads decisively done; un-attest works anytime a live
+//  attest backs it (`DayState.revocable.diet` — not session-gated), as a
+//  plain correction via `revokeTask`. A day attested only by a backfill
+//  flag reads done with nothing to un-mark. Deliberately nothing else — no
+//  food logging, no calories, by design.
 //
 
 import SwiftUI
@@ -13,14 +15,12 @@ import SwiftUI
 struct DietView: View {
     @Environment(AppModel.self) private var appModel
 
-    /// True only right after attesting from this view, so the Undo button can
-    /// only ever revoke the attest it just made (`undoLastDiet` revokes
-    /// exactly the model's last diet attest — never an event of another kind).
-    @State private var attestedJustNow = false
-
     init() {}
 
     private var dietDone: Bool { appModel.todayState?.day.dietDone ?? false }
+
+    /// A live attest event backs today's done — un-marking would succeed.
+    private var dietRevocable: Bool { appModel.todayState?.day.revocable.diet ?? false }
 
     private var dietText: String {
         let text = (appModel.challenge?.dietDescription ?? "")
@@ -58,7 +58,6 @@ struct DietView: View {
             } else {
                 Button {
                     appModel.logDietOk()
-                    attestedJustNow = true
                 } label: {
                     Text("Kept my diet today")
                 }
@@ -91,16 +90,18 @@ struct DietView: View {
                     .fill(Color.dromeDone.opacity(0.12))
             )
 
-            if attestedJustNow, appModel.lastDietEventUuid != nil {
+            // A quiet correction, available whenever a live attest backs
+            // the done state — no session gate, no confirmation, no shame.
+            if dietRevocable {
                 Button {
-                    appModel.undoLastDiet()
-                    attestedJustNow = false
+                    appModel.revokeTask(.diet)
                 } label: {
-                    Text("Undo")
+                    Text("Un-mark")
                         .font(.system(size: 15, weight: .bold))
                         .foregroundStyle(Color.dromeInk.opacity(0.7))
                 }
                 .dromeTapTarget()
+                .accessibilityLabel("Un-mark diet for today")
             }
         }
     }

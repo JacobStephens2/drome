@@ -5,7 +5,8 @@
 use std::sync::Arc;
 
 use drome_core::{
-    BackfilledDay, DromeError, DromeStore, LocalInstant, NewChallenge, RulesetKind, JOB_EXTRA_ID,
+    BackfilledDay, DromeError, DromeStore, LocalInstant, NewChallenge, RevocableTask, RulesetKind,
+    JOB_EXTRA_ID,
 };
 use tempfile::TempDir;
 
@@ -1036,6 +1037,10 @@ fn import_rejects_payloads_the_log_apis_reject() {
             "reading",
             serde_json::json!({ "book_title": "Deep Work", "pages": 10_001 }),
         ),
+        // Projection::build never parses photo payloads (it only flips the
+        // day flag), so import must: a malformed ref would otherwise poison
+        // revoke_task(Photo) with an untyped serialization error.
+        with_event("photo_done", serde_json::json!({ "photo_ref": 42 })),
     ];
     for tampered in cases {
         assert!(matches!(
@@ -1628,6 +1633,477 @@ fn pre_no_junk_stores_keep_live_logged_days_complete() {
     let summary = store.summary(at(d2, 17, 0)).expect("summary");
     assert_eq!(summary.days_complete_count, 2);
     assert_eq!(summary.current_run, 2);
+}
+
+#[test]
+fn revoke_task_toggles_each_kind_and_the_moment_refires_on_recompletion() {
+    let (_dir, _path, store) = demo_store();
+    let d = "2026-07-04";
+
+    // Complete day 14 with live events (the photo carries a ref).
+    store
+        .log_water(GALLON_ML, at(d, 9, 0), None)
+        .expect("water");
+    store
+        .log_workout(45, true, None, None, at(d, 10, 0), None)
+        .expect("outdoor");
+    store
+        .log_workout(30, false, None, None, at(d, 11, 0), None)
+        .expect("second");
+    store
+        .log_reading("Deep Work".into(), 12, at(d, 12, 0), None)
+        .expect("reading");
+    store.log_diet_ok(at(d, 13, 0), None).expect("diet");
+    store.log_no_junk_ok(at(d, 13, 30), None).expect("no junk");
+    let r = store
+        .log_photo_done(Some("photos/day14.jpg".into()), at(d, 14, 0), None)
+        .expect("photo");
+    assert!(r.day_became_complete);
+    assert!(
+        r.revoked_photo_refs.is_empty(),
+        "plain logs never carry refs"
+    );
+
+    // Every live-logged task reports revocable; nothing extra does.
+    let day = r.day_state;
+    assert!(day.revocable.diet);
+    assert!(day.revocable.no_junk);
+    assert!(day.revocable.photo);
+    assert!(day.revocable.reading);
+    assert!(day.revocable.extra_ids.is_empty());
+
+    // Diet: off honestly (no moments, no chug warning), then back on — the
+    // completion moment fires AGAIN on the re-completing log. Intended: that
+    // log is a genuine incomplete -> complete flip, and celebrating it is
+    // the honest reading of the day's current state.
+    let r = store
+        .revoke_task(d.into(), RevocableTask::Diet, at(d, 15, 0))
+        .expect("revoke diet");
+    assert!(!r.day_state.diet_done);
+    assert!(!r.day_state.core_complete);
+    assert!(!r.day_state.revocable.diet);
+    assert!(!r.day_became_complete);
+    assert!(!r.week_extra_became_complete);
+    assert!(r.chug_warning.is_none());
+    assert!(r.revoked_photo_refs.is_empty());
+    let r = store.log_diet_ok(at(d, 15, 5), None).expect("re-attest");
+    assert!(r.day_state.core_complete);
+    assert!(r.day_became_complete, "re-completion is a genuine flip");
+
+    // No-junk round trip.
+    let r = store
+        .revoke_task(d.into(), RevocableTask::NoJunk, at(d, 15, 10))
+        .expect("revoke no-junk");
+    assert!(!r.day_state.no_junk_done);
+    assert!(!r.day_state.core_complete);
+    let r = store
+        .log_no_junk_ok(at(d, 15, 15), None)
+        .expect("re-attest no-junk");
+    assert!(r.day_became_complete);
+
+    // Photo: the revoke surfaces the orphaned ref for file cleanup.
+    let r = store
+        .revoke_task(d.into(), RevocableTask::Photo, at(d, 15, 20))
+        .expect("revoke photo");
+    assert!(!r.day_state.photo_done);
+    assert_eq!(r.revoked_photo_refs, vec!["photos/day14.jpg".to_string()]);
+    let r = store
+        .log_photo_done(None, at(d, 15, 25), None)
+        .expect("re-photo");
+    assert!(r.day_became_complete);
+    // A ref-less photo revokes with no ref to clean up.
+    let r = store
+        .revoke_task(d.into(), RevocableTask::Photo, at(d, 15, 30))
+        .expect("revoke ref-less photo");
+    assert!(r.revoked_photo_refs.is_empty());
+    store
+        .log_photo_done(None, at(d, 15, 35), None)
+        .expect("re-photo again");
+
+    // Reading (single entry): the whole task flips off and back on.
+    let r = store
+        .revoke_task(d.into(), RevocableTask::Reading, at(d, 16, 0))
+        .expect("revoke reading");
+    assert!(!r.day_state.reading_done);
+    assert_eq!(r.day_state.reading_pages, 0);
+    assert!(!r.day_state.revocable.reading);
+    let r = store
+        .log_reading("Deep Work".into(), 10, at(d, 16, 5), None)
+        .expect("re-read");
+    assert!(r.day_became_complete);
+
+    let summary = store.summary(at(d, 17, 0)).expect("summary");
+    assert_eq!(summary.days_complete_count, 13); // 1..=12 + day 14
+}
+
+#[test]
+fn revoke_task_rejects_backfill_flags_and_empty_days() {
+    let (_dir, _path, store) = demo_store();
+    let now = at("2026-07-04", 10, 0);
+
+    // Day 12 is complete via backfill flags only: nothing is peelable, and
+    // the day's revocable record says so up front.
+    let day12 = store
+        .day_state("2026-07-02".into(), now)
+        .expect("day state");
+    assert!(day12.diet_done && day12.no_junk_done && day12.photo_done && day12.reading_done);
+    assert!(!day12.revocable.diet);
+    assert!(!day12.revocable.no_junk);
+    assert!(!day12.revocable.photo);
+    assert!(!day12.revocable.reading);
+    assert!(day12.revocable.extra_ids.is_empty());
+    for kind in [
+        RevocableTask::Diet,
+        RevocableTask::NoJunk,
+        RevocableTask::Photo,
+        RevocableTask::Reading,
+    ] {
+        assert!(
+            matches!(
+                store.revoke_task("2026-07-02".into(), kind.clone(), now),
+                Err(DromeError::TaskNotRevocable(_))
+            ),
+            "backfill-flag {kind:?} must not be revocable"
+        );
+    }
+
+    // Day 3's weekly extra came from the backfill payload: same rule.
+    let day3 = store
+        .day_state("2026-06-23".into(), now)
+        .expect("day state");
+    assert!(day3.extras_done.contains(&JOB_EXTRA_ID.to_string()));
+    assert!(day3.revocable.extra_ids.is_empty());
+    assert!(matches!(
+        store.revoke_task(
+            "2026-06-23".into(),
+            RevocableTask::Extra {
+                id: JOB_EXTRA_ID.into()
+            },
+            now
+        ),
+        Err(DromeError::TaskNotRevocable(_))
+    ));
+
+    // Day 14 is empty: nothing to revoke there either.
+    assert!(matches!(
+        store.revoke_task("2026-07-04".into(), RevocableTask::Diet, now),
+        Err(DromeError::TaskNotRevocable(_))
+    ));
+
+    // A live diet on day 14 never satisfies a revoke for another date.
+    store
+        .log_diet_ok(at("2026-07-04", 11, 0), None)
+        .expect("diet");
+    assert!(matches!(
+        store.revoke_task(
+            "2026-07-03".into(),
+            RevocableTask::Diet,
+            at("2026-07-04", 11, 5)
+        ),
+        Err(DromeError::TaskNotRevocable(_))
+    ));
+
+    assert!(matches!(
+        store.revoke_task("not-a-date".into(), RevocableTask::Diet, now),
+        Err(DromeError::InvalidDate(_))
+    ));
+}
+
+#[test]
+fn revoke_task_reading_peels_newest_first() {
+    let (_dir, _path, store) = demo_store();
+    let d = "2026-07-04";
+    store
+        .log_reading("Deep Work".into(), 6, at(d, 9, 0), None)
+        .expect("morning read");
+    store
+        .log_reading("Deep Work".into(), 7, at(d, 20, 0), None)
+        .expect("evening read");
+    let day = store.day_state(d.into(), at(d, 21, 0)).expect("day state");
+    assert_eq!(day.reading_pages, 13);
+    assert!(day.reading_done);
+
+    // First revoke peels the NEWEST entry (the evening 7 pages).
+    let r = store
+        .revoke_task(d.into(), RevocableTask::Reading, at(d, 21, 5))
+        .expect("revoke newest");
+    assert_eq!(r.day_state.reading_pages, 6);
+    assert!(!r.day_state.reading_done);
+    assert!(
+        r.day_state.revocable.reading,
+        "the morning entry is still peelable"
+    );
+
+    // Second revoke peels the remaining morning entry; a third has nothing.
+    let r = store
+        .revoke_task(d.into(), RevocableTask::Reading, at(d, 21, 10))
+        .expect("revoke remaining");
+    assert_eq!(r.day_state.reading_pages, 0);
+    assert!(!r.day_state.revocable.reading);
+    assert!(matches!(
+        store.revoke_task(d.into(), RevocableTask::Reading, at(d, 21, 15)),
+        Err(DromeError::TaskNotRevocable(_))
+    ));
+}
+
+#[test]
+fn revoke_task_clears_stacked_attest_events_in_one_call() {
+    // Attest kinds are idempotent, not additive: "mark photo taken" followed
+    // by attaching a picture leaves TWO live photo events on the date, and a
+    // single un-mark must flip the task to not-done (revoking only the
+    // newest would silently delete the attach's JPEG while the day still
+    // read done). Reading stays additive and keeps its one-entry peel.
+    let (_dir, _path, store) = demo_store();
+    let d = "2026-07-04";
+
+    store.log_photo_done(None, at(d, 9, 0), None).expect("mark");
+    store
+        .log_photo_done(Some("photos/day14.jpg".into()), at(d, 9, 5), None)
+        .expect("attach");
+    let r = store
+        .revoke_task(d.into(), RevocableTask::Photo, at(d, 10, 0))
+        .expect("revoke photo");
+    assert!(!r.day_state.photo_done, "one un-mark flips the task off");
+    assert!(!r.day_state.revocable.photo);
+    assert_eq!(r.revoked_photo_refs, vec!["photos/day14.jpg".to_string()]);
+
+    // Same for a doubled diet attest (e.g. board tile + yesterday sheet).
+    store.log_diet_ok(at(d, 11, 0), None).expect("diet");
+    store.log_diet_ok(at(d, 11, 5), None).expect("diet again");
+    let r = store
+        .revoke_task(d.into(), RevocableTask::Diet, at(d, 11, 10))
+        .expect("revoke diet");
+    assert!(!r.day_state.diet_done);
+    assert!(!r.day_state.revocable.diet);
+
+    // A doubled extra clears in one call too, and only on the target date.
+    store
+        .log_extra_done(JOB_EXTRA_ID.into(), at(d, 12, 0), None)
+        .expect("extra");
+    store
+        .log_extra_done(JOB_EXTRA_ID.into(), at(d, 12, 5), None)
+        .expect("extra again");
+    let r = store
+        .revoke_task(
+            d.into(),
+            RevocableTask::Extra {
+                id: JOB_EXTRA_ID.into(),
+            },
+            at(d, 12, 10),
+        )
+        .expect("revoke extra");
+    assert!(r.day_state.extras_done.is_empty());
+    assert!(r.day_state.revocable.extra_ids.is_empty());
+}
+
+#[test]
+fn today_reports_the_date_backing_each_week_extra() {
+    let (_dir, _path, store) = demo_store();
+    let d = "2026-07-04"; // day 14 = week 2 (days 8-14)
+
+    // Week 2 is open: no done date.
+    let today = store.today(at(d, 9, 0)).expect("today");
+    assert!(!today.week_extras[0].done);
+    assert_eq!(today.week_extras[0].done_on_date, None);
+
+    // Re-backfill day 8 with the extra as a flag: the week reads done and
+    // the flag date is reported (there is no live event anywhere).
+    store
+        .backfill_days(
+            vec![BackfilledDay {
+                date: "2026-06-28".into(),
+                water: true,
+                outdoor_workout: true,
+                second_workout: true,
+                reading: true,
+                diet: true,
+                no_junk: true,
+                photo: true,
+                extra_ids: vec![JOB_EXTRA_ID.into()],
+            }],
+            at(d, 9, 30),
+        )
+        .expect("backfill day 8");
+    let today = store.today(at(d, 10, 0)).expect("today");
+    assert!(today.week_extras[0].done);
+    assert_eq!(
+        today.week_extras[0].done_on_date.as_deref(),
+        Some("2026-06-28")
+    );
+    // ... but that date has nothing live to revoke (flag-only), which the
+    // UI reads from the day's revocable record.
+    let day8 = store
+        .day_state("2026-06-28".into(), at(d, 10, 0))
+        .expect("day 8");
+    assert!(day8.revocable.extra_ids.is_empty());
+
+    // A live event later in the week wins over the earlier flag: the toggle
+    // must target a date where revoke_task succeeds whenever one exists.
+    store
+        .log_extra_done(JOB_EXTRA_ID.into(), at(d, 11, 0), None)
+        .expect("live extra");
+    let today = store.today(at(d, 11, 30)).expect("today");
+    assert_eq!(today.week_extras[0].done_on_date.as_deref(), Some(d));
+
+    // Revoking the live event falls back to the flag date, still done.
+    store
+        .revoke_task(
+            d.into(),
+            RevocableTask::Extra {
+                id: JOB_EXTRA_ID.into(),
+            },
+            at(d, 12, 0),
+        )
+        .expect("revoke live extra");
+    let today = store.today(at(d, 12, 30)).expect("today");
+    assert!(today.week_extras[0].done);
+    assert_eq!(
+        today.week_extras[0].done_on_date.as_deref(),
+        Some("2026-06-28")
+    );
+}
+
+#[test]
+fn revoke_task_extra_flips_week_state_without_the_weekly_moment() {
+    let (_dir, _path, store) = demo_store();
+    let d = "2026-07-04"; // day 14 = week 2
+
+    let r = store
+        .log_extra_done(JOB_EXTRA_ID.into(), at(d, 9, 0), None)
+        .expect("extra");
+    assert!(r.week_extra_became_complete);
+    assert_eq!(
+        r.day_state.revocable.extra_ids,
+        vec![JOB_EXTRA_ID.to_string()]
+    );
+
+    let r = store
+        .revoke_task(
+            d.into(),
+            RevocableTask::Extra {
+                id: JOB_EXTRA_ID.into(),
+            },
+            at(d, 10, 0),
+        )
+        .expect("revoke extra");
+    assert!(
+        !r.week_extra_became_complete,
+        "an undo must never fire the weekly moment"
+    );
+    assert!(!r.day_became_complete);
+    assert!(r.day_state.extras_done.is_empty());
+    assert!(r.day_state.revocable.extra_ids.is_empty());
+    let today = store.today(at(d, 10, 30)).expect("today");
+    assert!(!today.week_extras[0].done, "week 2 is open again");
+
+    // Week 1 (backfilled on day 3) is untouched by the week-2 revoke.
+    let day3 = store
+        .day_state("2026-06-23".into(), at(d, 10, 30))
+        .expect("day state");
+    assert!(day3.extras_done.contains(&JOB_EXTRA_ID.to_string()));
+
+    // Re-completing the week fires the weekly moment again: a genuine flip.
+    let r = store
+        .log_extra_done(JOB_EXTRA_ID.into(), at(d, 11, 0), None)
+        .expect("re-extra");
+    assert!(r.week_extra_became_complete);
+}
+
+#[test]
+fn revoke_task_attributes_dates_like_day_state() {
+    let (_dir, _path, store) = demo_store();
+
+    // Yesterday (day 13) via explicit effective_date: retroactive reading
+    // completes the backfilled-but-for-reading day, and revoking BY DATE
+    // undoes exactly that entry.
+    let r = store
+        .log_reading(
+            "Deep Work".into(),
+            10,
+            at("2026-07-04", 9, 0),
+            Some("2026-07-03".into()),
+        )
+        .expect("retro reading");
+    assert!(r.day_became_complete);
+    let r = store
+        .revoke_task(
+            "2026-07-03".into(),
+            RevocableTask::Reading,
+            at("2026-07-04", 9, 30),
+        )
+        .expect("revoke yesterday's reading");
+    assert_eq!(r.day_state.date, "2026-07-03");
+    assert!(!r.day_state.reading_done);
+    assert!(!r.day_state.core_complete);
+    assert!(!r.day_became_complete);
+
+    // Live cutoff attribution: a 1:30 AM diet belongs to day 14 (4:00 AM
+    // cutoff), so the revoke finds it under day 14's date — and NOT under
+    // the calendar date it was logged on.
+    store
+        .log_diet_ok(at("2026-07-05", 1, 30), None)
+        .expect("late-night diet");
+    assert!(matches!(
+        store.revoke_task(
+            "2026-07-05".into(),
+            RevocableTask::Diet,
+            at("2026-07-05", 1, 35)
+        ),
+        Err(DromeError::TaskNotRevocable(_))
+    ));
+    let r = store
+        .revoke_task(
+            "2026-07-04".into(),
+            RevocableTask::Diet,
+            at("2026-07-05", 1, 40),
+        )
+        .expect("revoke day-14 diet");
+    assert!(!r.day_state.diet_done);
+}
+
+#[test]
+fn revoke_task_history_survives_export_import_round_trip() {
+    let (_d1, _p1, source) = demo_store();
+    let d = "2026-07-04";
+    source.log_diet_ok(at(d, 9, 0), None).expect("diet");
+    source.log_no_junk_ok(at(d, 9, 5), None).expect("no junk");
+    source
+        .log_photo_done(Some("photos/day14.jpg".into()), at(d, 9, 10), None)
+        .expect("photo");
+    source
+        .log_reading("Deep Work".into(), 12, at(d, 9, 15), None)
+        .expect("reading");
+    source
+        .revoke_task(d.into(), RevocableTask::Photo, at(d, 10, 0))
+        .expect("revoke photo");
+    source
+        .revoke_task(d.into(), RevocableTask::Diet, at(d, 10, 5))
+        .expect("revoke diet");
+
+    let now = at(d, 11, 0);
+    let snapshot = source.export_json(now).expect("export");
+    let (_d2, _p2, dest) = open_store();
+    dest.import_json(snapshot).expect("import");
+
+    // Identical projections (DayState equality covers `revocable` too).
+    for day in 1..=14 {
+        let date = fixture_date(day);
+        assert_eq!(
+            source.day_state(date.clone(), now).expect("source state"),
+            dest.day_state(date, now).expect("dest state")
+        );
+    }
+    // The restored store keeps both the un-done state and the remaining
+    // revocability (no-junk / reading still live; diet / photo revoked).
+    let day14 = dest.day_state(d.into(), now).expect("day state");
+    assert!(!day14.diet_done && !day14.photo_done);
+    assert!(day14.no_junk_done && day14.reading_done);
+    assert!(!day14.revocable.diet && !day14.revocable.photo);
+    assert!(day14.revocable.no_junk && day14.revocable.reading);
+    assert_eq!(
+        source.export_csv(now).expect("csv"),
+        dest.export_csv(now).expect("csv")
+    );
 }
 
 #[test]

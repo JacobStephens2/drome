@@ -13,11 +13,10 @@
 //
 //  Navigation is NOT wired here: water/workouts/reading/photo hand off via
 //  closure callbacks (integration stage connects them to their features).
-//  Diet attest, workout slot check/undo, photo check-off, weekly-extra done,
-//  and close-day go straight through AppModel intents. The no-junk attest is
-//  the one exception: AppModel (owned by another stage) has no logNoJunkOk
-//  intent yet, so `attestNoJunk()` calls the shared client directly —
-//  PhotoView's photoRef pattern.
+//  Everything else — attests and their toggle-offs (diet, no-junk, photo,
+//  weekly extra via revokeTask), workout slot check/undo, and close-day —
+//  goes straight through AppModel intents, so every task completes and
+//  un-completes through the same honest path.
 //
 
 import SwiftUI
@@ -61,10 +60,20 @@ struct DayBoardView: View {
                     whatsLeftStrip(today.day)
                     tiles(today)
                     ForEach(today.weekExtras) { extra in
+                        // Toggle-off targets the date the extra's live event
+                        // sits on (it may have been done earlier this week);
+                        // AppModel resolves that per refresh. Backfill-flag
+                        // extras never appear in the map — done, not
+                        // tappable-off.
                         DayBoardWeekExtraTile(
                             state: extra,
                             weekIndex: today.weekIndex,
-                            onMarkDone: { appModel.logExtraDone(id: extra.id) }
+                            canRevoke: appModel.weekExtraRevocableDates[extra.id] != nil,
+                            onMarkDone: { appModel.logExtraDone(id: extra.id) },
+                            onRevoke: {
+                                guard let date = appModel.weekExtraRevocableDates[extra.id] else { return }
+                                appModel.revokeTask(.extra(id: extra.id), date: date)
+                            }
                         )
                     }
                     if today.day.coreComplete && !today.day.isClosed {
@@ -280,37 +289,23 @@ struct DayBoardView: View {
             DayBoardDietTile(
                 dietDescription: appModel.challenge?.dietDescription ?? "",
                 done: today.day.dietDone,
-                onAttest: { appModel.logDietOk() }
+                canRevoke: today.day.revocable.diet,
+                onAttest: { appModel.logDietOk() },
+                onRevoke: { appModel.revokeTask(.diet) }
             )
             DayBoardNoJunkTile(
                 done: today.day.noJunkDone,
-                onAttest: attestNoJunk,
-                onUndo: { appModel.revoke(eventUuid: $0) }
+                canRevoke: today.day.revocable.noJunk,
+                onAttest: { appModel.logNoJunkOk() },
+                onRevoke: { appModel.revokeTask(.noJunk) }
             )
             DayBoardPhotoTile(
                 done: today.day.photoDone,
+                canRevoke: today.day.revocable.photo,
                 onOpen: onOpenPhoto,
-                onMarkDone: { appModel.logPhotoDone() }
+                onMarkDone: { appModel.logPhotoDone() },
+                onRevoke: { appModel.revokeTask(.photo) }
             )
-        }
-    }
-
-    // MARK: - No-junk attest (client-direct; flagged for the review pass)
-
-    /// AppModel has no logNoJunkOk intent yet (the model file is owned by a
-    /// concurrent stage), so this calls the SAME shared client directly and
-    /// feeds the LogResult back through `noteExternalLog` — exactly the
-    /// pattern PhotoView uses for photoRef logs — so completion moments and
-    /// refresh stay centralized. Returns the event uuid for the tile's
-    /// same-session undo; nil means the write failed (surfaced inline by the
-    /// tile — `lastErrorMessage` is private(set) and unreachable from here).
-    private func attestNoJunk() -> String? {
-        do {
-            let result = try appModel.client.logNoJunkOk(effectiveDate: nil)
-            appModel.noteExternalLog(result)
-            return result.eventUuid
-        } catch {
-            return nil
         }
     }
 

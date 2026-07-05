@@ -168,6 +168,7 @@ log_photo_done(photo_ref, now, effective_date) -> LogResult
 log_extra_done(extra_id, now, effective_date) -> LogResult
 close_day(date, now) -> DayState
 revoke_event(event_uuid, now) -> ()
+revoke_task(date, kind: RevocableTask, now) -> LogResult  // kind = Diet|NoJunk|Photo|Reading|Extra{id}: un-complete a task on the date. Attest kinds (Diet/NoJunk/Photo/Extra) are idempotent, not additive: ALL their live events attributed to the date are revoked in one transaction, so one call always flips the task to not-done (e.g. "mark photo taken" + attach = two live events). Reading is additive and peels newest-first, entry by entry. Typed TaskNotRevocable when only a backfill flag (or nothing) satisfies it. Water/workouts revoke entry-by-entry via revoke_event instead.
 backfill_days(days: Vec<BackfilledDay>, now) -> ()      // single transaction
 day_state(date, now) -> DayState
 today(now) -> TodayState        // date, day_index, DayState, WaterState, week extras
@@ -181,10 +182,21 @@ export_csv(now) -> String                               // day-per-row, columns 
 ```
 
 `LogResult { event_uuid, day_state, day_became_complete: bool, week_extra_became_complete:
-bool, chug_warning: Option<ChugCheck> }`. `day_became_complete` fires the completion
-moment exactly once (core compares pre/post state). Errors: `DromeError` enum → Swift
-`throws`. All API types are UniFFI Records/Enums; dates are "YYYY-MM-DD" strings; core
-validates and never panics across the FFI boundary.
+bool, chug_warning: Option<ChugCheck>, revoked_photo_refs: Vec<String> }`.
+`day_became_complete` fires the completion moment exactly once (core compares pre/post
+state). Revokes (`revoke_task`) return both moment flags hard-false — the moments then
+fire again, intentionally, on the log that re-completes the day/week (a genuine flip).
+`revoked_photo_refs` is filled only by `revoke_task(_, Photo, _)`: every revoked
+event's photo ref, so the app layer can delete the orphaned image files.
+`WeekExtraState.done_on_date` reports the date whose completion satisfies each extra
+(live-event dates preferred over backfill-flag dates), so a toggle-off UI can target
+`revoke_task` at the right day.
+`DayState.revocable { diet, no_junk, photo, reading, extra_ids }` reports per task
+whether `revoke_task` would succeed on that date: true only when a live (non-revoked)
+event of the kind is attributed there — tasks satisfied only by `day_backfilled` flags
+read false. Errors: `DromeError` enum → Swift `throws`. All API types are UniFFI
+Records/Enums; dates are "YYYY-MM-DD" strings; core validates and never panics across
+the FFI boundary.
 
 ## Swift layer contracts
 

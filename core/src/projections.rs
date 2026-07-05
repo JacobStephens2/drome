@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use chrono::NaiveDate;
 
-use crate::api::{Challenge, DayState, WorkoutEntry};
+use crate::api::{Challenge, DayState, RevocableTasks, WorkoutEntry};
 use crate::error::{DromeError, Result};
 use crate::events::{
     self, DayBackfilledPayload, DayClosedPayload, EventRow, ExtraDonePayload, GoalChangedPayload,
@@ -43,6 +43,10 @@ struct DayAccum {
     water_ml: i64,
     workouts: Vec<WorkoutEntry>,
     pages: u32,
+    /// True when at least one live `reading` event is attributed here —
+    /// tracked explicitly (not inferred from `pages`) so revocability never
+    /// depends on payload bounds. Feeds `DayState.revocable.reading`.
+    reading_logged: bool,
     diet: bool,
     no_junk: bool,
     photo: bool,
@@ -192,6 +196,7 @@ impl Projection {
                     let p: ReadingPayload = e.payload_as()?;
                     let day = proj.day_mut(e)?;
                     day.pages = day.pages.saturating_add(p.pages);
+                    day.reading_logged = true;
                 }
                 events::KIND_DIET_OK => proj.day_mut(e)?.diet = true,
                 events::KIND_NO_JUNK_OK => proj.day_mut(e)?.no_junk = true,
@@ -311,6 +316,17 @@ impl Projection {
             extras_done.extend(b.extra_ids.iter().cloned());
         }
 
+        // Revocability = a live event of the kind exists here. Deliberately
+        // read from the accumulator (live events only), never from backfill
+        // flags: a flag is not a peelable event, so `revoke_task` would fail.
+        let revocable = RevocableTasks {
+            diet: accum.diet,
+            no_junk: accum.no_junk,
+            photo: accum.photo,
+            reading: accum.reading_logged,
+            extra_ids: accum.extras.iter().cloned().collect(),
+        };
+
         let idx = day_index(self.start_date, date);
         DayState {
             date: format_date(date),
@@ -330,6 +346,7 @@ impl Projection {
             no_junk_done,
             photo_done,
             extras_done: extras_done.into_iter().collect(),
+            revocable,
             // All six core tasks, in both rulesets (mirrors the sheet's
             // separate "Nutrition/Diet" and "No Junk or Alcohol" columns).
             core_complete: water_done
@@ -345,17 +362,39 @@ impl Projection {
     /// True when `extra_id` was done on any day of the 7-day block `week_idx`
     /// (day indexes (w-1)*7+1 ..= w*7), via a live event or a backfill.
     pub fn week_extra_done(&self, extra_id: &str, week_idx: i64) -> Result<bool> {
+        Ok(self.week_extra_done_on(extra_id, week_idx)?.is_some())
+    }
+
+    /// The date whose completion satisfies `extra_id` for the 7-day block
+    /// `week_idx`, or `None` when the week is open. Prefers a date backed by
+    /// a LIVE `extra_done` event over one satisfied only by a backfill flag,
+    /// so the UI's toggle-off (`revoke_task`) always gets a date where the
+    /// revoke would actually succeed whenever one exists.
+    pub fn week_extra_done_on(&self, extra_id: &str, week_idx: i64) -> Result<Option<NaiveDate>> {
         if week_idx < 1 {
-            return Ok(false);
+            return Ok(None);
         }
         let first_idx = (week_idx - 1) * 7 + 1;
+        let mut flag_only: Option<NaiveDate> = None;
         for offset in 0..7 {
             let date = self.date_at_index(first_idx + offset)?;
-            if self.extra_done_on(extra_id, date) {
-                return Ok(true);
+            if self
+                .days
+                .get(&date)
+                .is_some_and(|d| d.extras.contains(extra_id))
+            {
+                return Ok(Some(date));
+            }
+            if flag_only.is_none()
+                && self
+                    .backfills
+                    .get(&date)
+                    .is_some_and(|b| b.extra_ids.iter().any(|id| id == extra_id))
+            {
+                flag_only = Some(date);
             }
         }
-        Ok(false)
+        Ok(flag_only)
     }
 
     /// True when `extra_id` was done on `date` itself.

@@ -79,6 +79,21 @@ protocol DromeCoreClient: AnyObject, Sendable {
     @discardableResult
     func closeDay(date: DayDate) throws -> DayState
     func revokeEvent(eventUuid: String) throws
+    /// Un-completes `kind` on `date` (same attribution as `dayState`). The
+    /// attest kinds (.diet/.noJunk/.photo/.extra) are idempotent, not
+    /// additive: ALL their live events attributed to the date are revoked,
+    /// so one call always flips the task to not-done; `.reading` is additive
+    /// and peels only the NEWEST entry and its pages. `.extra` matches its
+    /// id. `DayState.revocable` reports, per task, whether this would
+    /// succeed. The returned LogResult carries the fresh day state;
+    /// `dayBecameComplete` / `weekExtraBecameComplete` are always false for
+    /// a revoke (the moments then fire again, intentionally, on the log that
+    /// re-completes), and `revokedPhotoRefs` carries every revoked photo's
+    /// ref so the app layer can delete the orphaned files. Throws
+    /// `DromeError.taskNotRevocable` when nothing satisfies the task on that
+    /// date (e.g. done only via a backfill flag, or nothing logged).
+    @discardableResult
+    func revokeTask(_ kind: RevocableTask, date: DayDate) throws -> LogResult
     func backfillDays(_ days: [BackfilledDay]) throws
 
     // MARK: Projections & queries

@@ -6,8 +6,12 @@
 //  task's REAL data shape (oz vs goal, two tappable workout slots, pages +
 //  book, named diet, no-junk attest, photo check) — deliberately NOT
 //  identical checkboxes. Completed tiles read as decisively DONE (dromeDone);
-//  open tiles say exactly what's left. Tiles are dumb: state in, closures
-//  out. DayBoardView wires them to AppModel intents and navigation callbacks.
+//  open tiles say exactly what's left. The attest-style tiles (diet,
+//  no-junk, photo, weekly extra) are true toggles: tap to mark, tap again to
+//  un-mark when `DayState.revocable` says a live event backs it (backfilled
+//  done renders done, not tappable-off — the workout-slot rule). Tiles are
+//  dumb: state in, closures out. DayBoardView wires them to AppModel
+//  intents and navigation callbacks.
 //
 
 import SwiftUI
@@ -338,59 +342,96 @@ struct DayBoardReadingTile: View {
     }
 }
 
-// MARK: - Diet (inline attest with a small confirm)
+// MARK: - Attest toggle row (shared by the diet / no-junk / photo tiles)
+
+/// The one-tap attest control, a true toggle mirroring the workout slot
+/// rows: tap open to attest, tap done to un-attest — no confirmation either
+/// way, because the toggle is its own undo and un-marking is a plain
+/// correction (never shamed, never celebrated). `canRevoke` is
+/// `DayState.revocable`'s verdict: done without a live event (a backfill
+/// flag) renders done and doesn't respond, exactly like a backfilled
+/// workout slot.
+struct DayBoardAttestToggleRow: View {
+    var done: Bool
+    var canRevoke: Bool
+    var label: String
+    /// Quiet trailing hint while open ("tap to attest").
+    var openHint: String
+    /// Accessibility labels state the ACTION a tap performs, not just state.
+    var attestActionLabel: String
+    var revokeActionLabel: String
+    var doneStateLabel: String
+    var onAttest: () -> Void
+    var onRevoke: () -> Void
+
+    var body: some View {
+        Button {
+            if done {
+                if canRevoke { onRevoke() }
+            } else {
+                onAttest()
+            }
+        } label: {
+            HStack(spacing: DromeSpacing.s) {
+                Image(systemName: done ? "checkmark.circle.fill" : "circle")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(done ? Color.dromeDone : Color.dromeInk.opacity(0.3))
+                    .contentTransition(.symbolEffect(.replace))
+                    .animation(.spring(response: 0.3, dampingFraction: 0.55), value: done)
+                Text(label)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(Color.dromeInk)
+                    .lineLimit(2)
+                Spacer(minLength: 0)
+                if done {
+                    if !canRevoke {
+                        // Done without a live event = backfilled flag
+                        // (nothing to un-mark).
+                        Text("Done")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(Color.dromeDone)
+                    }
+                } else {
+                    Text(openHint)
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(Color.dromeInk.opacity(0.5))
+                }
+            }
+            .frame(minHeight: DromeSpacing.tapTarget)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(done && !canRevoke)
+        .accessibilityLabel(done ? (canRevoke ? revokeActionLabel : doneStateLabel) : attestActionLabel)
+    }
+}
+
+// MARK: - Diet (inline attest, a true toggle)
 
 struct DayBoardDietTile: View {
     var dietDescription: String
     var done: Bool
+    /// From `DayState.revocable.diet`; false + done = backfilled (renders
+    /// done, not tappable-off).
+    var canRevoke: Bool
     var onAttest: () -> Void
-
-    @State private var confirming = false
+    var onRevoke: () -> Void
 
     var body: some View {
         DayBoardTileChrome(done: done) {
-            VStack(alignment: .leading, spacing: DromeSpacing.s) {
+            VStack(alignment: .leading, spacing: DromeSpacing.xs) {
                 DayBoardTileHeader(icon: "fork.knife", title: "DIET", tint: .dromeCamel, done: done)
-                HStack(spacing: DromeSpacing.m) {
-                    VStack(alignment: .leading, spacing: DromeSpacing.xs) {
-                        Text(dietDescription.isEmpty ? "Your diet" : dietDescription)
-                            .font(.subheadline.weight(.bold))
-                            .foregroundStyle(Color.dromeInk)
-                            .lineLimit(2)
-                        if !done {
-                            Text("Attest for today")
-                                .font(.footnote.weight(.semibold))
-                                .foregroundStyle(Color.dromeInk.opacity(0.55))
-                        }
-                    }
-                    Spacer(minLength: 0)
-                    if !done {
-                        Button {
-                            confirming = true
-                        } label: {
-                            Text("I kept it")
-                                .font(.subheadline.weight(.bold))
-                                .foregroundStyle(Color.dromeSand)
-                                .padding(.horizontal, DromeSpacing.m)
-                                .frame(minHeight: DromeSpacing.tapTarget)
-                                .background(Capsule().fill(Color.dromeClay))
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Attest diet kept today")
-                        .confirmationDialog(
-                            "Diet kept today?",
-                            isPresented: $confirming,
-                            titleVisibility: .visible
-                        ) {
-                            Button("Yes — I kept my diet") { onAttest() }
-                            Button("Not yet", role: .cancel) {}
-                        } message: {
-                            Text(dietDescription.isEmpty
-                                 ? "An honest yes for the whole day."
-                                 : "“\(dietDescription)” — an honest yes for the whole day.")
-                        }
-                    }
-                }
+                DayBoardAttestToggleRow(
+                    done: done,
+                    canRevoke: canRevoke,
+                    label: dietDescription.isEmpty ? "Your diet" : dietDescription,
+                    openHint: "tap to attest",
+                    attestActionLabel: "Attest diet kept today",
+                    revokeActionLabel: "Un-mark diet for today",
+                    doneStateLabel: "Diet done",
+                    onAttest: onAttest,
+                    onRevoke: onRevoke
+                )
             }
         }
     }
@@ -398,112 +439,57 @@ struct DayBoardDietTile: View {
 
 // MARK: - No junk or alcohol (inline attest, peer of diet)
 
-/// Sixth core task, same attest interaction as the diet tile (inline button
-/// behind a small confirm). After attesting, an Undo affordance sticks
-/// around for the session and revokes exactly the attest it just made —
-/// never an event of another kind (the DietView same-session-undo pattern,
-/// held locally because AppModel has no no-junk intent yet).
+/// Sixth core task, the same toggle interaction as the diet tile. Attest
+/// and un-attest both go through AppModel intents, so failures surface via
+/// the shared intent-error alert like every other task.
 struct DayBoardNoJunkTile: View {
     var done: Bool
-    /// Performs the attest (client-direct logNoJunkOk); returns the logged
-    /// event's uuid, or nil when the write failed — the tile then says so
-    /// instead of pretending the tap landed.
-    var onAttest: () -> String?
-    /// Revokes the given event (this session's own attest).
-    var onUndo: (String) -> Void
-
-    @State private var confirming = false
-    @State private var sessionEventUuid: String?
-    @State private var attestFailed = false
+    /// From `DayState.revocable.noJunk`.
+    var canRevoke: Bool
+    var onAttest: () -> Void
+    var onRevoke: () -> Void
 
     var body: some View {
         DayBoardTileChrome(done: done) {
-            VStack(alignment: .leading, spacing: DromeSpacing.s) {
+            VStack(alignment: .leading, spacing: DromeSpacing.xs) {
                 DayBoardTileHeader(
                     icon: "nosign", title: "NO JUNK OR ALCOHOL", tint: .dromeCamel, done: done
                 )
-                HStack(spacing: DromeSpacing.m) {
-                    VStack(alignment: .leading, spacing: DromeSpacing.xs) {
-                        Text(done ? "Clean all day" : "No junk food, no alcohol")
-                            .font(.subheadline.weight(.bold))
-                            .foregroundStyle(Color.dromeInk)
-                            .lineLimit(2)
-                        if !done {
-                            Text(attestFailed ? "That didn't save — try again" : "Attest for today")
-                                .font(.footnote.weight(.semibold))
-                                .foregroundStyle(attestFailed ? Color.dromeMiss : Color.dromeInk.opacity(0.55))
-                        }
-                    }
-                    Spacer(minLength: 0)
-                    if !done {
-                        Button {
-                            confirming = true
-                        } label: {
-                            Text("I kept it clean")
-                                .font(.subheadline.weight(.bold))
-                                .foregroundStyle(Color.dromeSand)
-                                .padding(.horizontal, DromeSpacing.m)
-                                .frame(minHeight: DromeSpacing.tapTarget)
-                                .background(Capsule().fill(Color.dromeClay))
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Attest no junk or alcohol today")
-                        .confirmationDialog(
-                            "No junk or alcohol today?",
-                            isPresented: $confirming,
-                            titleVisibility: .visible
-                        ) {
-                            Button("Yes — clean all day") { attest() }
-                            Button("Not yet", role: .cancel) {}
-                        } message: {
-                            Text("An honest yes for the whole day.")
-                        }
-                    } else if let uuid = sessionEventUuid {
-                        Button {
-                            onUndo(uuid)
-                            sessionEventUuid = nil
-                        } label: {
-                            Text("Undo")
-                                .font(.footnote.weight(.bold))
-                                .foregroundStyle(Color.dromeInk.opacity(0.7))
-                                .padding(.horizontal, DromeSpacing.m)
-                                .frame(minHeight: DromeSpacing.tapTarget)
-                                .background(Capsule().strokeBorder(Color.dromeInk.opacity(0.3), lineWidth: 1))
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Undo today's no junk attest")
-                    }
-                }
+                DayBoardAttestToggleRow(
+                    done: done,
+                    canRevoke: canRevoke,
+                    label: done ? "Clean all day" : "No junk food, no alcohol",
+                    openHint: "tap to attest",
+                    attestActionLabel: "Attest no junk or alcohol today",
+                    revokeActionLabel: "Un-mark no junk or alcohol for today",
+                    doneStateLabel: "No junk or alcohol done",
+                    onAttest: onAttest,
+                    onRevoke: onRevoke
+                )
             }
-        }
-    }
-
-    private func attest() {
-        if let uuid = onAttest() {
-            sessionEventUuid = uuid
-            attestFailed = false
-        } else {
-            attestFailed = true
         }
     }
 }
 
-// MARK: - Photo (inline check-off; camera/attach flows come later)
+// MARK: - Photo (check-off toggle; header opens the camera/attach detail)
 
 struct DayBoardPhotoTile: View {
     var done: Bool
+    /// From `DayState.revocable.photo`.
+    var canRevoke: Bool
     var onOpen: () -> Void
     var onMarkDone: () -> Void
+    var onRevoke: () -> Void
 
     var body: some View {
         DayBoardTileChrome(done: done) {
-            HStack(spacing: DromeSpacing.m) {
+            VStack(alignment: .leading, spacing: DromeSpacing.xs) {
                 Button(action: onOpen) {
                     VStack(alignment: .leading, spacing: DromeSpacing.xs) {
-                        DayBoardTileHeader(icon: "camera.fill", title: "PHOTO", tint: .dromeClay, done: done)
-                        Text(done ? "Progress photo logged" : "Take today's progress photo")
-                            .font(.subheadline.weight(.bold))
-                            .foregroundStyle(Color.dromeInk)
+                        DayBoardTileHeader(
+                            icon: "camera.fill", title: "PHOTO", tint: .dromeClay,
+                            done: done, showsChevron: true
+                        )
                         Text("Stays on this device")
                             .font(.footnote.weight(.semibold))
                             .foregroundStyle(Color.dromeInk.opacity(0.5))
@@ -512,19 +498,18 @@ struct DayBoardPhotoTile: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(done ? "Photo done" : "Photo, open")
-                if !done {
-                    Button(action: onMarkDone) {
-                        Text("Mark done")
-                            .font(.subheadline.weight(.bold))
-                            .foregroundStyle(Color.dromeClay)
-                            .padding(.horizontal, DromeSpacing.m)
-                            .frame(minHeight: DromeSpacing.tapTarget)
-                            .background(Capsule().strokeBorder(Color.dromeClay, lineWidth: 1.5))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Mark photo done")
-                }
+                .accessibilityLabel("Photo, open camera and attachment")
+                DayBoardAttestToggleRow(
+                    done: done,
+                    canRevoke: canRevoke,
+                    label: done ? "Progress photo logged" : "Take today's progress photo",
+                    openHint: "tap to mark done",
+                    attestActionLabel: "Mark photo done",
+                    revokeActionLabel: "Un-mark photo for today",
+                    doneStateLabel: "Photo done",
+                    onAttest: onMarkDone,
+                    onRevoke: onRevoke
+                )
             }
         }
     }
@@ -535,10 +520,17 @@ struct DayBoardPhotoTile: View {
 struct DayBoardWeekExtraTile: View {
     var state: WeekExtraState
     var weekIndex: Int
+    /// True when a live event backs this week's done (the extra appears in
+    /// its done-date's `revocable.extraIds`); a backfill-flag done renders
+    /// done and doesn't respond — same rule as every other tile.
+    var canRevoke: Bool
     var onMarkDone: () -> Void
+    var onRevoke: () -> Void
+
+    private var done: Bool { state.doneThisWeek }
 
     var body: some View {
-        DayBoardTileChrome(done: state.doneThisWeek, secondary: true) {
+        DayBoardTileChrome(done: done, secondary: true) {
             VStack(alignment: .leading, spacing: DromeSpacing.xs) {
                 HStack(spacing: DromeSpacing.s) {
                     Text("WEEK \(weekIndex)")
@@ -554,25 +546,42 @@ struct DayBoardWeekExtraTile: View {
                         .foregroundStyle(Color.dromeInk.opacity(0.8))
                         .lineLimit(1)
                     Spacer(minLength: 0)
-                    if state.doneThisWeek {
+                    // Same toggle as the core tiles: tap marks done, tap
+                    // again un-marks (when a live event backs it).
+                    Button {
+                        if done {
+                            if canRevoke { onRevoke() }
+                        } else {
+                            onMarkDone()
+                        }
+                    } label: {
                         HStack(spacing: DromeSpacing.xs) {
-                            Image(systemName: "checkmark.circle.fill")
+                            Image(systemName: done ? "checkmark.circle.fill" : "circle")
+                                .contentTransition(.symbolEffect(.replace))
+                                .animation(.spring(response: 0.3, dampingFraction: 0.55), value: done)
                             Text("Done")
                         }
                         .font(.footnote.weight(.bold))
-                        .foregroundStyle(Color.dromeDone)
-                    } else {
-                        Button(action: onMarkDone) {
-                            Text("Done")
-                                .font(.footnote.weight(.bold))
-                                .foregroundStyle(Color.dromeInk.opacity(0.75))
-                                .padding(.horizontal, DromeSpacing.m)
-                                .frame(minHeight: DromeSpacing.tapTarget)
-                                .background(Capsule().strokeBorder(Color.dromeInk.opacity(0.3), lineWidth: 1))
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Mark \(state.extra.name) done for week \(weekIndex)")
+                        .foregroundStyle(done ? Color.dromeDone : Color.dromeInk.opacity(0.75))
+                        .padding(.horizontal, DromeSpacing.m)
+                        .frame(minHeight: DromeSpacing.tapTarget)
+                        .background(
+                            Capsule().strokeBorder(
+                                done ? Color.clear : Color.dromeInk.opacity(0.3),
+                                lineWidth: 1
+                            )
+                        )
+                        .contentShape(Capsule())
                     }
+                    .buttonStyle(.plain)
+                    .disabled(done && !canRevoke)
+                    .accessibilityLabel(
+                        done
+                            ? (canRevoke
+                                ? "Un-mark \(state.extra.name) for week \(weekIndex)"
+                                : "\(state.extra.name) done for week \(weekIndex)")
+                            : "Mark \(state.extra.name) done for week \(weekIndex)"
+                    )
                 }
                 Text("Weekly extra · doesn't gate your day")
                     .font(.caption2.weight(.medium))
@@ -602,7 +611,9 @@ struct DayBoardWeekExtraTile: View {
             WorkoutEntry(id: "w3", durationMin: 30, outdoor: false, note: "Lifting"),
         ],
         pagesRead: 12, readingDone: true, dietDone: true, noJunkDone: true, photoDone: true,
-        extrasDone: [], coreComplete: true, isClosed: false, isBackfilled: false
+        extrasDone: [],
+        revocable: RevocableTasks(diet: true, noJunk: true, photo: true, reading: true, extraIds: []),
+        coreComplete: true, isClosed: false, isBackfilled: false
     )
     let extra = ExtraDef(id: "job_application", name: "Apply to a job", cadence: .weekly, enabled: true)
 
@@ -614,19 +625,30 @@ struct DayBoardWeekExtraTile: View {
             DayBoardWorkoutsTile(day: doneDay, onOpen: {}, onLogSlot: { _ in }, onUndoEntry: { _ in })
             DayBoardReadingTile(day: openDay, book: "Atomic Habits") {}
             DayBoardReadingTile(day: doneDay, book: "Atomic Habits") {}
-            DayBoardDietTile(dietDescription: "no junk, no alcohol", done: false, onAttest: {})
-            DayBoardDietTile(dietDescription: "no junk, no alcohol", done: true, onAttest: {})
-            DayBoardNoJunkTile(done: false, onAttest: { "preview-uuid" }, onUndo: { _ in })
-            DayBoardNoJunkTile(done: true, onAttest: { nil }, onUndo: { _ in })
-            DayBoardPhotoTile(done: false, onOpen: {}, onMarkDone: {})
-            DayBoardPhotoTile(done: true, onOpen: {}, onMarkDone: {})
+            DayBoardDietTile(
+                dietDescription: "no junk, no alcohol", done: false, canRevoke: false,
+                onAttest: {}, onRevoke: {}
+            )
+            DayBoardDietTile(
+                dietDescription: "no junk, no alcohol", done: true, canRevoke: true,
+                onAttest: {}, onRevoke: {}
+            )
+            // Backfilled: done, not tappable-off.
+            DayBoardDietTile(
+                dietDescription: "no junk, no alcohol", done: true, canRevoke: false,
+                onAttest: {}, onRevoke: {}
+            )
+            DayBoardNoJunkTile(done: false, canRevoke: false, onAttest: {}, onRevoke: {})
+            DayBoardNoJunkTile(done: true, canRevoke: true, onAttest: {}, onRevoke: {})
+            DayBoardPhotoTile(done: false, canRevoke: false, onOpen: {}, onMarkDone: {}, onRevoke: {})
+            DayBoardPhotoTile(done: true, canRevoke: true, onOpen: {}, onMarkDone: {}, onRevoke: {})
             DayBoardWeekExtraTile(
                 state: WeekExtraState(extra: extra, doneThisWeek: false, doneOnDate: nil),
-                weekIndex: 2, onMarkDone: {}
+                weekIndex: 2, canRevoke: false, onMarkDone: {}, onRevoke: {}
             )
             DayBoardWeekExtraTile(
                 state: WeekExtraState(extra: extra, doneThisWeek: true, doneOnDate: "2026-07-01"),
-                weekIndex: 2, onMarkDone: {}
+                weekIndex: 2, canRevoke: true, onMarkDone: {}, onRevoke: {}
             )
         }
         .padding(DromeSpacing.m)

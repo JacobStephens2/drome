@@ -16,6 +16,8 @@ pub enum DromeError {
     ActiveChallengeExists,
     #[error("event not found: {0}")]
     EventNotFound(String),
+    #[error("task not revocable: {0}")]
+    TaskNotRevocable(String),
     #[error("unknown extra: {0}")]
     UnknownExtra(String),
     #[error("time value out of representable range")]

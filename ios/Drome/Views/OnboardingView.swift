@@ -419,7 +419,8 @@ struct OnboardingView: View {
             return "Missing: \(detail)."
         case .storage(let detail):
             return "Couldn't restore: \(detail)."
-        case .noActiveChallenge:
+        // Neither error can arise from a restore; exhaustiveness only.
+        case .noActiveChallenge, .taskNotRevocable:
             return "Couldn't restore: \(dromeError)"
         }
     }
@@ -450,6 +451,9 @@ struct OnboardingView: View {
                 return "Check your setup: \(detail)."
             case .notFound(let detail):
                 return "Missing: \(detail)."
+            // Can't arise during onboarding; exhaustiveness only.
+            case .taskNotRevocable(let detail):
+                return "Nothing to un-mark: \(detail)."
             case .storage(let detail):
                 return "Couldn't save: \(detail)."
             }

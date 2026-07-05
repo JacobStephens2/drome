@@ -135,6 +135,37 @@ enum CoreTask: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// A core task `revokeTask` can un-complete — the Swift-native mirror of the
+/// core's `RevocableTask`. Water and workouts are deliberately absent: they
+/// already revoke entry-by-entry (`WaterLogEntry.id` / `WorkoutEntry.id` +
+/// `revokeEvent`), so every task has exactly one un-complete path.
+enum RevocableTask: Sendable, Hashable {
+    case diet
+    case noJunk
+    case photo
+    case reading
+    case extra(id: String)
+}
+
+/// Per-task revocability of a day, for toggle affordances. A flag is `true`
+/// exactly when a live (non-revoked) event of that kind is attributed to the
+/// date — i.e. exactly when `revokeTask` would succeed for it. Tasks
+/// satisfied only by a backfill flag read `false` (a flag is not a peelable
+/// event). `extraIds` lists extras with a live event on the date; backfill-
+/// only extras are likewise excluded.
+struct RevocableTasks: Sendable, Hashable {
+    var diet: Bool
+    var noJunk: Bool
+    var photo: Bool
+    var reading: Bool
+    var extraIds: [String]
+
+    /// Nothing revocable (empty/backfill-only days).
+    static let none = RevocableTasks(
+        diet: false, noJunk: false, photo: false, reading: false, extraIds: []
+    )
+}
+
 struct WorkoutEntry: Identifiable, Sendable, Hashable, Codable {
     /// Event UUID (usable with `revokeEvent`).
     var id: String
@@ -169,6 +200,11 @@ struct DayState: Identifiable, Sendable, Hashable {
     var photoDone: Bool
     /// IDs of extras completed on this date (informational; extras never gate).
     var extrasDone: [String]
+    /// Which tasks `revokeTask` can currently un-complete on this date
+    /// (true = a live event of that kind exists; tasks done only via a
+    /// backfill flag read false). Defaulted for source compatibility with
+    /// existing construction sites; always set it explicitly in new code.
+    var revocable: RevocableTasks = .none
 
     /// All seven core slots done (water, both workouts, reading, diet,
     /// no-junk, photo).
@@ -235,7 +271,8 @@ extension DayState {
 struct WeekExtraState: Identifiable, Sendable, Hashable {
     var extra: ExtraDef
     var doneThisWeek: Bool
-    /// Date it was completed, when done.
+    /// Date whose completion satisfies it, when done. The core prefers a
+    /// date backed by a live event (revocable) over a backfill-flag date.
     var doneOnDate: DayDate?
 
     var id: String { extra.id }
@@ -330,9 +367,17 @@ struct LogResult: Sendable, Hashable {
     var eventUuid: String
     var dayState: DayState
     /// Fires the completion moment exactly once (core compares pre/post state).
+    /// Always false on a `revokeTask` result — but the moment fires AGAIN,
+    /// intentionally, on the log that re-completes the day (a genuine flip).
     var dayBecameComplete: Bool
     var weekExtraBecameComplete: Bool
     var chugWarning: ChugCheck?
+    /// Set only by `revokeTask(.photo, ...)`: the photoRefs of every revoked
+    /// photo event that carried one (a date can hold several live photo
+    /// events — e.g. "mark taken" then attach), so the app layer can delete
+    /// the now-orphaned image files. Defaulted for source compatibility;
+    /// empty on plain logs and non-photo revocations.
+    var revokedPhotoRefs: [String] = []
 }
 
 /// A workout as it appears on a share card: duration + outdoor flag ONLY.
@@ -404,5 +449,8 @@ enum DromeError: Error, Sendable, Equatable {
     case invalidDate(String)
     case invalidArgument(String)
     case notFound(String)
+    /// `revokeTask` found no live event satisfying the task on that date
+    /// (e.g. done only via a backfill flag, or nothing logged).
+    case taskNotRevocable(String)
     case storage(String)
 }

@@ -680,6 +680,35 @@ public protocol DromeStoreProtocol: AnyObject, Sendable {
     
     func revokeEvent(eventUuid: String, now: LocalInstant) throws 
     
+    /**
+     * Un-completes a task on `date` — attribution identical to `day_state`
+     * (cutoff, closed-day rollover, explicit `effective_date`). The attest
+     * kinds (`Diet`, `NoJunk`, `Photo`, `Extra`) are idempotent, not
+     * additive: ALL their live (non-revoked) events attributed to the date
+     * are revoked in one transaction, so a single call always flips the
+     * task to not-done (a date can honestly hold several — e.g. "mark
+     * photo taken" then attach a picture). `Reading` is additive and peels
+     * only the NEWEST entry and its pages (older entries remain); `Extra`
+     * matches its `id` against `extra_done` events.
+     *
+     * The returned `LogResult` carries the fresh `day_state`;
+     * `day_became_complete` and `week_extra_became_complete` are hard-false
+     * (a revoke only removes satisfaction — the completion/weekly moments
+     * then fire again, INTENTIONALLY, on the future log that re-completes
+     * the day/week: that log is a genuine incomplete -> complete flip).
+     * `revoked_photo_refs` carries every revoked photo event's ref so the
+     * app layer can delete the orphaned image files. `event_uuid` is the
+     * last appended `revoked` event's uuid.
+     *
+     * Errors with `TaskNotRevocable` when no live event of `kind` is
+     * attributed to `date` — e.g. the task is satisfied only by a
+     * `day_backfilled` flag (flags are not peelable events; revoke the
+     * backfill itself via `revoke_event`), or nothing was logged.
+     * `DayState.revocable` reports, per task, whether this call would
+     * succeed.
+     */
+    func revokeTask(date: String, kind: UniRevocableTask, now: LocalInstant) throws  -> UniLogResult
+    
     func setCurrentBook(title: String) throws 
     
     /**
@@ -1034,6 +1063,45 @@ open func revokeEvent(eventUuid: String, now: LocalInstant)throws   {try rustCal
         FfiConverterTypeLocalInstant_lower(now),uniffiCallStatus
     )
 }
+}
+    
+    /**
+     * Un-completes a task on `date` — attribution identical to `day_state`
+     * (cutoff, closed-day rollover, explicit `effective_date`). The attest
+     * kinds (`Diet`, `NoJunk`, `Photo`, `Extra`) are idempotent, not
+     * additive: ALL their live (non-revoked) events attributed to the date
+     * are revoked in one transaction, so a single call always flips the
+     * task to not-done (a date can honestly hold several — e.g. "mark
+     * photo taken" then attach a picture). `Reading` is additive and peels
+     * only the NEWEST entry and its pages (older entries remain); `Extra`
+     * matches its `id` against `extra_done` events.
+     *
+     * The returned `LogResult` carries the fresh `day_state`;
+     * `day_became_complete` and `week_extra_became_complete` are hard-false
+     * (a revoke only removes satisfaction — the completion/weekly moments
+     * then fire again, INTENTIONALLY, on the future log that re-completes
+     * the day/week: that log is a genuine incomplete -> complete flip).
+     * `revoked_photo_refs` carries every revoked photo event's ref so the
+     * app layer can delete the orphaned image files. `event_uuid` is the
+     * last appended `revoked` event's uuid.
+     *
+     * Errors with `TaskNotRevocable` when no live event of `kind` is
+     * attributed to `date` — e.g. the task is satisfied only by a
+     * `day_backfilled` flag (flags are not peelable events; revoke the
+     * backfill itself via `revoke_event`), or nothing was logged.
+     * `DayState.revocable` reports, per task, whether this call would
+     * succeed.
+     */
+open func revokeTask(date: String, kind: UniRevocableTask, now: LocalInstant)throws  -> UniLogResult  {
+    return try  FfiConverterTypeUniLogResult_lift(try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
+        uniffiCallStatus in
+    uniffi_drome_core_fn_method_dromestore_revoke_task(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(date),
+        FfiConverterTypeUniRevocableTask_lower(kind),
+        FfiConverterTypeLocalInstant_lower(now),uniffiCallStatus
+    )
+})
 }
     
 open func setCurrentBook(title: String)throws   {try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
@@ -1826,6 +1894,12 @@ public struct UniDayState: Equatable, Hashable {
     public var noJunkDone: Bool
     public var photoDone: Bool
     public var extrasDone: [String]
+    /**
+     * Which tasks `revoke_task` can currently un-complete on this date
+     * (true = a live event of that kind is attributed here; tasks satisfied
+     * only by a `day_backfilled` flag read false). See [`RevocableTasks`].
+     */
+    public var revocable: UniRevocableTasks
     public var coreComplete: Bool
 
     // Default memberwise initializers are never public by default, so we
@@ -1836,7 +1910,12 @@ public struct UniDayState: Equatable, Hashable {
          */dayIndex: Int64, inRange: Bool, isBackfilled: Bool, isClosed: Bool, waterMl: Int64, waterGoalMl: Int64, waterDone: Bool, workouts: [UniWorkoutEntry], outdoorWorkoutDone: Bool, secondWorkoutDone: Bool, readingPages: UInt32, readingDone: Bool, dietDone: Bool, 
         /**
          * "No Junk or Alcohol" attestation — sixth core task, a peer of diet.
-         */noJunkDone: Bool, photoDone: Bool, extrasDone: [String], coreComplete: Bool) {
+         */noJunkDone: Bool, photoDone: Bool, extrasDone: [String], 
+        /**
+         * Which tasks `revoke_task` can currently un-complete on this date
+         * (true = a live event of that kind is attributed here; tasks satisfied
+         * only by a `day_backfilled` flag read false). See [`RevocableTasks`].
+         */revocable: UniRevocableTasks, coreComplete: Bool) {
         self.date = date
         self.dayIndex = dayIndex
         self.inRange = inRange
@@ -1854,6 +1933,7 @@ public struct UniDayState: Equatable, Hashable {
         self.noJunkDone = noJunkDone
         self.photoDone = photoDone
         self.extrasDone = extrasDone
+        self.revocable = revocable
         self.coreComplete = coreComplete
     }
 
@@ -1890,6 +1970,7 @@ public struct FfiConverterTypeUniDayState: FfiConverterRustBuffer {
                 noJunkDone: FfiConverterBool.read(from: &buf), 
                 photoDone: FfiConverterBool.read(from: &buf), 
                 extrasDone: FfiConverterSequenceString.read(from: &buf), 
+                revocable: FfiConverterTypeUniRevocableTasks.read(from: &buf), 
                 coreComplete: FfiConverterBool.read(from: &buf)
         )
     }
@@ -1912,6 +1993,7 @@ public struct FfiConverterTypeUniDayState: FfiConverterRustBuffer {
         FfiConverterBool.write(value.noJunkDone, into: &buf)
         FfiConverterBool.write(value.photoDone, into: &buf)
         FfiConverterSequenceString.write(value.extrasDone, into: &buf)
+        FfiConverterTypeUniRevocableTasks.write(value.revocable, into: &buf)
         FfiConverterBool.write(value.coreComplete, into: &buf)
     }
 }
@@ -2006,6 +2088,14 @@ public struct UniLogResult: Equatable, Hashable {
      * Present (for water logs) only when the anti-chug guard fires.
      */
     public var chugWarning: UniChugCheck?
+    /**
+     * Set only by `revoke_task(_, Photo, _)`: the `photo_ref`s of every
+     * revoked photo event that carried one (a date can accumulate several
+     * live photo events — e.g. "mark taken" then "attach"), so the app
+     * layer can delete the now-orphaned image files. Always empty on plain
+     * logs and on non-photo revocations.
+     */
+    public var revokedPhotoRefs: [String]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -2015,12 +2105,20 @@ public struct UniLogResult: Equatable, Hashable {
          */dayBecameComplete: Bool, weekExtraBecameComplete: Bool, 
         /**
          * Present (for water logs) only when the anti-chug guard fires.
-         */chugWarning: UniChugCheck?) {
+         */chugWarning: UniChugCheck?, 
+        /**
+         * Set only by `revoke_task(_, Photo, _)`: the `photo_ref`s of every
+         * revoked photo event that carried one (a date can accumulate several
+         * live photo events — e.g. "mark taken" then "attach"), so the app
+         * layer can delete the now-orphaned image files. Always empty on plain
+         * logs and on non-photo revocations.
+         */revokedPhotoRefs: [String]) {
         self.eventUuid = eventUuid
         self.dayState = dayState
         self.dayBecameComplete = dayBecameComplete
         self.weekExtraBecameComplete = weekExtraBecameComplete
         self.chugWarning = chugWarning
+        self.revokedPhotoRefs = revokedPhotoRefs
     }
 
     
@@ -2043,7 +2141,8 @@ public struct FfiConverterTypeUniLogResult: FfiConverterRustBuffer {
                 dayState: FfiConverterTypeUniDayState.read(from: &buf), 
                 dayBecameComplete: FfiConverterBool.read(from: &buf), 
                 weekExtraBecameComplete: FfiConverterBool.read(from: &buf), 
-                chugWarning: FfiConverterOptionTypeUniChugCheck.read(from: &buf)
+                chugWarning: FfiConverterOptionTypeUniChugCheck.read(from: &buf), 
+                revokedPhotoRefs: FfiConverterSequenceString.read(from: &buf)
         )
     }
 
@@ -2053,6 +2152,7 @@ public struct FfiConverterTypeUniLogResult: FfiConverterRustBuffer {
         FfiConverterBool.write(value.dayBecameComplete, into: &buf)
         FfiConverterBool.write(value.weekExtraBecameComplete, into: &buf)
         FfiConverterOptionTypeUniChugCheck.write(value.chugWarning, into: &buf)
+        FfiConverterSequenceString.write(value.revokedPhotoRefs, into: &buf)
     }
 }
 
@@ -2155,6 +2255,82 @@ public func FfiConverterTypeUniNewChallenge_lift(_ buf: RustBuffer) throws -> Un
 #endif
 public func FfiConverterTypeUniNewChallenge_lower(_ value: UniNewChallenge) -> RustBuffer {
     return FfiConverterTypeUniNewChallenge.lower(value)
+}
+
+
+/**
+ * Per-task revocability of a day, for the UI's toggle affordances. A flag is
+ * `true` exactly when a live (non-revoked) event of that kind is attributed
+ * to the date — i.e. exactly when `revoke_task` would succeed for it.
+ * Tasks satisfied only by a `day_backfilled` flag read `false`: a flag is
+ * not an event of the task's kind, so there is nothing to peel (revoke the
+ * backfill event itself via `revoke_event` instead). `extra_ids` lists the
+ * extras with a live `extra_done` event on the date (sorted, deduplicated);
+ * backfill-only extras are likewise excluded.
+ */
+public struct UniRevocableTasks: Equatable, Hashable {
+    public var diet: Bool
+    public var noJunk: Bool
+    public var photo: Bool
+    public var reading: Bool
+    public var extraIds: [String]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(diet: Bool, noJunk: Bool, photo: Bool, reading: Bool, extraIds: [String]) {
+        self.diet = diet
+        self.noJunk = noJunk
+        self.photo = photo
+        self.reading = reading
+        self.extraIds = extraIds
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension UniRevocableTasks: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeUniRevocableTasks: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UniRevocableTasks {
+        return
+            try UniRevocableTasks(
+                diet: FfiConverterBool.read(from: &buf), 
+                noJunk: FfiConverterBool.read(from: &buf), 
+                photo: FfiConverterBool.read(from: &buf), 
+                reading: FfiConverterBool.read(from: &buf), 
+                extraIds: FfiConverterSequenceString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: UniRevocableTasks, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.diet, into: &buf)
+        FfiConverterBool.write(value.noJunk, into: &buf)
+        FfiConverterBool.write(value.photo, into: &buf)
+        FfiConverterBool.write(value.reading, into: &buf)
+        FfiConverterSequenceString.write(value.extraIds, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUniRevocableTasks_lift(_ buf: RustBuffer) throws -> UniRevocableTasks {
+    return try FfiConverterTypeUniRevocableTasks.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUniRevocableTasks_lower(_ value: UniRevocableTasks) -> RustBuffer {
+    return FfiConverterTypeUniRevocableTasks.lower(value)
 }
 
 
@@ -2521,15 +2697,33 @@ public struct UniWeekExtraState: Equatable, Hashable {
     public var cadence: Cadence
     public var weekIndex: UInt32
     public var done: Bool
+    /**
+     * The date ("YYYY-MM-DD") whose completion satisfies this extra —
+     * within the current week for weekly cadence, today for daily — or
+     * `None` when open. Prefers a date backed by a live `extra_done` event
+     * over a backfill-flag date, so a toggle-off UI can hand it straight to
+     * `revoke_task` (still check `DayState.revocable.extra_ids` there:
+     * flag-only completions have nothing to revoke).
+     */
+    public var doneOnDate: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(extraId: String, name: String, cadence: Cadence, weekIndex: UInt32, done: Bool) {
+    public init(extraId: String, name: String, cadence: Cadence, weekIndex: UInt32, done: Bool, 
+        /**
+         * The date ("YYYY-MM-DD") whose completion satisfies this extra —
+         * within the current week for weekly cadence, today for daily — or
+         * `None` when open. Prefers a date backed by a live `extra_done` event
+         * over a backfill-flag date, so a toggle-off UI can hand it straight to
+         * `revoke_task` (still check `DayState.revocable.extra_ids` there:
+         * flag-only completions have nothing to revoke).
+         */doneOnDate: String?) {
         self.extraId = extraId
         self.name = name
         self.cadence = cadence
         self.weekIndex = weekIndex
         self.done = done
+        self.doneOnDate = doneOnDate
     }
 
     
@@ -2552,7 +2746,8 @@ public struct FfiConverterTypeUniWeekExtraState: FfiConverterRustBuffer {
                 name: FfiConverterString.read(from: &buf), 
                 cadence: FfiConverterTypeCadence.read(from: &buf), 
                 weekIndex: FfiConverterUInt32.read(from: &buf), 
-                done: FfiConverterBool.read(from: &buf)
+                done: FfiConverterBool.read(from: &buf), 
+                doneOnDate: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -2562,6 +2757,7 @@ public struct FfiConverterTypeUniWeekExtraState: FfiConverterRustBuffer {
         FfiConverterTypeCadence.write(value.cadence, into: &buf)
         FfiConverterUInt32.write(value.weekIndex, into: &buf)
         FfiConverterBool.write(value.done, into: &buf)
+        FfiConverterOptionString.write(value.doneOnDate, into: &buf)
     }
 }
 
@@ -2801,6 +2997,8 @@ enum UniDromeError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError 
     
     case EventNotFound(message: String)
     
+    case TaskNotRevocable(message: String)
+    
     case UnknownExtra(message: String)
     
     case TimeOutOfRange(message: String)
@@ -2864,15 +3062,19 @@ public struct FfiConverterTypeUniDromeError: FfiConverterRustBuffer {
             message: try FfiConverterString.read(from: &buf)
         )
         
-        case 8: return .UnknownExtra(
+        case 8: return .TaskNotRevocable(
             message: try FfiConverterString.read(from: &buf)
         )
         
-        case 9: return .TimeOutOfRange(
+        case 9: return .UnknownExtra(
             message: try FfiConverterString.read(from: &buf)
         )
         
-        case 10: return .Internal(
+        case 10: return .TimeOutOfRange(
+            message: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 11: return .Internal(
             message: try FfiConverterString.read(from: &buf)
         )
         
@@ -2901,12 +3103,14 @@ public struct FfiConverterTypeUniDromeError: FfiConverterRustBuffer {
             writeInt(&buf, Int32(6))
         case .EventNotFound(_ /* message is ignored*/):
             writeInt(&buf, Int32(7))
-        case .UnknownExtra(_ /* message is ignored*/):
+        case .TaskNotRevocable(_ /* message is ignored*/):
             writeInt(&buf, Int32(8))
-        case .TimeOutOfRange(_ /* message is ignored*/):
+        case .UnknownExtra(_ /* message is ignored*/):
             writeInt(&buf, Int32(9))
-        case .Internal(_ /* message is ignored*/):
+        case .TimeOutOfRange(_ /* message is ignored*/):
             writeInt(&buf, Int32(10))
+        case .Internal(_ /* message is ignored*/):
+            writeInt(&buf, Int32(11))
 
         
         }
@@ -2927,6 +3131,101 @@ public func FfiConverterTypeUniDromeError_lift(_ buf: RustBuffer) throws -> UniD
 public func FfiConverterTypeUniDromeError_lower(_ value: UniDromeError) -> RustBuffer {
     return FfiConverterTypeUniDromeError.lower(value)
 }
+
+
+/**
+ * A core task `revoke_task` can un-complete. Workouts and water are
+ * deliberately NOT here: they already revoke entry-by-entry
+ * (`WorkoutEntry.event_uuid` / the `water_log` ledger + `revoke_event`).
+ */
+
+public enum UniRevocableTask: Equatable, Hashable {
+    
+    case diet
+    case noJunk
+    case photo
+    case reading
+    case extra(id: String
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension UniRevocableTask: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeUniRevocableTask: FfiConverterRustBuffer {
+    typealias SwiftType = UniRevocableTask
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UniRevocableTask {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .diet
+        
+        case 2: return .noJunk
+        
+        case 3: return .photo
+        
+        case 4: return .reading
+        
+        case 5: return .extra(id: try FfiConverterString.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: UniRevocableTask, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .diet:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .noJunk:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .photo:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .reading:
+            writeInt(&buf, Int32(4))
+        
+        
+        case let .extra(id):
+            writeInt(&buf, Int32(5))
+            FfiConverterString.write(id, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUniRevocableTask_lift(_ buf: RustBuffer) throws -> UniRevocableTask {
+    return try FfiConverterTypeUniRevocableTask.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUniRevocableTask_lower(_ value: UniRevocableTask) -> RustBuffer {
+    return FfiConverterTypeUniRevocableTask.lower(value)
+}
+
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -3325,6 +3624,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_drome_core_checksum_method_dromestore_revoke_event() != 16754) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_drome_core_checksum_method_dromestore_revoke_task() != 21754) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_drome_core_checksum_method_dromestore_set_current_book() != 43319) {

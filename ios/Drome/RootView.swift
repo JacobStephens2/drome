@@ -258,7 +258,10 @@ private struct IntentErrorAlert: ViewModifier {
 
 /// Compact "log for yesterday" sheet: the six task tiles (workout tile =
 /// two slots) as one-tap buttons writing with `effectiveDate` = yesterday,
-/// plus yesterday's removable pour log (corrections cut both ways). This
+/// plus yesterday's removable pour log (corrections cut both ways). Done
+/// rows toggle off too: an "Un-mark" appears whenever yesterday's
+/// `DayState.revocable` (or a live workout slot entry) says a live event
+/// backs the done — backfill-flag days render done, not tappable-off. This
 /// edits yesterday only — the header says so plainly.
 private struct YesterdayLogSheet: View {
     @Environment(AppModel.self) private var appModel
@@ -266,11 +269,6 @@ private struct YesterdayLogSheet: View {
 
     @State private var yesterdayDate: DayDate?
     @State private var day: DayState?
-
-    /// The no-junk row goes client-direct (no AppModel intent yet), so a
-    /// failed write can't reach the shared IntentErrorAlert; this drives the
-    /// same inline "didn't save" line DayBoardNoJunkTile shows.
-    @State private var noJunkSaveFailed = false
 
     /// Yesterday's non-revoked pours — live logs from the day itself plus
     /// any "backdated" adds made from this sheet. Yesterday stays editable
@@ -292,34 +290,49 @@ private struct YesterdayLogSheet: View {
                     taskRow(
                         done: day.outdoorWorkoutDone,
                         title: "Outdoor workout",
-                        buttonLabel: "Log 45 min"
+                        buttonLabel: "Log 45 min",
+                        // Un-marking revokes exactly the entry the shared
+                        // slot mapping displays (Models.swift) — never a
+                        // hidden one. Flag-only (backfilled) slots have no
+                        // entry and render plain done.
+                        unmark: unmarkAction(for: day.outdoorSlotEntry)
                     ) { log { appModel.logWorkout(durationMin: 45, outdoor: true, effectiveDate: $0) } }
                     taskRow(
                         done: day.secondWorkoutDone,
                         title: "Second workout",
-                        buttonLabel: "Log 30 min"
+                        buttonLabel: "Log 30 min",
+                        unmark: unmarkAction(for: day.secondSlotEntry)
                     ) { log { appModel.logWorkout(durationMin: 30, outdoor: false, effectiveDate: $0) } }
                     taskRow(
                         done: day.readingDone,
                         title: "Reading",
                         detail: "\(day.pagesRead) of 10 pages",
-                        buttonLabel: "+10 pages"
+                        buttonLabel: "+10 pages",
+                        // Peels the newest entry; the row may honestly stay
+                        // done until enough entries are peeled — so the
+                        // label promises an entry undo (matching
+                        // ReadingView), never a full un-mark.
+                        unmark: day.revocable.reading ? { unmark(.reading) } : nil,
+                        unmarkLabel: "Undo last entry",
+                        unmarkAccessibilityLabel: "Undo yesterday's last reading entry"
                     ) { log { appModel.logReading(pages: 10, effectiveDate: $0) } }
                     taskRow(
                         done: day.dietDone,
                         title: "Diet",
-                        buttonLabel: "Kept it"
+                        buttonLabel: "Kept it",
+                        unmark: day.revocable.diet ? { unmark(.diet) } : nil
                     ) { log { appModel.logDietOk(effectiveDate: $0) } }
                     taskRow(
                         done: day.noJunkDone,
                         title: "No junk or alcohol",
-                        errorText: noJunkSaveFailed ? "That didn't save — try again" : nil,
-                        buttonLabel: "Clean day"
-                    ) { log { logNoJunkOk(for: $0) } }
+                        buttonLabel: "Clean day",
+                        unmark: day.revocable.noJunk ? { unmark(.noJunk) } : nil
+                    ) { log { appModel.logNoJunkOk(effectiveDate: $0) } }
                     taskRow(
                         done: day.photoDone,
                         title: "Progress photo",
-                        buttonLabel: "Taken"
+                        buttonLabel: "Taken",
+                        unmark: day.revocable.photo ? { unmark(.photo) } : nil
                     ) { log { appModel.logPhotoDone(effectiveDate: $0) } }
                 }
             } else {
@@ -394,14 +407,25 @@ private struct YesterdayLogSheet: View {
         done: Bool,
         title: String,
         detail: String? = nil,
-        errorText: String? = nil,
         buttonLabel: String,
+        /// Non-nil exactly when a live event backs the done (yesterday's
+        /// `DayState.revocable`, or a displayed workout slot entry) — the
+        /// row then toggles off. Nil + done = backfilled flag: renders done,
+        /// not tappable-off.
+        unmark: (() -> Void)? = nil,
+        /// Visible label for the unmark control. The default suits the
+        /// attest tasks, whose revoke genuinely un-marks; a task whose
+        /// revoke only peels one entry (reading) MUST say so instead.
+        unmarkLabel: String = "Un-mark",
+        unmarkAccessibilityLabel: String? = nil,
         action: @escaping () -> Void
     ) -> some View {
         HStack(spacing: DromeSpacing.m) {
             Image(systemName: done ? "checkmark.circle.fill" : "circle")
                 .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(done ? Color.dromeDone : Color.dromeInk.opacity(0.3))
+                .contentTransition(.symbolEffect(.replace))
+                .animation(.spring(response: 0.3, dampingFraction: 0.55), value: done)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.system(size: 15, weight: .bold))
@@ -412,19 +436,29 @@ private struct YesterdayLogSheet: View {
                         .monospacedDigit()
                         .foregroundStyle(Color.dromeInk.opacity(0.55))
                 }
-                // Quiet inline failure line (DayBoardNoJunkTile's pattern) —
-                // a failed write must never look like a dead button.
-                if let errorText, !done {
-                    Text(errorText)
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(Color.dromeMiss)
-                }
             }
             Spacer(minLength: 0)
             if done {
-                Text("Done")
-                    .font(.footnote.weight(.bold))
-                    .foregroundStyle(Color.dromeDone)
+                if let unmark {
+                    // A plain correction — same quiet weight as the log
+                    // button, no confirmation (re-logging is one tap away).
+                    Button(action: unmark) {
+                        Text(unmarkLabel)
+                            .font(.footnote.weight(.bold))
+                            .foregroundStyle(Color.dromeInk.opacity(0.7))
+                            .padding(.horizontal, DromeSpacing.m)
+                            .frame(minHeight: DromeSpacing.tapTarget)
+                            .background(Capsule().strokeBorder(Color.dromeInk.opacity(0.3), lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(
+                        unmarkAccessibilityLabel ?? "Un-mark \(title.lowercased()), for yesterday"
+                    )
+                } else {
+                    Text("Done")
+                        .font(.footnote.weight(.bold))
+                        .foregroundStyle(Color.dromeDone)
+                }
             } else if yesterdayDate != nil {
                 Button(action: action) {
                     Text(buttonLabel)
@@ -457,21 +491,22 @@ private struct YesterdayLogSheet: View {
         reload()
     }
 
-    /// Client-direct no-junk attest (flagged for the review pass): AppModel —
-    /// owned by a concurrent stage — has no logNoJunkOk intent yet, so this
-    /// calls the SAME shared client and hands the result back through
-    /// `noteExternalLog`, PhotoView's photoRef pattern (a retroactive log can
-    /// still flip yesterday complete and must fire its completion moment).
-    /// On failure the row says so inline (`noJunkSaveFailed`, matching
-    /// DayBoardNoJunkTile); `lastErrorMessage` is private(set) and
-    /// unreachable from here.
-    private func logNoJunkOk(for date: DayDate) {
-        guard let result = try? appModel.client.logNoJunkOk(effectiveDate: date) else {
-            noJunkSaveFailed = true
-            return
+    /// Toggles a task off for yesterday (revokes its newest live event).
+    private func unmark(_ kind: RevocableTask) {
+        guard let date = yesterdayDate else { return }
+        appModel.revokeTask(kind, date: date)
+        reload()
+    }
+
+    /// Un-mark action for a workout slot: revokes exactly the entry the
+    /// shared slot mapping displays, or nil when nothing live backs the slot
+    /// (unfilled, or a backfill flag).
+    private func unmarkAction(for entry: WorkoutEntry?) -> (() -> Void)? {
+        guard let entry else { return nil }
+        return {
+            appModel.revoke(eventUuid: entry.id)
+            reload()
         }
-        noJunkSaveFailed = false
-        appModel.noteExternalLog(result)
     }
 
     private func load() {

@@ -87,6 +87,7 @@ final class LiveDromeCore: DromeCoreClient, @unchecked Sendable {
         case .NoActiveChallenge: return DromeError.noActiveChallenge
         case .ActiveChallengeExists: return DromeError.challengeAlreadyActive
         case .EventNotFound(let m): return DromeError.notFound(m)
+        case .TaskNotRevocable(let m): return DromeError.taskNotRevocable(m)
         case .UnknownExtra(let m): return DromeError.notFound(m)
         }
     }
@@ -242,6 +243,15 @@ final class LiveDromeCore: DromeCoreClient, @unchecked Sendable {
         try call { try store.revokeEvent(eventUuid: eventUuid, now: Self.nowInstant()) }
     }
 
+    @discardableResult
+    func revokeTask(_ kind: RevocableTask, date: DayDate) throws -> LogResult {
+        try call {
+            Self.logResult(try store.revokeTask(
+                date: date, kind: Self.uniRevocableTask(kind), now: Self.nowInstant()
+            ))
+        }
+    }
+
     func backfillDays(_ days: [BackfilledDay]) throws {
         try call { try store.backfillDays(days: days.map(Self.uniBackfilledDay), now: Self.nowInstant()) }
     }
@@ -393,6 +403,26 @@ private extension LiveDromeCore {
         )
     }
 
+    static func uniRevocableTask(_ t: RevocableTask) -> UniRevocableTask {
+        switch t {
+        case .diet: return .diet
+        case .noJunk: return .noJunk
+        case .photo: return .photo
+        case .reading: return .reading
+        case .extra(let id): return .extra(id: id)
+        }
+    }
+
+    static func revocableTasks(_ r: UniRevocableTasks) -> RevocableTasks {
+        RevocableTasks(
+            diet: r.diet,
+            noJunk: r.noJunk,
+            photo: r.photo,
+            reading: r.reading,
+            extraIds: r.extraIds
+        )
+    }
+
     static func workoutEntry(_ w: UniWorkoutEntry) -> WorkoutEntry {
         // Models drops startedAt; the event UUID becomes the Identifiable id.
         WorkoutEntry(id: w.eventUuid, durationMin: Int(w.durationMin), outdoor: w.outdoor, note: w.note)
@@ -415,6 +445,7 @@ private extension LiveDromeCore {
             noJunkDone: d.noJunkDone,
             photoDone: d.photoDone,
             extrasDone: d.extrasDone,
+            revocable: revocableTasks(d.revocable),
             coreComplete: d.coreComplete,
             isClosed: d.isClosed,
             isBackfilled: d.isBackfilled
@@ -453,17 +484,17 @@ private extension LiveDromeCore {
             dayState: dayState(r.dayState),
             dayBecameComplete: r.dayBecameComplete,
             weekExtraBecameComplete: r.weekExtraBecameComplete,
-            chugWarning: r.chugWarning.map(chugCheck)
+            chugWarning: r.chugWarning.map(chugCheck),
+            revokedPhotoRefs: r.revokedPhotoRefs
         )
     }
 
     static func weekExtraState(_ w: UniWeekExtraState) -> WeekExtraState {
-        // today() only reports enabled extras, hence enabled: true. The core
-        // does not report the completion date; doneOnDate stays nil with Live.
+        // today() only reports enabled extras, hence enabled: true.
         WeekExtraState(
             extra: ExtraDef(id: w.extraId, name: w.name, cadence: cadence(w.cadence), enabled: true),
             doneThisWeek: w.done,
-            doneOnDate: nil
+            doneOnDate: w.doneOnDate
         )
     }
 

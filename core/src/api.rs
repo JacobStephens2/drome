@@ -116,6 +116,48 @@ pub struct BackfilledDay {
     pub extra_ids: Vec<String>,
 }
 
+/// A core task `revoke_task` can un-complete. Workouts and water are
+/// deliberately NOT here: they already revoke entry-by-entry
+/// (`WorkoutEntry.event_uuid` / the `water_log` ledger + `revoke_event`).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum RevocableTask {
+    Diet,
+    NoJunk,
+    Photo,
+    Reading,
+    Extra { id: String },
+}
+
+impl RevocableTask {
+    /// Human-readable name for error messages.
+    fn describe(&self) -> String {
+        match self {
+            RevocableTask::Diet => "diet".into(),
+            RevocableTask::NoJunk => "no-junk".into(),
+            RevocableTask::Photo => "photo".into(),
+            RevocableTask::Reading => "reading".into(),
+            RevocableTask::Extra { id } => format!("extra {id:?}"),
+        }
+    }
+}
+
+/// Per-task revocability of a day, for the UI's toggle affordances. A flag is
+/// `true` exactly when a live (non-revoked) event of that kind is attributed
+/// to the date — i.e. exactly when `revoke_task` would succeed for it.
+/// Tasks satisfied only by a `day_backfilled` flag read `false`: a flag is
+/// not an event of the task's kind, so there is nothing to peel (revoke the
+/// backfill event itself via `revoke_event` instead). `extra_ids` lists the
+/// extras with a live `extra_done` event on the date (sorted, deduplicated);
+/// backfill-only extras are likewise excluded.
+#[derive(Debug, Clone, Default, PartialEq, Eq, uniffi::Record, Serialize)]
+pub struct RevocableTasks {
+    pub diet: bool,
+    pub no_junk: bool,
+    pub photo: bool,
+    pub reading: bool,
+    pub extra_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record, Serialize)]
 pub struct WorkoutEntry {
     pub event_uuid: String,
@@ -146,6 +188,10 @@ pub struct DayState {
     pub no_junk_done: bool,
     pub photo_done: bool,
     pub extras_done: Vec<String>,
+    /// Which tasks `revoke_task` can currently un-complete on this date
+    /// (true = a live event of that kind is attributed here; tasks satisfied
+    /// only by a `day_backfilled` flag read false). See [`RevocableTasks`].
+    pub revocable: RevocableTasks,
     pub core_complete: bool,
 }
 
@@ -156,6 +202,13 @@ pub struct WeekExtraState {
     pub cadence: Cadence,
     pub week_index: u32,
     pub done: bool,
+    /// The date ("YYYY-MM-DD") whose completion satisfies this extra —
+    /// within the current week for weekly cadence, today for daily — or
+    /// `None` when open. Prefers a date backed by a live `extra_done` event
+    /// over a backfill-flag date, so a toggle-off UI can hand it straight to
+    /// `revoke_task` (still check `DayState.revocable.extra_ids` there:
+    /// flag-only completions have nothing to revoke).
+    pub done_on_date: Option<String>,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -252,6 +305,12 @@ pub struct LogResult {
     pub week_extra_became_complete: bool,
     /// Present (for water logs) only when the anti-chug guard fires.
     pub chug_warning: Option<ChugCheck>,
+    /// Set only by `revoke_task(_, Photo, _)`: the `photo_ref`s of every
+    /// revoked photo event that carried one (a date can accumulate several
+    /// live photo events — e.g. "mark taken" then "attach"), so the app
+    /// layer can delete the now-orphaned image files. Always empty on plain
+    /// logs and on non-photo revocations.
+    pub revoked_photo_refs: Vec<String>,
 }
 
 #[derive(uniffi::Object)]
@@ -723,6 +782,119 @@ impl DromeStore {
         Ok(())
     }
 
+    /// Un-completes a task on `date` — attribution identical to `day_state`
+    /// (cutoff, closed-day rollover, explicit `effective_date`). The attest
+    /// kinds (`Diet`, `NoJunk`, `Photo`, `Extra`) are idempotent, not
+    /// additive: ALL their live (non-revoked) events attributed to the date
+    /// are revoked in one transaction, so a single call always flips the
+    /// task to not-done (a date can honestly hold several — e.g. "mark
+    /// photo taken" then attach a picture). `Reading` is additive and peels
+    /// only the NEWEST entry and its pages (older entries remain); `Extra`
+    /// matches its `id` against `extra_done` events.
+    ///
+    /// The returned `LogResult` carries the fresh `day_state`;
+    /// `day_became_complete` and `week_extra_became_complete` are hard-false
+    /// (a revoke only removes satisfaction — the completion/weekly moments
+    /// then fire again, INTENTIONALLY, on the future log that re-completes
+    /// the day/week: that log is a genuine incomplete -> complete flip).
+    /// `revoked_photo_refs` carries every revoked photo event's ref so the
+    /// app layer can delete the orphaned image files. `event_uuid` is the
+    /// last appended `revoked` event's uuid.
+    ///
+    /// Errors with `TaskNotRevocable` when no live event of `kind` is
+    /// attributed to `date` — e.g. the task is satisfied only by a
+    /// `day_backfilled` flag (flags are not peelable events; revoke the
+    /// backfill itself via `revoke_event`), or nothing was logged.
+    /// `DayState.revocable` reports, per task, whether this call would
+    /// succeed.
+    pub fn revoke_task(
+        &self,
+        date: String,
+        kind: RevocableTask,
+        now: LocalInstant,
+    ) -> Result<LogResult, DromeError> {
+        let parsed = time::parse_date(&date)?;
+        now.wall_secs()?;
+        let mut conn = self.lock()?;
+        let loaded = load(&conn)?;
+        let proj = &loaded.projection;
+
+        // `loaded.events` is (logged_at_epoch, id) ascending; the reverse
+        // walk collects targets newest-first. Payloads are inspected only
+        // AFTER the liveness + kind + date filters, so a malformed payload
+        // on some other date's event can never poison this revocation.
+        let mut targets: Vec<&str> = Vec::new();
+        let mut revoked_photo_refs: Vec<String> = Vec::new();
+        for e in loaded.events.iter().rev() {
+            if proj.is_revoked(&e.uuid) {
+                continue;
+            }
+            let kind_matches = matches!(
+                (&kind, e.kind.as_str()),
+                (RevocableTask::Diet, events::KIND_DIET_OK)
+                    | (RevocableTask::NoJunk, events::KIND_NO_JUNK_OK)
+                    | (RevocableTask::Reading, events::KIND_READING)
+                    | (RevocableTask::Photo, events::KIND_PHOTO_DONE)
+                    | (RevocableTask::Extra { .. }, events::KIND_EXTRA_DONE)
+            );
+            if !kind_matches || proj.attribute(e.logged_at, e.effective_date.as_deref())? != parsed
+            {
+                continue;
+            }
+            match &kind {
+                RevocableTask::Extra { id } => {
+                    if &e.payload_as::<events::ExtraDonePayload>()?.extra_id != id {
+                        continue;
+                    }
+                }
+                RevocableTask::Photo => {
+                    if let Some(r) = e.payload_as::<events::PhotoDonePayload>()?.photo_ref {
+                        revoked_photo_refs.push(r);
+                    }
+                }
+                _ => {}
+            }
+            targets.push(&e.uuid);
+            if matches!(kind, RevocableTask::Reading) {
+                break; // Reading peels one entry per call.
+            }
+        }
+        if targets.is_empty() {
+            return Err(DromeError::TaskNotRevocable(format!(
+                "no live {} event attributed to {date} (backfill flags and empty days \
+                 have nothing to revoke)",
+                kind.describe()
+            )));
+        }
+
+        // One transaction: the task flips off atomically, never half-peeled.
+        let tx = conn.transaction()?;
+        let mut event_uuid = String::new();
+        for target_uuid in &targets {
+            event_uuid = insert_event(
+                &tx,
+                &loaded.challenge.id,
+                now,
+                None,
+                events::KIND_REVOKED,
+                &json!({ "event_uuid": target_uuid }),
+            )?;
+        }
+        tx.commit()?;
+
+        let post = load(&conn)?.projection;
+        Ok(LogResult {
+            event_uuid,
+            day_state: post.day_state(parsed),
+            // Hard-false by construction: a revoke can only remove
+            // satisfaction, and the moments must never fire from an undo.
+            day_became_complete: false,
+            week_extra_became_complete: false,
+            chug_warning: None,
+            revoked_photo_refs,
+        })
+    }
+
     /// Inserts one `day_backfilled` event per day, all in a single transaction.
     pub fn backfill_days(
         &self,
@@ -842,9 +1014,15 @@ impl DromeStore {
             if !extra.enabled {
                 continue;
             }
-            let done = match extra.cadence {
-                Cadence::Weekly => proj.week_extra_done(&extra.id, week_idx)?,
-                Cadence::Daily => proj.extra_done_on(&extra.id, date),
+            let (done, done_on_date) = match extra.cadence {
+                Cadence::Weekly => {
+                    let on = proj.week_extra_done_on(&extra.id, week_idx)?;
+                    (on.is_some(), on.map(time::format_date))
+                }
+                Cadence::Daily => {
+                    let done = proj.extra_done_on(&extra.id, date);
+                    (done, done.then(|| day.date.clone()))
+                }
             };
             week_extras.push(WeekExtraState {
                 extra_id: extra.id,
@@ -852,6 +1030,7 @@ impl DromeStore {
                 cadence: extra.cadence,
                 week_index: clamp_u32(week_idx, 1),
                 done,
+                done_on_date,
             });
         }
 
@@ -1158,6 +1337,8 @@ impl DromeStore {
             day_became_complete,
             week_extra_became_complete,
             chug_warning,
+            // Only revoke_task(Photo) ever fills this.
+            revoked_photo_refs: Vec::new(),
         })
     }
 }

@@ -2,12 +2,15 @@
 //  PhotoView.swift
 //  Drome
 //
-//  Progress-photo tile detail: today's done/not state, a big check-off
-//  button, and an optional photo attachment via PhotosPicker. Attached
-//  images are saved into the app's private container (Application
+//  Progress-photo tile detail: today's done/not state, a check-off that is
+//  a true toggle (un-checking revokes ALL of today's live photo events —
+//  "mark taken" plus an attach may both have logged one — and deletes
+//  today's file: a plain correction), and an optional photo attachment via
+//  PhotosPicker. Attached images are saved through PhotoStore (Application
 //  Support/photos/YYYY-MM-DD.jpg) and only the filename travels as the
-//  photoRef. Photos stay on this device and never appear in share cards.
-//  No gallery/browsing UI (fast-follow).
+//  photoRef; revoked photos' files are deleted centrally by
+//  AppModel.revokeTask. Photos stay on this device and never appear in
+//  share cards. No gallery/browsing UI (fast-follow).
 //
 
 import PhotosUI
@@ -31,6 +34,10 @@ struct PhotoView: View {
     }
 
     private var photoDone: Bool { appModel.todayState?.day.photoDone ?? false }
+
+    /// A live photo event backs today's done — un-checking would succeed.
+    /// False + done = backfilled flag (nothing to un-check).
+    private var photoRevocable: Bool { appModel.todayState?.day.revocable.photo ?? false }
 
     var body: some View {
         ScrollView {
@@ -60,6 +67,19 @@ struct PhotoView: View {
                         Text("Mark photo taken")
                     }
                     .buttonStyle(PhotoPrimaryButtonStyle())
+                } else if photoRevocable {
+                    // The check-off's other half: a quiet un-check (revokes
+                    // today's live photo events; AppModel deletes the files).
+                    Button {
+                        appModel.revokeTask(.photo)
+                    } label: {
+                        Text("Un-mark today's photo")
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundStyle(Color.dromeInk.opacity(0.7))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .dromeTapTarget()
+                    .accessibilityLabel("Un-mark photo for today")
                 }
 
                 PhotosPicker(selection: $pickerItem, matching: .images) {
@@ -133,10 +153,10 @@ struct PhotoView: View {
             attachFailed = true
             return
         }
-        let filename = "\(date).jpg"
+        let filename = PhotoStore.ref(for: date)
         let fileURL: URL
         do {
-            let directory = try Self.photosDirectory()
+            let directory = try PhotoStore.directory()
             fileURL = directory.appendingPathComponent(filename)
             try jpeg.write(to: fileURL, options: .atomic)
         } catch {
@@ -161,11 +181,12 @@ struct PhotoView: View {
 
     /// Loads today's photo when the task is done; when it is NOT done (never
     /// logged, log failed, or the event was revoked) any file for today is an
-    /// orphan — delete it and show nothing.
+    /// orphan — delete it and show nothing. (AppModel.revokeTask already
+    /// deletes a revoked event's ref'd file; this also catches plain
+    /// `revokeEvent` paths and files whose log never landed.)
     private func syncThumbnail() {
         guard let date = appModel.todayState?.date,
-              let directory = try? Self.photosDirectory() else { return }
-        let url = directory.appendingPathComponent("\(date).jpg")
+              let url = PhotoStore.url(forRef: PhotoStore.ref(for: date)) else { return }
         guard photoDone else {
             try? FileManager.default.removeItem(at: url)
             thumbnail = nil
@@ -176,19 +197,6 @@ struct PhotoView: View {
            let image = UIImage(contentsOfFile: url.path) {
             thumbnail = image
         }
-    }
-
-    /// App-private photo store: Application Support/photos/.
-    private static func photosDirectory() throws -> URL {
-        let support = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        let directory = support.appendingPathComponent("photos", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory
     }
 }
 

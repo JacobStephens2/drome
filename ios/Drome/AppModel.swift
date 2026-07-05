@@ -90,11 +90,16 @@ final class AppModel {
     /// Most recent today-attributed water event logged through this model.
     /// WaterView's "Undo last" revokes exactly this — never an arbitrary
     /// event of another kind. Cleared when that event is revoked.
+    /// (Water is the one task without a `revokeTask` kind: it corrects via
+    /// this targeted undo, the pour ledger, and drag-down adjustments.)
     private(set) var lastWaterEventUuid: String?
 
-    /// Most recent today-attributed diet attest, for DietView's immediate
-    /// undo. Same targeted contract as `lastWaterEventUuid`.
-    private(set) var lastDietEventUuid: String?
+    /// Where each done weekly extra's live event sits (extra id → the date
+    /// it was completed on), for the extra tile's toggle-off. An id appears
+    /// exactly when `revokeTask(.extra(id:), date:)` would succeed there —
+    /// extras satisfied only by a backfill flag never appear. Refreshed with
+    /// the other projections.
+    private(set) var weekExtraRevocableDates: [String: DayDate] = [:]
 
     /// The core's per-log water cap; retroactive "met goal" adds are chunked
     /// to stay under it, and WaterView clamps its drag-pour preview to it
@@ -113,7 +118,7 @@ final class AppModel {
                 presets = []
                 yesterdayState = nil
                 lastWaterEventUuid = nil
-                lastDietEventUuid = nil
+                weekExtraRevocableDates = [:]
                 lastErrorMessage = nil
                 return
             }
@@ -127,9 +132,29 @@ final class AppModel {
             } else {
                 yesterdayState = nil
             }
+            refreshWeekExtraRevocability()
         } catch {
             lastErrorMessage = "\(error)"
         }
+    }
+
+    /// Weekly-extra toggle-off support: per done extra, find the date its
+    /// live event sits on. Best-effort like yesterday — a lookup failure just
+    /// leaves that extra's toggle-off unavailable (renders plain done).
+    private func refreshWeekExtraRevocability() {
+        var dates: [String: DayDate] = [:]
+        if let today = todayState {
+            for extra in today.weekExtras where extra.doneThisWeek {
+                guard let doneDate = extra.doneOnDate else { continue }
+                let revocable = doneDate == today.date
+                    ? today.day.revocable
+                    : (try? client.dayState(date: doneDate))?.revocable
+                if revocable?.extraIds.contains(extra.id) == true {
+                    dates[extra.id] = doneDate
+                }
+            }
+        }
+        weekExtraRevocableDates = dates
     }
 
     // MARK: - Water intents (anti-chug flow)
@@ -245,13 +270,12 @@ final class AppModel {
     }
 
     func logDietOk(effectiveDate: DayDate? = nil) {
-        do {
-            let result = try client.logDietOk(effectiveDate: effectiveDate)
-            if effectiveDate == nil { lastDietEventUuid = result.eventUuid }
-            handle(result)
-        } catch {
-            lastErrorMessage = "\(error)"
-        }
+        run { try client.logDietOk(effectiveDate: effectiveDate) }
+    }
+
+    /// "No Junk or Alcohol" attestation — the sixth core task, a peer of diet.
+    func logNoJunkOk(effectiveDate: DayDate? = nil) {
+        run { try client.logNoJunkOk(effectiveDate: effectiveDate) }
     }
 
     func logPhotoDone(effectiveDate: DayDate? = nil) {
@@ -298,14 +322,38 @@ final class AppModel {
     }
 
     /// Revokes a specific event (undo primitive; projections skip revoked
-    /// events). WorkoutView's swipe-to-undo lands here.
+    /// events). WorkoutView's swipe-to-undo and the workout-slot toggles
+    /// land here; the attest-style tasks go through `revokeTask` instead.
     func revoke(eventUuid: String) {
         do {
             try client.revokeEvent(eventUuid: eventUuid)
             if lastWaterEventUuid == eventUuid { lastWaterEventUuid = nil }
-            if lastDietEventUuid == eventUuid { lastDietEventUuid = nil }
             refresh()
             WidgetCenter.shared.reloadAllTimelines()
+        } catch {
+            lastErrorMessage = "\(error)"
+        }
+    }
+
+    /// Un-completes a task (diet / no-junk / photo / reading / weekly extra)
+    /// on `date` — nil means today: the ONE toggle-off behind every attest
+    /// surface. Attest kinds revoke ALL their live events on the date (the
+    /// task genuinely flips off even when e.g. "mark taken" and an attach
+    /// both logged photo events); reading peels its newest entry. Offer it
+    /// only where `DayState.revocable` says it would succeed (backfill-flag
+    /// days have nothing to revoke). Un-marking is a plain correction: the
+    /// result's moment flags are hard-false, and the completion moment fires
+    /// again, intentionally, on the log that re-completes the day. Revoked
+    /// photos' JPEGs are deleted here (the one cleanup point), so no
+    /// orphaned file can masquerade as that day's photo.
+    func revokeTask(_ kind: RevocableTask, date: DayDate? = nil) {
+        guard let target = date ?? todayState?.date else { return }
+        do {
+            let result = try client.revokeTask(kind, date: target)
+            for ref in result.revokedPhotoRefs {
+                PhotoStore.deleteFile(forRef: ref)
+            }
+            handle(result)
         } catch {
             lastErrorMessage = "\(error)"
         }
@@ -316,12 +364,6 @@ final class AppModel {
     /// a workout/diet/photo log the user never meant to touch.)
     func undoLastWater() {
         guard let uuid = lastWaterEventUuid else { return }
-        revoke(eventUuid: uuid)
-    }
-
-    /// Revokes exactly the last diet attest this model logged today, if any.
-    func undoLastDiet() {
-        guard let uuid = lastDietEventUuid else { return }
         revoke(eventUuid: uuid)
     }
 
