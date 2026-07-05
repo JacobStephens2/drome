@@ -13,8 +13,14 @@
 //
 //  Display is fluid ounces; storage is milliliters (the core's canonical unit).
 //
+//  Drag to pour: dragging up on Jerome previews a pour by raising the water
+//  line under the finger; release logs the previewed amount through the exact
+//  same check-then-confirm flow the presets use. Nothing is logged — and no
+//  counter or pace line moves — until release.
+//
 
 import SwiftUI
+import UIKit
 
 struct WaterView: View {
 
@@ -22,6 +28,24 @@ struct WaterView: View {
 
     @State private var showingCustomAmount = false
     @State private var pendingCustomMl: Int64?
+
+    // Drag-to-pour preview state (direct manipulation of the water line).
+    @State private var dragPendingMl: Int64 = 0
+    @State private var isDragging = false
+    @State private var dragHapticStep = 0
+    @State private var dragHaptics = UISelectionFeedbackGenerator()
+    @AppStorage("hasDragPoured") private var hasDragPoured = false
+
+    /// True while a drag pour is parked behind the chug alert. Lets the
+    /// alert's "Log anyway" retire the discoverability caption — a warned
+    /// pour the user explicitly confirms IS a successful drag log.
+    @State private var dragAwaitingChugConfirm = false
+
+    /// Cancellation sentinel. Unlike `onEnded`, @GestureState resets on BOTH
+    /// a normal end and a system cancellation (incoming call, backgrounding,
+    /// the hosting sheet's dismiss pan taking over), so watching it drop lets
+    /// us clear a preview that `onEnded` never got the chance to clean up.
+    @GestureState private var dragGestureActive = false
 
     var body: some View {
         ZStack {
@@ -32,7 +56,23 @@ struct WaterView: View {
                 counterBlock
                 CamelView(fill: fillFraction, celebrating: goalMet)
                     .frame(maxHeight: 280)
+                    .overlay {
+                        // Hit area for the pour gesture, sized to the camel's
+                        // rendered frame so drag distance maps onto the fill.
+                        GeometryReader { proxy in
+                            Color.clear
+                                .contentShape(Rectangle())
+                                .gesture(pourGesture(camelHeight: proxy.size.height))
+                        }
+                    }
+                    .overlay(alignment: .top) { pendingPill }
+                    .accessibilityHint("Drag up to pour water. The buttons below log preset amounts.")
                     .padding(.horizontal, DromeSpacing.l)
+                if !hasDragPoured {
+                    Text("Drag Jerome up to add water")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.dromeInk.opacity(0.45))
+                }
                 paceLine
                 Spacer(minLength: DromeSpacing.s)
                 presetRow
@@ -43,6 +83,19 @@ struct WaterView: View {
             .padding(.bottom, DromeSpacing.s)
         }
         .task { appModel.refresh() }
+        .onChange(of: dragGestureActive) { _, active in
+            // A normal release runs `onEnded` first (which clears these); if
+            // the sentinel drops while the preview is still up, the system
+            // cancelled the drag mid-pour — settle Jerome back down so he
+            // never keeps showing water that was never logged.
+            if !active, isDragging {
+                dragHapticStep = 0
+                withAnimation(.snappy) {
+                    isDragging = false
+                    dragPendingMl = 0
+                }
+            }
+        }
         .sheet(isPresented: $showingCustomAmount) {
             // Log after the sheet is fully gone so a chug alert can present.
             if let ml = pendingCustomMl {
@@ -53,8 +106,20 @@ struct WaterView: View {
             CustomAmountSheet { ml in pendingCustomMl = ml }
         }
         .alert("Over a liter in an hour", isPresented: chugAlertPresented) {
-            Button("Log anyway") { appModel.confirmPendingWater() }
-            Button("Wait", role: .cancel) { appModel.cancelPendingWater() }
+            Button("Log anyway") {
+                let previousUuid = appModel.lastWaterEventUuid
+                appModel.confirmPendingWater()
+                // A confirmed pour that came from a drag and actually logged
+                // is a successful drag log: retire the caption.
+                if dragAwaitingChugConfirm, appModel.lastWaterEventUuid != previousUuid {
+                    hasDragPoured = true
+                }
+                dragAwaitingChugConfirm = false
+            }
+            Button("Wait", role: .cancel) {
+                appModel.cancelPendingWater()
+                dragAwaitingChugConfirm = false
+            }
         } message: {
             Text(chugMessage)
         }
@@ -64,14 +129,123 @@ struct WaterView: View {
 
     private var water: WaterState? { appModel.waterState }
 
+    /// Camel fill: actual total plus the drag-pour preview. Only Jerome shows
+    /// the preview — the counters and pace line deliberately ignore it because
+    /// nothing is logged until the finger lifts. (CamelView clamps to 0…1.)
     private var fillFraction: Double {
         guard let water, water.goalMl > 0 else { return 0 }
-        return Double(water.totalMl) / Double(water.goalMl)
+        return Double(water.totalMl + dragPendingMl) / Double(water.goalMl)
     }
 
     private var goalMet: Bool {
         guard let water else { return false }
         return water.goalMl > 0 && water.remainingMl <= 0
+    }
+
+    // MARK: - Drag to pour (supplementary; presets/custom stay the accessible path)
+
+    /// Upward finger travel as a fraction of the camel's height maps straight
+    /// onto the fill — the user drags the water line up with their finger.
+    /// The pending amount snaps to whole ounces and is clamped so the preview
+    /// never exceeds the goal (the metaphor is the water line: it tops out at
+    /// a full camel; larger logs stay available via presets/custom).
+    private func pourGesture(camelHeight: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 8)
+            .updating($dragGestureActive) { _, state, _ in state = true }
+            .onChanged { value in
+                guard let water, water.goalMl > 0, camelHeight > 0 else { return }
+                if !isDragging {
+                    dragHaptics.prepare()
+                    withAnimation(.snappy) { isDragging = true }
+                }
+                let fraction = max(0, -value.translation.height / camelHeight)
+                let snappedOz = (WaterUnits.flOz(fromMl: water.goalMl) * fraction).rounded()
+                let capMl = max(0, water.goalMl - water.totalMl)
+                // Clamp to the remaining goal (the water line tops out at a
+                // full camel) AND to the core's per-log cap — with a goal
+                // over 10 L a full drag must never build a single log the
+                // core would reject.
+                dragPendingMl = min(WaterUnits.ml(fromFlOz: snappedOz), capMl, AppModel.maxWaterPerLogMl)
+                // A selection tick each time the previewed amount crosses an
+                // 8 oz step, so a long pour "clicks" as it grows.
+                let step = oz(dragPendingMl) / 8
+                if step != dragHapticStep {
+                    dragHapticStep = step
+                    dragHaptics.selectionChanged()
+                }
+            }
+            .onEnded { _ in
+                dragHapticStep = 0
+                if dragCommitsOnRelease {
+                    commitDragPour(dragPendingMl)
+                } else {
+                    // Sub-ounce nudge: nothing to log; settle back down.
+                    withAnimation(.snappy) {
+                        isDragging = false
+                        dragPendingMl = 0
+                    }
+                }
+            }
+    }
+
+    /// True when releasing now will log the preview. ONE predicate shared by
+    /// `onEnded` and the pill, so the pill never promises a pour that release
+    /// would silently cancel. Below a whole ounce the pour still commits when
+    /// it exactly tops off the remaining goal (recomputed here, at release
+    /// time) — otherwise the "drink the final ounce" state would be the one
+    /// state drag-to-pour can never log.
+    private var dragCommitsOnRelease: Bool {
+        guard dragPendingMl > 0 else { return false }
+        if dragPendingMl >= WaterUnits.ml(fromFlOz: 1) { return true }
+        guard let water else { return false }
+        return dragPendingMl == max(0, water.goalMl - water.totalMl)
+    }
+
+    /// Routes the previewed amount through the EXACT same path as the preset
+    /// buttons — AppModel's check-then-confirm chug flow. Never calls the
+    /// client directly, never skips the guard.
+    private func commitDragPour(_ ml: Int64) {
+        let previousUuid = appModel.lastWaterEventUuid
+        let warned = appModel.checkThenLogWater(ml: ml) != nil
+        // DromeCoreClient is synchronous, so by the time that returns the
+        // model has either refreshed with the new total — clearing the preview
+        // here is a no-op for the fill (preview == logged amount; no double
+        // jump) — or parked the log behind the chug alert, in which case the
+        // preview honestly animates back down (nothing was logged).
+        withAnimation(.snappy) {
+            isDragging = false
+            dragPendingMl = 0
+        }
+        // The first drag-log that actually happens retires the discoverability
+        // caption. A chug-warned pour counts only once the user explicitly
+        // confirms it — `dragAwaitingChugConfirm` carries that into the
+        // alert's "Log anyway" action.
+        if warned {
+            dragAwaitingChugConfirm = true
+        } else if appModel.lastWaterEventUuid != previousUuid {
+            hasDragPoured = true
+        }
+    }
+
+    /// Bold "+N oz" pill floating over Jerome while the finger is down.
+    /// Shown exactly when release will log (`dragCommitsOnRelease`) — never
+    /// promising a pour that would cancel. A sub-ounce top-off displays as
+    /// 1 oz (the same never-show-zero convention as `ozCeil`); every other
+    /// preview is already snapped to whole ounces.
+    @ViewBuilder
+    private var pendingPill: some View {
+        if isDragging, dragCommitsOnRelease {
+            Text("+\(max(1, oz(dragPendingMl))) oz")
+                .font(.system(size: 20, weight: .black))
+                .monospacedDigit()
+                .padding(.horizontal, DromeSpacing.m)
+                .padding(.vertical, DromeSpacing.s)
+                .background(Color.dromeOasis, in: Capsule())
+                .foregroundStyle(Color.dromeSand)
+                .offset(y: -DromeSpacing.s)
+                .allowsHitTesting(false)
+                .transition(.opacity)
+        }
     }
 
     // MARK: - Header

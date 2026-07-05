@@ -97,8 +97,9 @@ final class AppModel {
     private(set) var lastDietEventUuid: String?
 
     /// The core's per-log water cap; retroactive "met goal" adds are chunked
-    /// to stay under it.
-    private static let maxWaterPerLogMl: Int64 = 10_000
+    /// to stay under it, and WaterView clamps its drag-pour preview to it
+    /// (goals may legally exceed it, so goal − total alone can overshoot).
+    static let maxWaterPerLogMl: Int64 = 10_000
 
     // MARK: - Refresh
 
