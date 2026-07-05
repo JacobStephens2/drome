@@ -1034,6 +1034,87 @@ fn import_rejects_payloads_the_log_apis_reject() {
 }
 
 #[test]
+fn water_log_matches_day_projection_on_a_mixed_day() {
+    let (_dir, _path, store) = demo_store();
+    let day = "2026-07-04"; // fixture day 14
+
+    // A mixed day 14: two live pours with a revoke in between, a live pour
+    // after the revoke, a post-cutoff-window pour at 1:30 AM of the next
+    // calendar date (attributes back to day 14), and a retroactive pour
+    // logged the next day with an explicit effective_date.
+    let a = store.log_water(500, at(day, 8, 0), None).expect("pour a");
+    let b = store.log_water(946, at(day, 10, 0), None).expect("pour b");
+    store
+        .revoke_event(b.event_uuid.clone(), at(day, 10, 5))
+        .expect("revoke b mid-list");
+    let c = store.log_water(700, at(day, 12, 0), None).expect("pour c");
+    let d = store
+        .log_water(400, at("2026-07-05", 1, 30), None)
+        .expect("pour d (1:30 AM, 4:00 cutoff -> day 14)");
+    let e = store
+        .log_water(300, at("2026-07-05", 9, 0), Some(day.into()))
+        .expect("pour e (retroactive)");
+
+    let now = at("2026-07-05", 10, 0);
+    let entries = store.water_log(day.into(), now).expect("water log");
+
+    // Revoked pour absent; order is logged_at ascending; retro only on e.
+    let uuids: Vec<&str> = entries.iter().map(|e| e.event_uuid.as_str()).collect();
+    assert_eq!(
+        uuids,
+        vec![
+            a.event_uuid.as_str(),
+            c.event_uuid.as_str(),
+            d.event_uuid.as_str(),
+            e.event_uuid.as_str(),
+        ]
+    );
+    assert_eq!(
+        entries.iter().map(|e| e.retro).collect::<Vec<_>>(),
+        vec![false, false, false, true]
+    );
+    assert_eq!(entries[0].ml, 500);
+    assert_eq!(entries[2].logged_at, at("2026-07-05", 1, 30));
+
+    // Entries always sum to the day projection's water total.
+    let day_state = store.day_state(day.into(), now).expect("day state");
+    assert_eq!(
+        entries.iter().map(|e| e.ml).sum::<i64>(),
+        day_state.water_ml
+    );
+    assert_eq!(day_state.water_ml, 500 + 700 + 400 + 300);
+
+    // None of the pours leaked onto 2026-07-05.
+    let next = store.water_log("2026-07-05".into(), now).expect("log");
+    assert!(next.is_empty());
+}
+
+#[test]
+fn water_log_excludes_backfill_flags_and_is_empty_for_empty_days() {
+    let (_dir, _path, store) = demo_store();
+    let now = at("2026-07-04", 10, 0);
+
+    // Day 12 is backfilled with water = true, but the flag carries no
+    // quantity: the pour log stays empty (and still sums to water_ml == 0).
+    let day12 = store
+        .day_state("2026-07-02".into(), now)
+        .expect("day state");
+    assert!(day12.water_done && day12.is_backfilled);
+    assert_eq!(day12.water_ml, 0);
+    let entries = store.water_log("2026-07-02".into(), now).expect("log");
+    assert!(entries.is_empty());
+
+    // A plain empty day (day 14, nothing logged yet) -> empty vec.
+    let entries = store.water_log("2026-07-04".into(), now).expect("log");
+    assert!(entries.is_empty());
+
+    assert!(matches!(
+        store.water_log("not-a-date".into(), now),
+        Err(DromeError::InvalidDate(_))
+    ));
+}
+
+#[test]
 fn current_run_ignores_days_past_the_challenge_end() {
     let (_dir, _path, store) = open_store();
     store

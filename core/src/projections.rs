@@ -59,6 +59,9 @@ pub struct Projection {
     /// water is bookkeeping, not current intake, and must never poison the
     /// trailing-hour window.
     water_by_epoch: Vec<(i64, i64)>,
+    /// UUIDs targeted by a `revoked` event — the single source of truth for
+    /// per-event liveness queries (e.g. the water log).
+    revoked: HashSet<String>,
 }
 
 impl Projection {
@@ -68,10 +71,11 @@ impl Projection {
 
         // An event is skipped if any `revoked` event targets its uuid.
         // Revocations are not themselves revocable (no un-revoke).
-        let revoked: HashSet<&str> = events
+        let revoked: HashSet<String> = events
             .iter()
             .filter(|e| e.kind == events::KIND_REVOKED)
             .filter_map(|e| e.payload.get("event_uuid").and_then(|v| v.as_str()))
+            .map(str::to_owned)
             .collect();
         let live = |e: &&EventRow| !revoked.contains(e.uuid.as_str());
 
@@ -100,6 +104,7 @@ impl Projection {
             goal_changes: Vec::new(),
             backfills: BTreeMap::new(),
             water_by_epoch: Vec::new(),
+            revoked: HashSet::new(),
         };
 
         for e in events.iter().filter(live) {
@@ -158,7 +163,13 @@ impl Projection {
             }
         }
         proj.goal_changes.sort_by_key(|c| (c.date, c.seq));
+        proj.revoked = revoked;
         Ok(proj)
+    }
+
+    /// True when a `revoked` event targets this uuid (the event is dead).
+    pub fn is_revoked(&self, uuid: &str) -> bool {
+        self.revoked.contains(uuid)
     }
 
     fn day_mut(&mut self, e: &EventRow) -> Result<&mut DayAccum> {

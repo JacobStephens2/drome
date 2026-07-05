@@ -225,6 +225,23 @@ struct DayBrief: Identifiable, Sendable, Hashable {
     var id: DayDate { date }
 }
 
+/// One non-revoked water pour attributed to a day — the per-day pour log
+/// backing "correct an over-recorded pour". Entries always sum to that day's
+/// `DayState.waterTotalMl` (backfill flags carry no quantity and never appear).
+struct WaterLogEntry: Identifiable, Sendable, Hashable {
+    /// Event UUID (usable with `revokeEvent`).
+    var id: String
+    var ml: Int64
+    /// The absolute moment the pour was logged.
+    var loggedAt: Date
+    /// UTC offset in effect where/when it was logged, so the row can show the
+    /// wall-clock time the user actually saw.
+    var tzOffsetSecs: Int
+    /// True when the pour carried an explicit effective date (retroactive
+    /// logging / "edit yesterday"), not live attribution.
+    var retro: Bool
+}
+
 // MARK: - Water pacing & safety
 
 struct WaterState: Sendable, Hashable {

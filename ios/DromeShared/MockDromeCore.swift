@@ -36,6 +36,8 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
         let date: DayDate
         let kind: EventKind
         let loggedAt: Date
+        /// True when the log carried an explicit effectiveDate (retroactive).
+        var retro = false
         var revoked = false
     }
 
@@ -323,7 +325,8 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
         let weekIndex = (dayIndex(of: date) - 1) / 7 + 1
         let extraDoneBefore = extraId.map { weekExtraDone(extraId: $0, weekIndex: weekIndex) != nil } ?? false
 
-        let event = Event(uuid: UUID().uuidString, date: date, kind: kind, loggedAt: now)
+        let event = Event(uuid: UUID().uuidString, date: date, kind: kind, loggedAt: now,
+                          retro: effectiveDate != nil)
         events.append(event)
 
         let after = computeDayState(date: date)
@@ -541,6 +544,26 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
     func waterState() throws -> WaterState {
         lock.lock(); defer { lock.unlock() }
         return computeWaterState(now: Date())
+    }
+
+    /// Non-revoked water pours attributed to `date` (the mock resolves
+    /// attribution at append time), ordered by loggedAt ascending — the same
+    /// entries `computeDayState` sums, so they always match its water total.
+    func waterLog(date: DayDate) throws -> [WaterLogEntry] {
+        lock.lock(); defer { lock.unlock() }
+        return events
+            .compactMap { event -> WaterLogEntry? in
+                guard !event.revoked, event.date == date,
+                      case .water(let ml) = event.kind else { return nil }
+                return WaterLogEntry(
+                    id: event.uuid,
+                    ml: ml,
+                    loggedAt: event.loggedAt,
+                    tzOffsetSecs: TimeZone.current.secondsFromGMT(for: event.loggedAt),
+                    retro: event.retro
+                )
+            }
+            .sorted { $0.loggedAt < $1.loggedAt }
     }
 
     // MARK: - DromeCoreClient: water safety

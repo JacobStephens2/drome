@@ -20,7 +20,8 @@ mod proptests;
 pub use api::{
     BackfilledDay, Cadence, Challenge, ChallengeSummary, ContainerPreset, DayBrief, DayState,
     DromeStore, ExtraDef, LogResult, NewChallenge, ShareCardData, ShareCardWorkout, TodayState,
-    WeekExtraState, WorkoutEntry, DEFAULT_CHALLENGE_LENGTH_DAYS, JOB_EXTRA_ID, JOB_EXTRA_NAME,
+    WaterLogEntry, WeekExtraState, WorkoutEntry, DEFAULT_CHALLENGE_LENGTH_DAYS, JOB_EXTRA_ID,
+    JOB_EXTRA_NAME,
 };
 pub use error::DromeError;
 pub use rules::RulesetKind;

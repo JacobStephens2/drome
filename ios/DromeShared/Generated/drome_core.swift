@@ -693,6 +693,15 @@ public protocol DromeStoreProtocol: AnyObject, Sendable {
     
     func updatePresets(presets: [UniContainerPreset]) throws 
     
+    /**
+     * Every non-revoked `water_add` event attributed to `date`, ordered by
+     * `logged_at` ascending. Attribution is exactly the day projection's
+     * (cutoff, closed-day rollover, explicit effective_date), so the entries
+     * always sum to that date's `DayState.water_ml`. `day_backfilled` water
+     * is a flag with no quantity and is deliberately excluded.
+     */
+    func waterLog(date: String, now: LocalInstant) throws  -> [UniWaterLogEntry]
+    
     func waterState(now: LocalInstant) throws  -> UniWaterState
     
 }
@@ -1070,6 +1079,24 @@ open func updatePresets(presets: [UniContainerPreset])throws   {try rustCallWith
         FfiConverterSequenceTypeUniContainerPreset.lower(presets),uniffiCallStatus
     )
 }
+}
+    
+    /**
+     * Every non-revoked `water_add` event attributed to `date`, ordered by
+     * `logged_at` ascending. Attribution is exactly the day projection's
+     * (cutoff, closed-day rollover, explicit effective_date), so the entries
+     * always sum to that date's `DayState.water_ml`. `day_backfilled` water
+     * is a flag with no quantity and is deliberately excluded.
+     */
+open func waterLog(date: String, now: LocalInstant)throws  -> [UniWaterLogEntry]  {
+    return try  FfiConverterSequenceTypeUniWaterLogEntry.lift(try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
+        uniffiCallStatus in
+    uniffi_drome_core_fn_method_dromestore_water_log(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(date),
+        FfiConverterTypeLocalInstant_lower(now),uniffiCallStatus
+    )
+})
 }
     
 open func waterState(now: LocalInstant)throws  -> UniWaterState  {
@@ -2243,6 +2270,81 @@ public func FfiConverterTypeUniTodayState_lower(_ value: UniTodayState) -> RustB
 }
 
 
+/**
+ * One non-revoked `water_add` event attributed to a given date — the per-day
+ * pour log backing "correct an over-recorded pour". Backfill flags carry no
+ * quantity and never appear here; entries always sum to `DayState.water_ml`.
+ */
+public struct UniWaterLogEntry: Equatable, Hashable {
+    public var eventUuid: String
+    public var ml: Int64
+    public var loggedAt: LocalInstant
+    /**
+     * True when the event carried an explicit `effective_date` (retroactive
+     * logging / "edit yesterday"), as opposed to live cutoff attribution.
+     */
+    public var retro: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(eventUuid: String, ml: Int64, loggedAt: LocalInstant, 
+        /**
+         * True when the event carried an explicit `effective_date` (retroactive
+         * logging / "edit yesterday"), as opposed to live cutoff attribution.
+         */retro: Bool) {
+        self.eventUuid = eventUuid
+        self.ml = ml
+        self.loggedAt = loggedAt
+        self.retro = retro
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension UniWaterLogEntry: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeUniWaterLogEntry: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UniWaterLogEntry {
+        return
+            try UniWaterLogEntry(
+                eventUuid: FfiConverterString.read(from: &buf), 
+                ml: FfiConverterInt64.read(from: &buf), 
+                loggedAt: FfiConverterTypeLocalInstant.read(from: &buf), 
+                retro: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: UniWaterLogEntry, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.eventUuid, into: &buf)
+        FfiConverterInt64.write(value.ml, into: &buf)
+        FfiConverterTypeLocalInstant.write(value.loggedAt, into: &buf)
+        FfiConverterBool.write(value.retro, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUniWaterLogEntry_lift(_ buf: RustBuffer) throws -> UniWaterLogEntry {
+    return try FfiConverterTypeUniWaterLogEntry.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUniWaterLogEntry_lower(_ value: UniWaterLogEntry) -> RustBuffer {
+    return FfiConverterTypeUniWaterLogEntry.lower(value)
+}
+
+
 public struct UniWaterState: Equatable, Hashable {
     public var totalMl: Int64
     public var goalMl: Int64
@@ -2979,6 +3081,31 @@ fileprivate struct FfiConverterSequenceTypeUniExtraDef: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeUniWaterLogEntry: FfiConverterRustBuffer {
+    typealias SwiftType = [UniWaterLogEntry]
+
+    public static func write(_ value: [UniWaterLogEntry], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeUniWaterLogEntry.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [UniWaterLogEntry] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [UniWaterLogEntry]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeUniWaterLogEntry.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeUniWeekExtraState: FfiConverterRustBuffer {
     typealias SwiftType = [UniWeekExtraState]
 
@@ -3123,6 +3250,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_drome_core_checksum_method_dromestore_update_presets() != 43732) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_drome_core_checksum_method_dromestore_water_log() != 47978) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_drome_core_checksum_method_dromestore_water_state() != 292) {

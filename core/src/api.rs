@@ -217,6 +217,19 @@ pub struct ShareCardData {
     pub workouts: Vec<ShareCardWorkout>,
 }
 
+/// One non-revoked `water_add` event attributed to a given date — the per-day
+/// pour log backing "correct an over-recorded pour". Backfill flags carry no
+/// quantity and never appear here; entries always sum to `DayState.water_ml`.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct WaterLogEntry {
+    pub event_uuid: String,
+    pub ml: i64,
+    pub logged_at: LocalInstant,
+    /// True when the event carried an explicit `effective_date` (retroactive
+    /// logging / "edit yesterday"), as opposed to live cutoff attribution.
+    pub retro: bool,
+}
+
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct LogResult {
     pub event_uuid: String,
@@ -693,6 +706,42 @@ impl DromeStore {
         let conn = self.lock()?;
         let loaded = load(&conn)?;
         Ok(loaded.projection.day_state(parsed))
+    }
+
+    /// Every non-revoked `water_add` event attributed to `date`, ordered by
+    /// `logged_at` ascending. Attribution is exactly the day projection's
+    /// (cutoff, closed-day rollover, explicit effective_date), so the entries
+    /// always sum to that date's `DayState.water_ml`. `day_backfilled` water
+    /// is a flag with no quantity and is deliberately excluded.
+    pub fn water_log(
+        &self,
+        date: String,
+        now: LocalInstant,
+    ) -> Result<Vec<WaterLogEntry>, DromeError> {
+        let parsed = time::parse_date(&date)?;
+        now.wall_secs()?;
+        let conn = self.lock()?;
+        let loaded = load(&conn)?;
+        let proj = &loaded.projection;
+        let mut entries = Vec::new();
+        // `loaded.events` is ordered by (logged_at_epoch, id) — already the
+        // required logged_at-ascending order.
+        for e in &loaded.events {
+            if e.kind != events::KIND_WATER_ADD || proj.is_revoked(&e.uuid) {
+                continue;
+            }
+            if proj.attribute(e.logged_at, e.effective_date.as_deref())? != parsed {
+                continue;
+            }
+            let payload: events::WaterAddPayload = e.payload_as()?;
+            entries.push(WaterLogEntry {
+                event_uuid: e.uuid.clone(),
+                ml: payload.ml,
+                logged_at: e.logged_at,
+                retro: e.effective_date.is_some(),
+            });
+        }
+        Ok(entries)
     }
 
     pub fn today(&self, now: LocalInstant) -> Result<TodayState, DromeError> {

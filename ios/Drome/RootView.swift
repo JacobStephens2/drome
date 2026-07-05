@@ -256,14 +256,22 @@ private struct IntentErrorAlert: ViewModifier {
 // MARK: - Yesterday sheet (retroactive one-tap logging, honestly labeled)
 
 /// Compact "log for yesterday" sheet: the five task tiles (workout tile =
-/// two slots) as one-tap buttons writing with `effectiveDate` = yesterday.
-/// This edits yesterday only — the header says so plainly.
+/// two slots) as one-tap buttons writing with `effectiveDate` = yesterday,
+/// plus yesterday's removable pour log (corrections cut both ways). This
+/// edits yesterday only — the header says so plainly.
 private struct YesterdayLogSheet: View {
     @Environment(AppModel.self) private var appModel
     @Environment(\.dismiss) private var dismiss
 
     @State private var yesterdayDate: DayDate?
     @State private var day: DayState?
+
+    /// Yesterday's non-revoked pours — live logs from the day itself plus
+    /// any "backdated" adds made from this sheet. Yesterday stays editable
+    /// until closed, and that includes taking a pour back: a fat-fingered
+    /// log noticed after the cutoff (or an accidental "Met goal" tap here)
+    /// is corrected by swiping it away below.
+    @State private var pours: [WaterLogEntry] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: DromeSpacing.m) {
@@ -272,6 +280,9 @@ private struct YesterdayLogSheet: View {
             if let day {
                 VStack(spacing: DromeSpacing.s) {
                     waterRow(day)
+                    if !pours.isEmpty {
+                        poursSection
+                    }
                     taskRow(
                         done: day.outdoorWorkoutDone,
                         title: "Outdoor workout",
@@ -334,6 +345,24 @@ private struct YesterdayLogSheet: View {
     }
 
     // MARK: Rows
+
+    /// The shared pour ledger (PourLogList), scoped to yesterday. Removing a
+    /// pour may honestly flip the water task back to not-done — the row's
+    /// "Met goal" button then reappears. Retro adds show the "backdated"
+    /// capsule; pours logged live during the day don't.
+    private var poursSection: some View {
+        VStack(alignment: .leading, spacing: DromeSpacing.xs) {
+            Text("YESTERDAY'S POURS")
+                .font(.system(size: 12, weight: .black))
+                .tracking(1)
+                .foregroundStyle(Color.dromeInk.opacity(0.45))
+            PourLogList(entries: pours) { entry in
+                appModel.revoke(eventUuid: entry.id)
+                reload()
+            }
+        }
+        .padding(.horizontal, DromeSpacing.m)
+    }
 
     private func waterRow(_ day: DayState) -> some View {
         let remaining = max(0, day.waterGoalMl - day.waterTotalMl)
@@ -400,19 +429,25 @@ private struct YesterdayLogSheet: View {
 
     // MARK: Data
 
-    /// Runs an AppModel intent, then reloads yesterday's projection (the
-    /// intent already refreshed the model's own caches).
+    /// Runs an AppModel intent, then reloads yesterday's projection and pour
+    /// log (the intent already refreshed the model's own caches).
     private func log(_ intent: (DayDate) -> Void) {
         guard let date = yesterdayDate else { return }
         intent(date)
-        day = try? appModel.client.dayState(date: date)
+        reload()
     }
 
     private func load() {
         guard let today = appModel.todayState?.date,
               let date = Self.shift(today, by: -1) else { return }
         yesterdayDate = date
+        reload()
+    }
+
+    private func reload() {
+        guard let date = yesterdayDate else { return }
         day = try? appModel.client.dayState(date: date)
+        pours = (try? appModel.client.waterLog(date: date)) ?? []
     }
 
     // MARK: Date plumbing (display only; attribution stays in core)

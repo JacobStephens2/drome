@@ -79,6 +79,11 @@ protocol DromeCoreClient: AnyObject, Sendable {
     func summary() throws -> ChallengeSummary
     func calendar(from: DayDate, to: DayDate) throws -> [DayBrief]
     func waterState() throws -> WaterState
+    /// Every non-revoked water pour attributed to `date` (same attribution as
+    /// the day projection, so entries sum to its `waterTotalMl`), ordered by
+    /// `loggedAt` ascending. Drives the per-day pour log with per-entry
+    /// removal (`revokeEvent`).
+    func waterLog(date: DayDate) throws -> [WaterLogEntry]
 
     // MARK: Water safety
     //

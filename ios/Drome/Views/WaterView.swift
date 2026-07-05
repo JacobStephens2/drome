@@ -29,6 +29,12 @@ struct WaterView: View {
     @State private var showingCustomAmount = false
     @State private var pendingCustomMl: Int64?
 
+    /// Today's non-revoked pours (core-attributed, so the amounts always sum
+    /// to the day's water total). Reloaded in `.task` and after every
+    /// log/revoke/confirm via the `waterState` change hook — every one of
+    /// those paths ends in `appModel.refresh()`, which recomputes waterState.
+    @State private var pourLog: [WaterLogEntry] = []
+
     // Drag-to-pour preview state (direct manipulation of the water line).
     @State private var dragPendingMl: Int64 = 0
     @State private var isDragging = false
@@ -76,13 +82,20 @@ struct WaterView: View {
                 paceLine
                 Spacer(minLength: DromeSpacing.s)
                 presetRow
+                poursSection
                 actionRow
             }
             .padding(.horizontal, DromeSpacing.m)
             .padding(.top, DromeSpacing.m)
             .padding(.bottom, DromeSpacing.s)
         }
-        .task { appModel.refresh() }
+        .task {
+            appModel.refresh()
+            reloadPourLog()
+        }
+        .onChange(of: appModel.waterState) { _, _ in
+            reloadPourLog()
+        }
         .onChange(of: dragGestureActive) { _, active in
             // A normal release runs `onEnded` first (which clears these); if
             // the sentinel drops while the preview is still up, the system
@@ -365,6 +378,42 @@ struct WaterView: View {
         }
     }
 
+    // MARK: - Today's pours (per-entry removal)
+
+    /// The shared pour ledger (PourLogList): newest pour first — the row just
+    /// logged is always visible, never hidden behind the inner scroll — swipe
+    /// to remove, capped at three visible rows. Jerome stays the star.
+    private var poursSection: some View {
+        VStack(alignment: .leading, spacing: DromeSpacing.xs) {
+            Text("TODAY'S POURS")
+                .font(.system(size: 12, weight: .black))
+                .tracking(1)
+                .foregroundStyle(Color.dromeInk.opacity(0.45))
+            if pourLog.isEmpty {
+                Text("No pours yet today.")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.dromeInk.opacity(0.4))
+                    .frame(height: PourLogList.rowHeight)
+            } else {
+                PourLogList(entries: pourLog) { entry in
+                    appModel.revoke(eventUuid: entry.id)
+                    reloadPourLog()
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Small reload keeping the list in view-local @State: the pour log is a
+    /// per-screen detail, not app-wide state, so AppModel doesn't own it.
+    private func reloadPourLog() {
+        guard let date = appModel.todayState?.date else {
+            pourLog = []
+            return
+        }
+        pourLog = (try? appModel.client.waterLog(date: date)) ?? []
+    }
+
     // MARK: - Custom + undo
 
     private var actionRow: some View {
@@ -385,7 +434,10 @@ struct WaterView: View {
 
             // Targeted undo: revokes exactly the last WATER event logged from
             // the app — never a workout/diet/photo log. Hidden when there is
-            // no water event to take back.
+            // no water event to take back. Deliberately NOT delegated to the
+            // pour list's newest row: a widget-logged pour this model never
+            // tracked could be newest, and "undo last" must only take back
+            // what the user logged here.
             if appModel.lastWaterEventUuid != nil {
                 Button {
                     appModel.undoLastWater()

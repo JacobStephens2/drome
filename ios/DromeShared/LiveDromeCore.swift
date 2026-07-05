@@ -272,6 +272,12 @@ final class LiveDromeCore: DromeCoreClient, @unchecked Sendable {
         try call { Self.waterState(try store.waterState(now: Self.nowInstant())) }
     }
 
+    func waterLog(date: DayDate) throws -> [WaterLogEntry] {
+        try call {
+            try store.waterLog(date: date, now: Self.nowInstant()).map(Self.waterLogEntry)
+        }
+    }
+
     // MARK: - DromeCoreClient: water safety
 
     func checkChug(addMl: Int64) throws -> ChugCheck {
@@ -396,6 +402,16 @@ private extension LiveDromeCore {
             coreComplete: d.coreComplete,
             isClosed: d.isClosed,
             isBackfilled: d.isBackfilled
+        )
+    }
+
+    static func waterLogEntry(_ e: UniWaterLogEntry) -> WaterLogEntry {
+        WaterLogEntry(
+            id: e.eventUuid,
+            ml: e.ml,
+            loggedAt: Date(timeIntervalSince1970: TimeInterval(e.loggedAt.epochSecs)),
+            tzOffsetSecs: Int(e.loggedAt.tzOffsetSecs),
+            retro: e.retro
         )
     }
 
