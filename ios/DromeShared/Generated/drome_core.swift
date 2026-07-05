@@ -465,6 +465,22 @@ fileprivate final class UniffiHandleMap<T>: @unchecked Sendable {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterUInt16: FfiConverterPrimitive {
+    typealias FfiType = UInt16
+    typealias SwiftType = UInt16
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt16 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterUInt32: FfiConverterPrimitive {
     typealias FfiType = UInt32
     typealias SwiftType = UInt32
@@ -650,7 +666,19 @@ public protocol DromeStoreProtocol: AnyObject, Sendable {
     
     func setCurrentBook(title: String) throws 
     
+    /**
+     * Display-only config; safe to edit mid-challenge.
+     */
+    func setDietDescription(desc: String) throws 
+    
     func setExtraEnabled(extraId: String, enabled: Bool) throws 
+    
+    /**
+     * The waking window only drives WaterState pacing and the
+     * discourage_catch_up display — never day attribution or completion — so
+     * editing it mid-challenge is a plain config update, not an event.
+     */
+    func setWakingWindow(startMinutes: UInt16, endMinutes: UInt16) throws 
     
     /**
      * Goal changes are events: past days keep the goal they were lived under.
@@ -954,12 +982,39 @@ open func setCurrentBook(title: String)throws   {try rustCallWithError(FfiConver
 }
 }
     
+    /**
+     * Display-only config; safe to edit mid-challenge.
+     */
+open func setDietDescription(desc: String)throws   {try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
+        uniffiCallStatus in
+    uniffi_drome_core_fn_method_dromestore_set_diet_description(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(desc),uniffiCallStatus
+    )
+}
+}
+    
 open func setExtraEnabled(extraId: String, enabled: Bool)throws   {try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
         uniffiCallStatus in
     uniffi_drome_core_fn_method_dromestore_set_extra_enabled(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(extraId),
         FfiConverterBool.lower(enabled),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * The waking window only drives WaterState pacing and the
+     * discourage_catch_up display — never day attribution or completion — so
+     * editing it mid-challenge is a plain config update, not an event.
+     */
+open func setWakingWindow(startMinutes: UInt16, endMinutes: UInt16)throws   {try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
+        uniffiCallStatus in
+    uniffi_drome_core_fn_method_dromestore_set_waking_window(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt16.lower(startMinutes),
+        FfiConverterUInt16.lower(endMinutes),uniffiCallStatus
     )
 }
 }
@@ -3046,7 +3101,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_drome_core_checksum_method_dromestore_set_current_book() != 43319) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_drome_core_checksum_method_dromestore_set_diet_description() != 64999) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_drome_core_checksum_method_dromestore_set_extra_enabled() != 14815) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_drome_core_checksum_method_dromestore_set_waking_window() != 55677) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_drome_core_checksum_method_dromestore_set_water_goal() != 47066) {

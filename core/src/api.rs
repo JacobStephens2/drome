@@ -402,6 +402,51 @@ impl DromeStore {
         Ok(())
     }
 
+    /// Display-only config; safe to edit mid-challenge.
+    pub fn set_diet_description(&self, desc: String) -> Result<(), DromeError> {
+        let trimmed = desc.trim();
+        if trimmed.chars().count() > 500 {
+            return Err(DromeError::InvalidArgument(
+                "diet description is capped at 500 characters".into(),
+            ));
+        }
+        let conn = self.lock()?;
+        let challenge = require_active(&conn)?;
+        let value = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_owned())
+        };
+        conn.execute(
+            "UPDATE challenge SET diet_description = ?1 WHERE id = ?2",
+            params![value, challenge.id],
+        )?;
+        Ok(())
+    }
+
+    /// The waking window only drives WaterState pacing and the
+    /// discourage_catch_up display — never day attribution or completion — so
+    /// editing it mid-challenge is a plain config update, not an event.
+    pub fn set_waking_window(
+        &self,
+        start_minutes: u16,
+        end_minutes: u16,
+    ) -> Result<(), DromeError> {
+        if start_minutes >= end_minutes || end_minutes >= 1_440 {
+            return Err(DromeError::InvalidArgument(
+                "waking window must satisfy 0 <= start < end < 1440".into(),
+            ));
+        }
+        let conn = self.lock()?;
+        let challenge = require_active(&conn)?;
+        conn.execute(
+            "UPDATE challenge SET waking_start_minutes = ?1, waking_end_minutes = ?2
+             WHERE id = ?3",
+            params![start_minutes, end_minutes, challenge.id],
+        )?;
+        Ok(())
+    }
+
     pub fn log_water(
         &self,
         ml: i64,

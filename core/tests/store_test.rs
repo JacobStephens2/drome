@@ -840,3 +840,97 @@ fn import_json_round_trips_into_a_fresh_store() {
     // Nothing was written by the failed imports.
     assert!(fresh.active_challenge().expect("query").is_none());
 }
+
+#[test]
+fn diet_description_setter_trims_and_validates() {
+    let (_dir, _path, store) = open_store();
+    assert!(matches!(
+        store.set_diet_description("keto".into()),
+        Err(DromeError::NoActiveChallenge)
+    ));
+
+    store
+        .create_challenge(challenge_cfg(
+            RulesetKind::Flexible,
+            "2026-06-21",
+            at("2026-06-21", 8, 0),
+        ))
+        .expect("create");
+
+    store
+        .set_diet_description("  keto, no alcohol  ".into())
+        .expect("set diet");
+    let challenge = store.active_challenge().expect("query").expect("challenge");
+    assert_eq!(
+        challenge.diet_description.as_deref(),
+        Some("keto, no alcohol")
+    );
+
+    // Blank clears the field.
+    store.set_diet_description("   ".into()).expect("clear");
+    let challenge = store.active_challenge().expect("query").expect("challenge");
+    assert_eq!(challenge.diet_description, None);
+
+    // 500 chars (after trimming) is fine; 501 is rejected.
+    store
+        .set_diet_description(format!(" {} ", "x".repeat(500)))
+        .expect("500 chars ok");
+    assert!(matches!(
+        store.set_diet_description("x".repeat(501)),
+        Err(DromeError::InvalidArgument(_))
+    ));
+    let challenge = store.active_challenge().expect("query").expect("challenge");
+    assert_eq!(challenge.diet_description.map(|d| d.len()), Some(500));
+}
+
+#[test]
+fn waking_window_setter_repaces_water_but_never_touches_day_state() {
+    let (_dir, _path, store) = demo_store();
+    let now = at("2026-07-04", 14, 30);
+
+    // Defaults 7:00-22:00: 14:30 is halfway.
+    let before = store.water_state(now).expect("water");
+    assert_eq!(before.pace_target_ml, GALLON_ML / 2);
+    let day13_before = store
+        .day_state("2026-07-03".into(), now)
+        .expect("day state");
+    let summary_before = store.summary(now).expect("summary");
+
+    // 6:00-21:00: same clock instant now sits 510 min into a 900-min window.
+    store.set_waking_window(360, 1_260).expect("set window");
+    let after = store.water_state(now).expect("water");
+    assert_eq!(after.pace_target_ml, GALLON_ML * 510 / 900);
+    assert_ne!(after.pace_target_ml, before.pace_target_ml);
+
+    // Attribution and completion are untouched: past days project identically.
+    let day13_after = store
+        .day_state("2026-07-03".into(), now)
+        .expect("day state");
+    assert_eq!(day13_before, day13_after);
+    assert_eq!(summary_before, store.summary(now).expect("summary"));
+
+    let challenge = store.active_challenge().expect("query").expect("challenge");
+    assert_eq!(challenge.waking_start_minutes, 360);
+    assert_eq!(challenge.waking_end_minutes, 1_260);
+
+    // Validation: start < end and end < 1440, typed errors otherwise.
+    assert!(matches!(
+        store.set_waking_window(600, 600),
+        Err(DromeError::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        store.set_waking_window(700, 600),
+        Err(DromeError::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        store.set_waking_window(0, 1_440),
+        Err(DromeError::InvalidArgument(_))
+    ));
+    store.set_waking_window(0, 1_439).expect("edge window ok");
+
+    let (_d2, _p2, empty) = open_store();
+    assert!(matches!(
+        empty.set_waking_window(360, 1_260),
+        Err(DromeError::NoActiveChallenge)
+    ));
+}
