@@ -117,7 +117,7 @@ struct OnboardingView: View {
                 .font(.system(size: 56, weight: .black))
                 .tracking(-1)
                 .foregroundStyle(Color.dromeInk)
-            Text("75 days is a desert.\nDrome the camel walks it with you —\none honest day at a time.")
+            Text("75 days is a desert.\nJerome the camel walks it with you —\none honest day at a time.")
                 .font(.system(size: 17, weight: .medium))
                 .multilineTextAlignment(.center)
                 .foregroundStyle(Color.dromeInk)

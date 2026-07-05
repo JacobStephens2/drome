@@ -2,7 +2,7 @@
 //  WaterView.swift
 //  Drome
 //
-//  Water tracking: big remaining-oz counter, Drome the camel filling with
+//  Water tracking: big remaining-oz counter, Jerome the camel filling with
 //  water, honest pace line, one-tap container presets, custom amount, undo.
 //
 //  Chug safety (binding, all modes): every log routes through AppModel's

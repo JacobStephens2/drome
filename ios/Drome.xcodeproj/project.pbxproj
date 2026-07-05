@@ -40,34 +40,10 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		DA0000000000000000000034 /* Exceptions for "Drome" folder in "Drome" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Drome.entitlements,
-			);
-			target = DA0000000000000000000001 /* Drome */;
-		};
 		DA0000000000000000000035 /* Exceptions for "DromeWidget" folder in "DromeWidget" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
-				DromeWidget.entitlements,
 				Info.plist,
-			);
-			target = DA0000000000000000000002 /* DromeWidget */;
-		};
-		DA0000000000000000000036 /* Exceptions for "DromeShared" folder in "Drome" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Generated/drome_coreFFI.h,
-				Generated/drome_coreFFI.modulemap,
-			);
-			target = DA0000000000000000000001 /* Drome */;
-		};
-		DA0000000000000000000037 /* Exceptions for "DromeShared" folder in "DromeWidget" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Generated/drome_coreFFI.h,
-				Generated/drome_coreFFI.modulemap,
 			);
 			target = DA0000000000000000000002 /* DromeWidget */;
 		};
@@ -76,18 +52,11 @@
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		DA0000000000000000000031 /* Drome */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				DA0000000000000000000034 /* Exceptions for "Drome" folder in "Drome" target */,
-			);
 			path = Drome;
 			sourceTree = "<group>";
 		};
 		DA0000000000000000000032 /* DromeShared */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				DA0000000000000000000036 /* Exceptions for "DromeShared" folder in "Drome" target */,
-				DA0000000000000000000037 /* Exceptions for "DromeShared" folder in "DromeWidget" target */,
-			);
 			path = DromeShared;
 			sourceTree = "<group>";
 		};
@@ -179,8 +148,8 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				DA0000000000000000000033 /* DromeWidget */,
 				DA0000000000000000000032 /* DromeShared */,
+				DA0000000000000000000033 /* DromeWidget */,
 			);
 			name = DromeWidget;
 			packageProductDependencies = (
@@ -399,6 +368,7 @@
 				CODE_SIGN_ENTITLEMENTS = Drome/Drome.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = LHY8W725A8;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Drome;
@@ -436,6 +406,7 @@
 				CODE_SIGN_ENTITLEMENTS = Drome/Drome.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = LHY8W725A8;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Drome;
@@ -471,6 +442,7 @@
 				CODE_SIGN_ENTITLEMENTS = DromeWidget/DromeWidget.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = LHY8W725A8;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DromeWidget/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Drome;
@@ -505,6 +477,7 @@
 				CODE_SIGN_ENTITLEMENTS = DromeWidget/DromeWidget.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = LHY8W725A8;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = DromeWidget/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Drome;

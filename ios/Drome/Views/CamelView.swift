@@ -2,7 +2,7 @@
 //  CamelView.swift
 //  Drome
 //
-//  Drome the camel — the app's emotional centerpiece, behind a pinned API:
+//  Jerome the camel — the app's emotional centerpiece, behind a pinned API:
 //
 //      CamelView(fill: Double, celebrating: Bool)
 //
@@ -35,7 +35,7 @@ struct CamelView: View {
         }
         .aspectRatio(CamelGeometry.aspectRatio, contentMode: .fit)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Drome the camel, \(Int((clampedFill * 100).rounded())) percent full of water")
+        .accessibilityLabel("Jerome the camel, \(Int((clampedFill * 100).rounded())) percent full of water")
     }
 
     @ViewBuilder

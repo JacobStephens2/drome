@@ -1,6 +1,6 @@
 # Drome — app workspace
 
-This directory is the build workspace for **Drome** (the 75 Hard–style tracker; the camel is also named Drome). If you are starting work here, read first:
+This directory is the build workspace for **Drome** (the 75 Hard–style tracker; the camel mascot is named **Jerome**). If you are starting work here, read first:
 
 1. `../phase-1-build-brief.md` — your mission, scope, environment constraints, and check-in points. Start there.
 2. `../decisions.md` — canonical decision log.

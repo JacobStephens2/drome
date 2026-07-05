@@ -1,7 +1,7 @@
 # Drome
 
-A free, local-first iOS tracker for 75-day challenges. The camel is also named Drome —
-filling Drome the camel is using Drome the app.
+A free, local-first iOS tracker for 75-day challenges. The camel is named **Jerome**
+(rhymes with Drome — my sister misheard it and the name stuck). Filling Jerome is using Drome.
 
 - **`core/`** — Rust: rules engine (flexible + purist rulesets), waking-hours day
   boundaries, append-only event log, projections, water pacing + anti-chug guard.
