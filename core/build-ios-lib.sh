@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # build-ios-lib.sh — build the drome-core static library for the iOS simulator
-# and regenerate the UniFFI Swift bindings.
+# AND device, and regenerate the UniFFI Swift bindings.
 #
 #   core/build-ios-lib.sh            # debug (default)
 #   core/build-ios-lib.sh --release
@@ -10,12 +10,17 @@
 #   ios/DromeShared/Generated/drome_core.swift
 #   ios/DromeShared/Generated/drome_coreFFI.h
 #   ios/DromeShared/Generated/drome_coreFFI.modulemap
-#   ios/Frameworks/libdrome_core.a          (aarch64-apple-ios-sim)
+#   ios/Frameworks/sim/libdrome_core.a       (aarch64-apple-ios-sim)
+#   ios/Frameworks/device/libdrome_core.a    (aarch64-apple-ios)
+#
+# The Xcode project selects the right slot per SDK via conditional
+# LIBRARY_SEARCH_PATHS ([sdk=iphonesimulator*] -> sim/, [sdk=iphoneos*] -> device/).
 #
 # Santa notes (see CLAUDE.md): plain cargo with the default target dir works —
 # this repo's core/target/(debug|release)/ is allowlisted. The bindgen binary
 # is always run as a debug `cargo run`, so it executes from core/target/debug/.
-# Do NOT set CARGO_TARGET_DIR outside the repo.
+# Do NOT set CARGO_TARGET_DIR outside the repo. The device .a is never executed
+# on this Mac (build scripts run from core/target/, also allowlisted).
 
 set -euo pipefail
 
@@ -27,7 +32,7 @@ for arg in "$@"; do
     case "$arg" in
         --release) PROFILE=release ;;
         -h|--help)
-            sed -n '2,17p' "${BASH_SOURCE[0]}"
+            sed -n '2,19p' "${BASH_SOURCE[0]}"
             exit 0
             ;;
         *)
@@ -37,39 +42,46 @@ for arg in "$@"; do
     esac
 done
 
-TARGET="aarch64-apple-ios-sim"
+SIM_TARGET="aarch64-apple-ios-sim"
+DEVICE_TARGET="aarch64-apple-ios"
 GENERATED_DIR="$REPO_ROOT/ios/DromeShared/Generated"
 FRAMEWORKS_DIR="$REPO_ROOT/ios/Frameworks"
-STATICLIB="$SCRIPT_DIR/target/$TARGET/$PROFILE/libdrome_core.a"
 
-if ! rustup target list --installed 2>/dev/null | grep -qx "$TARGET"; then
-    echo "error: rust target $TARGET is not installed (rustup target add $TARGET)" >&2
-    exit 1
-fi
+for t in "$SIM_TARGET" "$DEVICE_TARGET"; do
+    if ! rustup target list --installed 2>/dev/null | grep -qx "$t"; then
+        echo "error: rust target $t is not installed (rustup target add $t)" >&2
+        exit 1
+    fi
+done
 
 # Pin the min iOS version for cc-compiled objects (bundled sqlite3.o) to the
 # app's deployment floor, so the linker doesn't warn about mismatched versions.
 export IPHONEOS_DEPLOYMENT_TARGET=17.0
 
-echo "==> cargo build --lib --target $TARGET ($PROFILE)"
-if [ "$PROFILE" = "release" ]; then
-    (cd "$SCRIPT_DIR" && cargo build --lib --target "$TARGET" --release)
-else
-    (cd "$SCRIPT_DIR" && cargo build --lib --target "$TARGET")
-fi
+for t in "$SIM_TARGET" "$DEVICE_TARGET"; do
+    echo "==> cargo build --lib --target $t ($PROFILE)"
+    if [ "$PROFILE" = "release" ]; then
+        (cd "$SCRIPT_DIR" && cargo build --lib --target "$t" --release)
+    else
+        (cd "$SCRIPT_DIR" && cargo build --lib --target "$t")
+    fi
+    if [ ! -f "$SCRIPT_DIR/target/$t/$PROFILE/libdrome_core.a" ]; then
+        echo "error: expected staticlib missing: target/$t/$PROFILE/libdrome_core.a" >&2
+        exit 1
+    fi
+done
 
-if [ ! -f "$STATICLIB" ]; then
-    echo "error: expected staticlib missing: $STATICLIB" >&2
-    exit 1
-fi
+SIM_LIB="$SCRIPT_DIR/target/$SIM_TARGET/$PROFILE/libdrome_core.a"
+DEVICE_LIB="$SCRIPT_DIR/target/$DEVICE_TARGET/$PROFILE/libdrome_core.a"
 
 echo "==> generating Swift bindings into ios/DromeShared/Generated/"
 mkdir -p "$GENERATED_DIR"
 # cargo run builds the bindgen bin in debug and executes it from
 # core/target/debug/ (a Santa-allowlisted path). Renames/config come from
-# core/uniffi.toml, discovered automatically in library mode.
+# core/uniffi.toml, discovered automatically in library mode. Bindings are
+# identical for both platforms; generate once from the sim lib.
 (cd "$SCRIPT_DIR" && cargo run --features cli --bin uniffi-bindgen -- \
-    generate --library "$STATICLIB" --language swift --out-dir "$GENERATED_DIR")
+    generate --library "$SIM_LIB" --language swift --out-dir "$GENERATED_DIR")
 
 for f in drome_core.swift drome_coreFFI.h drome_coreFFI.modulemap; do
     if [ ! -f "$GENERATED_DIR/$f" ]; then
@@ -98,12 +110,14 @@ if grep -qE 'public (struct|enum) (Challenge|DayState|WaterState|ChugCheck|LogRe
     exit 1
 fi
 
-echo "==> copying staticlib to ios/Frameworks/libdrome_core.a"
-mkdir -p "$FRAMEWORKS_DIR"
-cp -f "$STATICLIB" "$FRAMEWORKS_DIR/libdrome_core.a"
+echo "==> copying staticlibs to ios/Frameworks/{sim,device}/"
+mkdir -p "$FRAMEWORKS_DIR/sim" "$FRAMEWORKS_DIR/device"
+cp -f "$SIM_LIB" "$FRAMEWORKS_DIR/sim/libdrome_core.a"
+cp -f "$DEVICE_LIB" "$FRAMEWORKS_DIR/device/libdrome_core.a"
+# Remove the legacy single-slot lib so a stale copy can't shadow the split ones.
+rm -f "$FRAMEWORKS_DIR/libdrome_core.a"
 
 echo "==> done"
 echo "    $GENERATED_DIR/drome_core.swift"
-echo "    $GENERATED_DIR/drome_coreFFI.h"
-echo "    $GENERATED_DIR/drome_coreFFI.modulemap"
-echo "    $FRAMEWORKS_DIR/libdrome_core.a ($TARGET, $PROFILE)"
+echo "    $FRAMEWORKS_DIR/sim/libdrome_core.a ($SIM_TARGET, $PROFILE)"
+echo "    $FRAMEWORKS_DIR/device/libdrome_core.a ($DEVICE_TARGET, $PROFILE)"
