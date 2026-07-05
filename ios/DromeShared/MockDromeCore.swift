@@ -5,8 +5,10 @@
 //  Full in-memory DromeCoreClient with correct-enough flexible-mode logic for
 //  demos, previews, and the view fan-out build stage. Seeded with the demo
 //  fixture: 13 prior days (1–12 backfilled complete, day 13 complete except
-//  reading) and a partial day 14 = the REAL current date. The start date is
-//  anchored 13 days before "today" so the fixture always presents day 14; on
+//  reading — with water done via a PARTIAL backfill flag carrying no
+//  quantities, so share-card previews exercise the flags-not-totals path) and
+//  a partial day 14 = the REAL current date. The start date is anchored
+//  13 days before "today" so the fixture always presents day 14; on
 //  2026-07-04 that start date is exactly 2026-06-21 per the contract.
 //
 //  Replaced at integration time by LiveDromeCore (UniFFI bindings). Keep the
@@ -104,11 +106,19 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
         }
 
         // Day 13 (yesterday): everything except reading. Not closed — editable.
+        // Water is done via a PARTIAL backfill flag (no quantities) while the
+        // rest is event-logged: a partially-backfilled day, so share cards must
+        // read the core's done flags, not recompute done-ness from totals.
         let day13 = Self.shift(startDate, by: 12, formatter: f, calendar: cal)
         let y = { (h: Double) in now.addingTimeInterval(-24 * 3600 + h * 3600) }
-        for (ml, at) in [(Int64(710), y(-8)), (710, y(-5)), (710, y(-3)), (710, y(-1)), (710, y(0)), (350, y(1))] {
-            events.append(Event(uuid: UUID().uuidString, date: day13, kind: .water(ml: ml), loggedAt: at))
-        }
+        events.append(Event(
+            uuid: UUID().uuidString, date: day13,
+            kind: .backfill(BackfilledDay(
+                date: day13, water: true, outdoorWorkout: false, secondWorkout: false,
+                reading: false, diet: false, photo: false, extraIds: []
+            )),
+            loggedAt: y(-10)
+        ))
         events.append(Event(uuid: UUID().uuidString, date: day13,
                             kind: .workout(durationMin: 45, outdoor: true, note: "Morning run"), loggedAt: y(-9)))
         events.append(Event(uuid: UUID().uuidString, date: day13,
@@ -548,17 +558,26 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
         let summary = computeSummary(now: Date())
         return ShareCardData(
             date: date,
-            dayIndex: state.dayIndex,
+            // Like the core: clamped to [1, lengthDays]; outOfRange is honest.
+            dayIndex: min(max(state.dayIndex, 1), challenge.lengthDays),
             lengthDays: challenge.lengthDays,
+            outOfRange: state.outOfRange,
             rulesetLabel: challenge.ruleset.label,
             coreComplete: state.coreComplete,
             currentRun: summary.currentRun,
             waterTotalMl: state.waterTotalMl,
             waterGoalMl: state.waterGoalMl,
+            waterDone: state.waterDone,
+            outdoorWorkoutDone: state.outdoorWorkoutDone,
+            secondWorkoutDone: state.secondWorkoutDone,
             pagesRead: state.pagesRead,
+            readingDone: state.readingDone,
             dietDone: state.dietDone,
             photoDone: state.photoDone,
-            workouts: state.workouts,
+            // Cards carry duration + outdoor only — workout notes stay private.
+            workouts: state.workouts.map {
+                ShareWorkout(id: $0.id, durationMin: $0.durationMin, outdoor: $0.outdoor)
+            },
             isBackfilled: state.isBackfilled
         )
     }

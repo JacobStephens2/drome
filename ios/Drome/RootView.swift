@@ -15,6 +15,7 @@ import SwiftUI
 
 struct RootView: View {
     @Environment(AppModel.self) private var appModel
+    @Environment(\.scenePhase) private var scenePhase
 
     private enum Tab: Hashable {
         case today, history, settings
@@ -42,6 +43,7 @@ struct RootView: View {
 
     @State private var tab: Tab = .today
     @State private var sheet: TodaySheet?
+    @State private var closeDayConfirmPresented = false
 
     var body: some View {
         @Bindable var appModel = appModel
@@ -67,8 +69,16 @@ struct RootView: View {
             appModel.refresh()
             applyDebugLaunchScreen()
         }
+        // Widget logs and day rollovers happen while the app is backgrounded;
+        // re-project on every return to foreground so the board is never stale.
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { appModel.refresh() }
+        }
         .sheet(item: $sheet) { presented in
             sheetContent(presented)
+                // A failed intent inside a sheet (water/photo/yesterday…)
+                // must alert on top of that sheet, not under it.
+                .modifier(IntentErrorAlert(isFrontmost: true))
         }
         .fullScreenCover(item: $appModel.pendingCompletionMoment) { moment in
             CompletionMomentView(
@@ -84,11 +94,15 @@ struct RootView: View {
         .onChange(of: appModel.pendingCompletionMoment) { _, moment in
             if moment != nil { sheet = nil }
         }
+        // Fallback chug alert (matches WaterView's pattern): SwiftUI flips the
+        // binding false BEFORE the tapped button's action runs, so the setter
+        // must be a no-op — clearing pending state there would swallow a
+        // confirmed "Log anyway". Both buttons clear the state explicitly.
         .alert(
             "Over a liter in an hour",
             isPresented: Binding(
                 get: { appModel.pendingChugWarning != nil && sheet == nil },
-                set: { if !$0 { appModel.cancelPendingWater() } }
+                set: { _ in }
             ),
             presenting: appModel.pendingChugWarning
         ) { _ in
@@ -97,6 +111,10 @@ struct RootView: View {
         } message: { warning in
             Text("That would be over \(warning.limitMl) ml in the last hour. Your body handles about 1 liter an hour — it counts just the same in a while.")
         }
+        // Failed writes must never look like successful taps: any intent
+        // error lands here as an honest alert. Yields to a presented sheet,
+        // whose content carries its own copy of the same alert.
+        .modifier(IntentErrorAlert(isFrontmost: sheet == nil))
     }
 
     // MARK: - Today tab
@@ -119,6 +137,32 @@ struct RootView: View {
                     .disabled(appModel.todayState == nil)
                     .accessibilityLabel("Share today's card")
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button {
+                            closeDayConfirmPresented = true
+                        } label: {
+                            Label("Close out my day", systemImage: "checkmark.seal")
+                        }
+                        .disabled(appModel.todayState == nil || appModel.todayState?.day.isClosed == true)
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .fontWeight(.semibold)
+                    }
+                    .accessibilityLabel("More actions")
+                }
+            }
+            // "The day ends when you tell it you're done." Closing can't be
+            // un-done from the UI, so it asks once, plainly.
+            .confirmationDialog(
+                "Close out Day \(appModel.todayState?.dayIndex ?? 0)?",
+                isPresented: $closeDayConfirmPresented,
+                titleVisibility: .visible
+            ) {
+                Button("Close the day") { appModel.closeDay() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Anything you log after this counts toward tomorrow.")
             }
             .navigationBarTitleDisplayMode(.inline)
         }
@@ -180,6 +224,32 @@ struct RootView: View {
         case .share: presentTodayShareCard()
         }
         #endif
+    }
+}
+
+// MARK: - Intent-error alert (failed writes must be visible)
+
+/// Surfaces `AppModel.lastErrorMessage` as an alert, cleared on dismissal.
+/// Applied twice: to the root TabView (active only while no sheet is up —
+/// `isFrontmost` — so it never fights the sheet's presentation) and to the
+/// presented sheet's content, which is frontmost by definition.
+private struct IntentErrorAlert: ViewModifier {
+    @Environment(AppModel.self) private var appModel
+
+    let isFrontmost: Bool
+
+    func body(content: Content) -> some View {
+        content.alert(
+            "That didn't save",
+            isPresented: Binding(
+                get: { isFrontmost && appModel.lastErrorMessage != nil },
+                set: { if !$0 { appModel.clearLastError() } }
+            )
+        ) {
+            Button("OK", role: .cancel) { appModel.clearLastError() }
+        } message: {
+            Text(appModel.lastErrorMessage ?? "")
+        }
     }
 }
 

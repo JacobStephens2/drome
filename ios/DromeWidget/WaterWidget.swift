@@ -20,11 +20,16 @@ import WidgetKit
 
 enum WidgetCore {
     /// The REAL store, shared with the app (App Group SQLite, WAL). nil when
-    /// the store fails to open — the widget then renders the honest
-    /// "Open Drome" state and logs nothing. NEVER a mock: fake gauge data
+    /// the store fails to open — the widget then renders the neutral
+    /// store-error state and logs nothing. NEVER a mock: fake gauge data
     /// (or logs into a throwaway store) is this widget's cardinal sin.
+    /// Computed (not cached) on purpose: a transient open failure retries on
+    /// the next timeline reload or intent instead of pinning the widget
+    /// process to a dead handle.
     /// (WidgetPaceCheck — the shared chug flag — lives in DromeShared.)
-    static let client: DromeCoreClient? = try? LiveDromeCore(dbPath: SharedPaths.databasePath)
+    static var client: DromeCoreClient? {
+        try? LiveDromeCore(dbPath: SharedPaths.databasePath)
+    }
 }
 
 // MARK: - Local palette (hexes pinned in docs/ARCHITECTURE.md — keep in sync)
@@ -59,29 +64,39 @@ enum WidgetPalette {
 // MARK: - Timeline entry
 
 struct WaterEntry: TimelineEntry {
+    /// What the widget can honestly render. Tri-state: "no challenge" and
+    /// "store/read error" are different truths — a read failure must never
+    /// claim the user hasn't set up their challenge.
+    enum Content {
+        /// Live gauge data from the shared store. Presets: up to two
+        /// containers for the interactive buttons.
+        case ok(water: WaterState, dayIndex: Int, presets: [ContainerPreset])
+        /// Store opened fine and reports no active challenge.
+        case noChallenge
+        /// The store failed to open or a read threw; the next timeline
+        /// reload retries (WidgetCore.client is computed).
+        case storeError
+    }
+
     let date: Date
-    /// nil when there is no active challenge (or the store failed to open).
-    let water: WaterState?
-    let dayIndex: Int
-    /// Up to two container presets for the interactive buttons.
-    let presets: [ContainerPreset]
+    let content: Content
     /// A widget-initiated log tripped the chug guard: show "Open Drome —
     /// pace check" instead of the gauge, log nothing.
     let paceCheckPending: Bool
 
     /// Fixed sample for the gallery placeholder (never touches the store).
+    static let placeholderWater = WaterState(
+        totalMl: 2130, goalMl: 3785, remainingMl: 1655,
+        paceTargetMl: 2200, onPace: true, finalOunce: false,
+        discourageCatchUp: false
+    )
+    static let placeholderPresets = [
+        ContainerPreset(id: "bottle-24oz", name: "24 oz bottle", ml: 710, sortOrder: 0),
+        ContainerPreset(id: "glass", name: "Glass", ml: 350, sortOrder: 1),
+    ]
     static let placeholder = WaterEntry(
         date: .now,
-        water: WaterState(
-            totalMl: 2130, goalMl: 3785, remainingMl: 1655,
-            paceTargetMl: 2200, onPace: true, finalOunce: false,
-            discourageCatchUp: false
-        ),
-        dayIndex: 14,
-        presets: [
-            ContainerPreset(id: "bottle-24oz", name: "24 oz bottle", ml: 710, sortOrder: 0),
-            ContainerPreset(id: "glass", name: "Glass", ml: 350, sortOrder: 1),
-        ],
+        content: .ok(water: placeholderWater, dayIndex: 14, presets: placeholderPresets),
         paceCheckPending: false
     )
 }
@@ -110,20 +125,27 @@ struct WaterProvider: TimelineProvider {
 
     private func makeEntry(date: Date) -> WaterEntry {
         guard let client = WidgetCore.client else {
-            // Store failed to open: honest "Open Drome" state, never mock data.
-            return WaterEntry(date: date, water: nil, dayIndex: 0, presets: [], paceCheckPending: false)
+            // Store failed to open: neutral state, never mock data and never
+            // "set up your challenge" (we don't know that).
+            return WaterEntry(date: date, content: .storeError, paceCheckPending: false)
         }
-        let today = try? client.today()
-        let presets = ((try? client.containerPresets()) ?? [])
-            .sorted { $0.sortOrder < $1.sortOrder }
-            .prefix(2)
-        return WaterEntry(
-            date: date,
-            water: today?.water,
-            dayIndex: today?.dayIndex ?? 0,
-            presets: Array(presets),
-            paceCheckPending: WidgetPaceCheck.isPending
-        )
+        do {
+            guard try client.activeChallenge() != nil else {
+                return WaterEntry(date: date, content: .noChallenge, paceCheckPending: false)
+            }
+            let today = try client.today()
+            let presets = try client.containerPresets()
+                .sorted { $0.sortOrder < $1.sortOrder }
+                .prefix(2)
+            return WaterEntry(
+                date: date,
+                content: .ok(water: today.water, dayIndex: today.dayIndex, presets: Array(presets)),
+                paceCheckPending: WidgetPaceCheck.isPending
+            )
+        } catch {
+            // A read threw mid-flight: same neutral state.
+            return WaterEntry(date: date, content: .storeError, paceCheckPending: false)
+        }
     }
 }
 
@@ -442,6 +464,28 @@ struct NoChallengeView: View {
     }
 }
 
+/// The store failed to open or a read threw. Deliberately neutral: claiming
+/// "set up your challenge" here would be a lie — the challenge may be fine.
+/// The next timeline reload retries the store.
+struct StoreErrorView: View {
+    var body: some View {
+        VStack(spacing: 6) {
+            CamelSilhouette()
+                .fill(WidgetPalette.ink.opacity(0.35))
+                .frame(width: 72, height: 48)
+            Text("Open Drome")
+                .font(.system(size: 16, weight: .black))
+                .tracking(-0.3)
+                .foregroundStyle(WidgetPalette.ink)
+            Text("Couldn't read your data just now")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(WidgetPalette.ink.opacity(0.7))
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
 // MARK: - Root view & widget
 
 struct WaterWidgetView: View {
@@ -449,17 +493,22 @@ struct WaterWidgetView: View {
     var entry: WaterEntry
 
     var body: some View {
-        if entry.paceCheckPending {
-            PaceCheckView()
-        } else if let water = entry.water {
-            switch family {
-            case .systemMedium:
-                MediumWaterView(water: water, dayIndex: entry.dayIndex, presets: entry.presets)
-            default:
-                SmallWaterView(water: water, dayIndex: entry.dayIndex)
+        switch entry.content {
+        case .ok(let water, let dayIndex, let presets):
+            if entry.paceCheckPending {
+                PaceCheckView()
+            } else {
+                switch family {
+                case .systemMedium:
+                    MediumWaterView(water: water, dayIndex: dayIndex, presets: presets)
+                default:
+                    SmallWaterView(water: water, dayIndex: dayIndex)
+                }
             }
-        } else {
+        case .noChallenge:
             NoChallengeView()
+        case .storeError:
+            StoreErrorView()
         }
     }
 }
@@ -484,15 +533,15 @@ extension WaterEntry {
     /// demo fixture via MockDromeCore: day 14, ~40% water.
     static var previewLive: WaterEntry {
         let client: DromeCoreClient = MockDromeCore()
-        let today = try? client.today()
+        guard let today = try? client.today() else {
+            return WaterEntry(date: .now, content: .storeError, paceCheckPending: false)
+        }
         let presets = ((try? client.containerPresets()) ?? [])
             .sorted { $0.sortOrder < $1.sortOrder }
             .prefix(2)
         return WaterEntry(
             date: .now,
-            water: today?.water,
-            dayIndex: today?.dayIndex ?? 0,
-            presets: Array(presets),
+            content: .ok(water: today.water, dayIndex: today.dayIndex, presets: Array(presets)),
             paceCheckPending: false
         )
     }
@@ -500,13 +549,15 @@ extension WaterEntry {
     static var previewGoalMet: WaterEntry {
         WaterEntry(
             date: .now,
-            water: WaterState(
-                totalMl: 3785, goalMl: 3785, remainingMl: 0,
-                paceTargetMl: 3200, onPace: true, finalOunce: false,
-                discourageCatchUp: false
+            content: .ok(
+                water: WaterState(
+                    totalMl: 3785, goalMl: 3785, remainingMl: 0,
+                    paceTargetMl: 3200, onPace: true, finalOunce: false,
+                    discourageCatchUp: false
+                ),
+                dayIndex: 14,
+                presets: WaterEntry.placeholderPresets
             ),
-            dayIndex: 14,
-            presets: WaterEntry.placeholder.presets,
             paceCheckPending: false
         )
     }
@@ -514,11 +565,21 @@ extension WaterEntry {
     static var previewPaceCheck: WaterEntry {
         WaterEntry(
             date: .now,
-            water: WaterEntry.placeholder.water,
-            dayIndex: 14,
-            presets: WaterEntry.placeholder.presets,
+            content: .ok(
+                water: WaterEntry.placeholderWater,
+                dayIndex: 14,
+                presets: WaterEntry.placeholderPresets
+            ),
             paceCheckPending: true
         )
+    }
+
+    static var previewNoChallenge: WaterEntry {
+        WaterEntry(date: .now, content: .noChallenge, paceCheckPending: false)
+    }
+
+    static var previewStoreError: WaterEntry {
+        WaterEntry(date: .now, content: .storeError, paceCheckPending: false)
     }
 }
 
@@ -528,6 +589,8 @@ extension WaterEntry {
     WaterEntry.previewLive
     WaterEntry.previewGoalMet
     WaterEntry.previewPaceCheck
+    WaterEntry.previewNoChallenge
+    WaterEntry.previewStoreError
 }
 
 #Preview("Medium", as: .systemMedium) {
@@ -536,4 +599,6 @@ extension WaterEntry {
     WaterEntry.previewLive
     WaterEntry.previewGoalMet
     WaterEntry.previewPaceCheck
+    WaterEntry.previewNoChallenge
+    WaterEntry.previewStoreError
 }

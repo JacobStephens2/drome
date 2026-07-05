@@ -40,7 +40,10 @@ struct PhotoView: View {
 
                 statusRow
 
-                if let thumbnail {
+                // Thumbnail is gated on photoDone: a revoked or failed log
+                // must never keep displaying "today's photo" while the task
+                // honestly reads not-done.
+                if photoDone, let thumbnail {
                     Image(uiImage: thumbnail)
                         .resizable()
                         .scaledToFill()
@@ -89,7 +92,12 @@ struct PhotoView: View {
         .background(Color.dromeSand.ignoresSafeArea())
         .onAppear {
             appModel.refresh()
-            loadThumbnail()
+            syncThumbnail()
+        }
+        // A revoke elsewhere can flip photoDone false while this view is up;
+        // re-sync so the stale file is deleted and the thumbnail drops.
+        .onChange(of: photoDone) {
+            syncThumbnail()
         }
         .onChange(of: pickerItem) {
             guard let item = pickerItem else { return }
@@ -125,11 +133,17 @@ struct PhotoView: View {
             attachFailed = true
             return
         }
+        let filename = "\(date).jpg"
+        let fileURL: URL
         do {
-            let filename = "\(date).jpg"
             let directory = try Self.photosDirectory()
-            try jpeg.write(to: directory.appendingPathComponent(filename), options: .atomic)
-
+            fileURL = directory.appendingPathComponent(filename)
+            try jpeg.write(to: fileURL, options: .atomic)
+        } catch {
+            attachFailed = true
+            return
+        }
+        do {
             // AppModel has no photoRef-carrying intent, so log through the
             // shared client and hand the result back for the standard
             // completion-moment/refresh handling.
@@ -137,15 +151,27 @@ struct PhotoView: View {
             appModel.noteExternalLog(result)
             thumbnail = image
         } catch {
+            // The log never landed: don't leave an orphaned JPEG behind that
+            // would masquerade as "today's photo".
+            try? FileManager.default.removeItem(at: fileURL)
+            thumbnail = nil
             attachFailed = true
         }
     }
 
-    private func loadThumbnail() {
-        guard thumbnail == nil,
-              let date = appModel.todayState?.date,
+    /// Loads today's photo when the task is done; when it is NOT done (never
+    /// logged, log failed, or the event was revoked) any file for today is an
+    /// orphan — delete it and show nothing.
+    private func syncThumbnail() {
+        guard let date = appModel.todayState?.date,
               let directory = try? Self.photosDirectory() else { return }
         let url = directory.appendingPathComponent("\(date).jpg")
+        guard photoDone else {
+            try? FileManager.default.removeItem(at: url)
+            thumbnail = nil
+            return
+        }
+        guard thumbnail == nil else { return }
         if FileManager.default.fileExists(atPath: url.path),
            let image = UIImage(contentsOfFile: url.path) {
             thumbnail = image

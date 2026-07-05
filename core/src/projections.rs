@@ -55,6 +55,9 @@ pub struct Projection {
     goal_changes: Vec<GoalChange>,
     backfills: BTreeMap<NaiveDate, DayBackfilledPayload>,
     /// Non-revoked water adds as `(logged_at_epoch, ml)`, for the chug guard.
+    /// Excludes explicitly backdated logs (`effective_date` set): retroactive
+    /// water is bookkeeping, not current intake, and must never poison the
+    /// trailing-hour window.
     water_by_epoch: Vec<(i64, i64)>,
 }
 
@@ -105,7 +108,9 @@ impl Projection {
                     let p: WaterAddPayload = e.payload_as()?;
                     let day = proj.day_mut(e)?;
                     day.water_ml = day.water_ml.saturating_add(p.ml);
-                    proj.water_by_epoch.push((e.logged_at.epoch_secs, p.ml));
+                    if e.effective_date.is_none() {
+                        proj.water_by_epoch.push((e.logged_at.epoch_secs, p.ml));
+                    }
                 }
                 events::KIND_WORKOUT => {
                     let p: WorkoutPayload = e.payload_as()?;
@@ -286,12 +291,16 @@ impl Projection {
     }
 
     /// Consecutive complete days ending at `today` if today is complete, else
-    /// ending at yesterday. Never reaches before the challenge start.
+    /// ending at yesterday. Never reaches before the challenge start, and days
+    /// past day `length_days` never count (mirroring the start_date floor):
+    /// once the challenge is over, the run is the streak ending at its last day.
     pub fn current_run(&self, today: NaiveDate) -> Result<u32> {
-        let mut cursor = if self.day_state(today).core_complete {
-            today
+        let end_date = self.date_at_index(i64::from(self.length_days))?;
+        let anchor = today.min(end_date);
+        let mut cursor = if self.day_state(anchor).core_complete {
+            anchor
         } else {
-            time::prev_date(today)?
+            time::prev_date(anchor)?
         };
         let mut run = 0u32;
         while cursor >= self.start_date && self.day_state(cursor).core_complete {

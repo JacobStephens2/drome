@@ -27,8 +27,16 @@ enum WaterUnits {
         Double(ml) / mlPerFlOz
     }
 
+    /// Upper bound for a single fl-oz → ml conversion (~50 L), far beyond any
+    /// sane goal or single log. Keeps the Double → Int64 conversion total.
+    static let maxFlOz: Double = 1700
+
     static func ml(fromFlOz oz: Double) -> Int64 {
-        Int64((oz * mlPerFlOz).rounded())
+        // `oz` can arrive straight from unbounded text fields: clamp NaN/∞/huge
+        // values instead of trapping on the Int64 conversion.
+        guard oz.isFinite else { return 0 }
+        let clamped = min(max(oz, 0), maxFlOz)
+        return Int64((clamped * mlPerFlOz).rounded())
     }
 }
 
@@ -257,21 +265,40 @@ struct LogResult: Sendable, Hashable {
     var chugWarning: ChugCheck?
 }
 
-/// Everything a share card renders. Never contains photo refs.
+/// A workout as it appears on a share card: duration + outdoor flag ONLY.
+/// Workout notes are private and never leave the device on a card.
+struct ShareWorkout: Identifiable, Sendable, Hashable {
+    /// Stable per-card id (synthesized by the mappings; cards carry no UUIDs).
+    var id: String
+    var durationMin: Int
+    var outdoor: Bool
+}
+
+/// Everything a share card renders. Never contains photo refs or workout
+/// notes. Per-task done flags come straight from the core so backfilled days
+/// (whose flags carry no quantities) still render honestly.
 struct ShareCardData: Sendable, Hashable {
     var date: DayDate
+    /// Clamped to [1, lengthDays] by the core; `outOfRange` carries the truth.
     var dayIndex: Int
     var lengthDays: Int
+    /// True when the date falls outside the challenge window — the card must
+    /// say so rather than masquerade as an in-challenge day.
+    var outOfRange: Bool
     /// Honest ruleset label ("Flexible" / "Purist").
     var rulesetLabel: String
     var coreComplete: Bool
     var currentRun: Int
     var waterTotalMl: Int64
     var waterGoalMl: Int64
+    var waterDone: Bool
+    var outdoorWorkoutDone: Bool
+    var secondWorkoutDone: Bool
     var pagesRead: Int
+    var readingDone: Bool
     var dietDone: Bool
     var photoDone: Bool
-    var workouts: [WorkoutEntry]
+    var workouts: [ShareWorkout]
     var isBackfilled: Bool
 }
 

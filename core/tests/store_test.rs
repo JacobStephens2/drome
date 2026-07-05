@@ -913,7 +913,7 @@ fn waking_window_setter_repaces_water_but_never_touches_day_state() {
     assert_eq!(challenge.waking_start_minutes, 360);
     assert_eq!(challenge.waking_end_minutes, 1_260);
 
-    // Validation: start < end and end < 1440, typed errors otherwise.
+    // Validation: start < end and end <= 1440, typed errors otherwise.
     assert!(matches!(
         store.set_waking_window(600, 600),
         Err(DromeError::InvalidArgument(_))
@@ -923,9 +923,14 @@ fn waking_window_setter_repaces_water_but_never_touches_day_state() {
         Err(DromeError::InvalidArgument(_))
     ));
     assert!(matches!(
-        store.set_waking_window(0, 1_440),
+        store.set_waking_window(0, 1_441),
         Err(DromeError::InvalidArgument(_))
     ));
+    // A midnight-end window is accepted by create/import, so it must stay
+    // editable here too (same bounds).
+    store.set_waking_window(0, 1_440).expect("midnight-end ok");
+    let challenge = store.active_challenge().expect("query").expect("challenge");
+    assert_eq!(challenge.waking_end_minutes, 1_440);
     store.set_waking_window(0, 1_439).expect("edge window ok");
 
     let (_d2, _p2, empty) = open_store();
@@ -933,4 +938,139 @@ fn waking_window_setter_repaces_water_but_never_touches_day_state() {
         empty.set_waking_window(360, 1_260),
         Err(DromeError::NoActiveChallenge)
     ));
+}
+
+#[test]
+fn retroactive_water_is_bookkeeping_not_chug_intake() {
+    let (_dir, _path, store) = demo_store();
+
+    // 21:00: a full gallon logged for yesterday (day 13). The water lands on
+    // day 13, but it is not current intake: no chug warning on the log itself.
+    let r = store
+        .log_water(
+            GALLON_ML,
+            at("2026-07-04", 21, 0),
+            Some("2026-07-03".into()),
+        )
+        .expect("retroactive log");
+    assert_eq!(r.day_state.date, "2026-07-03");
+    assert_eq!(r.day_state.water_ml, GALLON_ML);
+    assert!(r.chug_warning.is_none());
+
+    // The backdated gallon must not poison the trailing-hour window: a
+    // genuine sip a minute later checks clean and logs without a warning.
+    let check = store
+        .check_chug(at("2026-07-04", 21, 1), 200)
+        .expect("check");
+    assert!(!check.warn);
+    assert_eq!(check.trailing_60min_ml, 0);
+    let r = store
+        .log_water(200, at("2026-07-04", 21, 2), None)
+        .expect("log");
+    assert!(r.chug_warning.is_none());
+
+    // Genuine (no effective_date) intake still guards: 200 + 900 = 1100 ml
+    // inside the hour crosses the 1000 ml threshold.
+    let r = store
+        .log_water(900, at("2026-07-04", 21, 30), None)
+        .expect("log");
+    let warning = r.chug_warning.expect("chug warning");
+    assert!(warning.warn);
+    assert_eq!(warning.trailing_60min_ml, 200);
+    assert_eq!(warning.add_ml, 900);
+}
+
+#[test]
+fn import_rejects_payloads_the_log_apis_reject() {
+    let (_d1, _p1, source) = demo_store();
+    source
+        .log_water(500, at("2026-07-04", 10, 0), None)
+        .expect("water");
+    let snapshot = source.export_json(at("2026-07-04", 11, 0)).expect("export");
+    let doc: serde_json::Value = serde_json::from_str(&snapshot).expect("parse");
+
+    let with_event = |kind: &str, payload: serde_json::Value| {
+        let mut tampered = doc.clone();
+        tampered["events"]
+            .as_array_mut()
+            .expect("events array")
+            .push(serde_json::json!({
+                "uuid": format!("tampered-{kind}"),
+                "logged_at_epoch": 1_782_000_000i64,
+                "tz_offset_secs": 0,
+                "kind": kind,
+                "payload": payload,
+            }));
+        tampered.to_string()
+    };
+
+    let (_d2, _p2, dest) = open_store();
+    let cases = [
+        // A zero goal would silently auto-complete water for all later days.
+        with_event("goal_changed", serde_json::json!({ "water_goal_ml": 0 })),
+        with_event("water_add", serde_json::json!({ "ml": -500 })),
+        with_event("water_add", serde_json::json!({ "ml": 10_001 })),
+        with_event(
+            "workout",
+            serde_json::json!({ "duration_min": 0, "outdoor": true }),
+        ),
+        with_event(
+            "reading",
+            serde_json::json!({ "book_title": "Deep Work", "pages": 10_001 }),
+        ),
+    ];
+    for tampered in cases {
+        assert!(matches!(
+            dest.import_json(tampered),
+            Err(DromeError::InvalidArgument(_))
+        ));
+        // Nothing was written by the rejected import.
+        assert!(dest.active_challenge().expect("query").is_none());
+    }
+
+    // The untampered snapshot still imports cleanly afterwards.
+    dest.import_json(snapshot).expect("import");
+    assert!(dest.active_challenge().expect("query").is_some());
+}
+
+#[test]
+fn current_run_ignores_days_past_the_challenge_end() {
+    let (_dir, _path, store) = open_store();
+    store
+        .create_challenge(challenge_cfg(
+            RulesetKind::Flexible,
+            "2026-06-21",
+            at("2026-06-21", 8, 0),
+        ))
+        .expect("create");
+
+    // Every day complete through day 77 — two days past the 75-day end.
+    let mut date = drome_core::time::parse_date("2026-06-21").expect("date");
+    let mut days = Vec::new();
+    for _ in 0..77 {
+        days.push(BackfilledDay {
+            date: drome_core::time::format_date(date),
+            water: true,
+            outdoor_workout: true,
+            second_workout: true,
+            reading: true,
+            diet: true,
+            photo: true,
+            extra_ids: vec![],
+        });
+        date = date.succ_opt().expect("date in range");
+    }
+    store
+        .backfill_days(days, at("2026-09-05", 9, 0))
+        .expect("backfill");
+
+    // Today is day 77 (2026-09-05): the run counts only in-range days, so it
+    // can exceed neither length_days nor days_complete_count.
+    let now = at("2026-09-05", 12, 0);
+    let summary = store.summary(now).expect("summary");
+    assert_eq!(summary.days_complete_count, 75);
+    assert_eq!(summary.current_run, 75); // not 77
+    assert!(summary.today_out_of_range);
+    assert!(summary.current_run <= summary.length_days);
+    assert!(summary.current_run <= summary.days_complete_count);
 }

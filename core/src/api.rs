@@ -21,8 +21,13 @@ pub const DEFAULT_CHALLENGE_LENGTH_DAYS: u32 = 75;
 pub const JOB_EXTRA_ID: &str = "job_application";
 pub const JOB_EXTRA_NAME: &str = "Apply to a job";
 
-const MAX_WATER_LOG_ML: i64 = 10_000;
-const MAX_WATER_GOAL_ML: i64 = 50_000;
+/// Payload bounds shared by the log_* APIs and the import validation in
+/// `export::parse_snapshot` — a snapshot must not smuggle in values the log
+/// APIs would reject.
+pub(crate) const MAX_WATER_LOG_ML: i64 = 10_000;
+pub(crate) const MAX_WATER_GOAL_ML: i64 = 50_000;
+pub(crate) const MAX_WORKOUT_DURATION_MIN: u32 = 24 * 60;
+pub(crate) const MAX_READING_PAGES: u32 = 10_000;
 const MAX_CALENDAR_SPAN_DAYS: i64 = 1_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum, Serialize, Deserialize)]
@@ -432,9 +437,11 @@ impl DromeStore {
         start_minutes: u16,
         end_minutes: u16,
     ) -> Result<(), DromeError> {
-        if start_minutes >= end_minutes || end_minutes >= 1_440 {
+        // Same bounds as create_challenge/import (validate_challenge_config):
+        // end == 1440 (midnight) is a valid window end for the pacing math.
+        if start_minutes >= end_minutes || end_minutes > 1_440 {
             return Err(DromeError::InvalidArgument(
-                "waking window must satisfy 0 <= start < end < 1440".into(),
+                "waking window must satisfy 0 <= start < end <= 1440".into(),
             ));
         }
         let conn = self.lock()?;
@@ -458,13 +465,20 @@ impl DromeStore {
                 "water ml must be in 1..={MAX_WATER_LOG_ML}"
             )));
         }
+        // Retroactive water (explicit effective_date) is bookkeeping, not
+        // current intake: it never trips the anti-chug guard.
+        let chug_add_ml = if effective_date.is_some() {
+            None
+        } else {
+            Some(ml)
+        };
         self.log_kind(
             events::KIND_WATER_ADD,
             json!({ "ml": ml }),
             now,
             effective_date,
             None,
-            Some(ml),
+            chug_add_ml,
         )
     }
 
@@ -477,10 +491,10 @@ impl DromeStore {
         now: LocalInstant,
         effective_date: Option<String>,
     ) -> Result<LogResult, DromeError> {
-        if duration_min == 0 || duration_min > 24 * 60 {
-            return Err(DromeError::InvalidArgument(
-                "workout duration_min must be in 1..=1440".into(),
-            ));
+        if duration_min == 0 || duration_min > MAX_WORKOUT_DURATION_MIN {
+            return Err(DromeError::InvalidArgument(format!(
+                "workout duration_min must be in 1..={MAX_WORKOUT_DURATION_MIN}"
+            )));
         }
         let payload = serde_json::to_value(events::WorkoutPayload {
             duration_min,
@@ -505,10 +519,10 @@ impl DromeStore {
         now: LocalInstant,
         effective_date: Option<String>,
     ) -> Result<LogResult, DromeError> {
-        if pages == 0 || pages > 10_000 {
-            return Err(DromeError::InvalidArgument(
-                "pages must be in 1..=10000".into(),
-            ));
+        if pages == 0 || pages > MAX_READING_PAGES {
+            return Err(DromeError::InvalidArgument(format!(
+                "pages must be in 1..={MAX_READING_PAGES}"
+            )));
         }
         self.log_kind(
             events::KIND_READING,

@@ -70,11 +70,35 @@ final class AppModel {
     /// surface this and only log after `confirmPendingWater()`.
     var pendingChugWarning: ChugCheck?
 
-    /// Most recent user-visible error, if any.
+    /// Yesterday's projection (today − 1), refreshed alongside today. Drives
+    /// the "log for yesterday" affordance: per the contract, yesterday stays
+    /// editable until it's closed.
+    private(set) var yesterdayState: DayState?
+
+    /// Most recent user-visible error, if any. Set on every failed intent and
+    /// surfaced as an alert at the RootView level; cleared ONLY by explicit
+    /// dismissal (`clearLastError`) — a later successful refresh must never
+    /// swallow an error the user hasn't seen.
     private(set) var lastErrorMessage: String?
 
+    func clearLastError() {
+        lastErrorMessage = nil
+    }
+
     private var pendingWaterMl: Int64?
-    private var lastEventUuid: String?
+
+    /// Most recent today-attributed water event logged through this model.
+    /// WaterView's "Undo last" revokes exactly this — never an arbitrary
+    /// event of another kind. Cleared when that event is revoked.
+    private(set) var lastWaterEventUuid: String?
+
+    /// Most recent today-attributed diet attest, for DietView's immediate
+    /// undo. Same targeted contract as `lastWaterEventUuid`.
+    private(set) var lastDietEventUuid: String?
+
+    /// The core's per-log water cap; retroactive "met goal" adds are chunked
+    /// to stay under it.
+    private static let maxWaterPerLogMl: Int64 = 10_000
 
     // MARK: - Refresh
 
@@ -86,6 +110,9 @@ final class AppModel {
                 summary = nil
                 waterState = nil
                 presets = []
+                yesterdayState = nil
+                lastWaterEventUuid = nil
+                lastDietEventUuid = nil
                 lastErrorMessage = nil
                 return
             }
@@ -93,7 +120,12 @@ final class AppModel {
             summary = try client.summary()
             waterState = try client.waterState()
             presets = try client.containerPresets()
-            lastErrorMessage = nil
+            // Yesterday is best-effort: its failure never blocks the board.
+            if let today = todayState?.date, let yesterday = Self.shift(today, by: -1) {
+                yesterdayState = try? client.dayState(date: yesterday)
+            } else {
+                yesterdayState = nil
+            }
         } catch {
             lastErrorMessage = "\(error)"
         }
@@ -114,7 +146,9 @@ final class AppModel {
                 pendingChugWarning = check
                 return check
             }
-            handle(try client.logWater(ml: ml, effectiveDate: nil))
+            let result = try client.logWater(ml: ml, effectiveDate: nil)
+            lastWaterEventUuid = result.eventUuid
+            handle(result)
             WidgetPaceCheck.clear()
             return nil
         } catch {
@@ -131,7 +165,9 @@ final class AppModel {
         pendingWaterMl = nil
         pendingChugWarning = nil
         do {
-            handle(try client.logWater(ml: ml, effectiveDate: nil))
+            let result = try client.logWater(ml: ml, effectiveDate: nil)
+            lastWaterEventUuid = result.eventUuid
+            handle(result)
             WidgetPaceCheck.clear()
         } catch {
             lastErrorMessage = "\(error)"
@@ -153,13 +189,26 @@ final class AppModel {
 
     /// Retroactive water log ("log for yesterday"). Skips the anti-chug
     /// pre-check on purpose: the water was drunk on the effective day, not in
-    /// the trailing hour, so a warning here would be dishonest.
+    /// the trailing hour, so a warning here would be dishonest. Large adds
+    /// (a "met goal" tap with a >10 L goal) are chunked to respect the core's
+    /// per-log cap; a residual failure surfaces via `lastErrorMessage`.
+    /// Retroactive events deliberately don't touch `lastWaterEventUuid` —
+    /// WaterView's "Undo last" is scoped to today's logs.
     func logWater(ml: Int64, effectiveDate: DayDate?) {
         guard let effectiveDate else {
             checkThenLogWater(ml: ml)
             return
         }
-        run { try client.logWater(ml: ml, effectiveDate: effectiveDate) }
+        var remaining = ml
+        do {
+            while remaining > 0 {
+                let chunk = min(remaining, Self.maxWaterPerLogMl)
+                handle(try client.logWater(ml: chunk, effectiveDate: effectiveDate))
+                remaining -= chunk
+            }
+        } catch {
+            lastErrorMessage = "\(error)"
+        }
     }
 
     // MARK: - Other logging intents (effectiveDate nil = today)
@@ -175,7 +224,13 @@ final class AppModel {
     }
 
     func logDietOk(effectiveDate: DayDate? = nil) {
-        run { try client.logDietOk(effectiveDate: effectiveDate) }
+        do {
+            let result = try client.logDietOk(effectiveDate: effectiveDate)
+            if effectiveDate == nil { lastDietEventUuid = result.eventUuid }
+            handle(result)
+        } catch {
+            lastErrorMessage = "\(error)"
+        }
     }
 
     func logPhotoDone(effectiveDate: DayDate? = nil) {
@@ -207,6 +262,9 @@ final class AppModel {
 
     // MARK: - Day lifecycle, undo, backfill
 
+    /// Closes today's day ("the day ends when you tell it you're done") —
+    /// later same-night logs roll to tomorrow. Wired to the day board's
+    /// close-out button and the toolbar menu.
     func closeDay() {
         guard let date = todayState?.date else { return }
         do {
@@ -223,7 +281,8 @@ final class AppModel {
     func revoke(eventUuid: String) {
         do {
             try client.revokeEvent(eventUuid: eventUuid)
-            if lastEventUuid == eventUuid { lastEventUuid = nil }
+            if lastWaterEventUuid == eventUuid { lastWaterEventUuid = nil }
+            if lastDietEventUuid == eventUuid { lastDietEventUuid = nil }
             refresh()
             WidgetCenter.shared.reloadAllTimelines()
         } catch {
@@ -231,9 +290,17 @@ final class AppModel {
         }
     }
 
-    /// Revokes the most recent event logged through this model, if any.
-    func undoLast() {
-        guard let uuid = lastEventUuid else { return }
+    /// Revokes exactly the last water event this model logged today, if any.
+    /// (There is deliberately no kind-blind "undo last event" — it could nuke
+    /// a workout/diet/photo log the user never meant to touch.)
+    func undoLastWater() {
+        guard let uuid = lastWaterEventUuid else { return }
+        revoke(eventUuid: uuid)
+    }
+
+    /// Revokes exactly the last diet attest this model logged today, if any.
+    func undoLastDiet() {
+        guard let uuid = lastDietEventUuid else { return }
         revoke(eventUuid: uuid)
     }
 
@@ -258,7 +325,6 @@ final class AppModel {
     }
 
     private func handle(_ result: LogResult) {
-        lastEventUuid = result.eventUuid
         refresh()
         if result.dayBecameComplete {
             // The moment celebrates the day that flipped (result.dayState),
@@ -269,5 +335,23 @@ final class AppModel {
             )
         }
         WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    // MARK: - Date plumbing (calendar-date arithmetic only; attribution stays in core)
+
+    private static let dayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.calendar = Calendar(identifier: .gregorian)
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = .current
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
+    private static func shift(_ date: DayDate, by days: Int) -> DayDate? {
+        guard let base = dayFormatter.date(from: date),
+              let shifted = Calendar.current.date(byAdding: .day, value: days, to: base)
+        else { return nil }
+        return dayFormatter.string(from: shifted)
     }
 }

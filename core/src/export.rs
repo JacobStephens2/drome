@@ -7,9 +7,14 @@ use std::collections::HashSet;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::api::{Challenge, ChallengeSummary, ContainerPreset, ExtraDef, JOB_EXTRA_ID};
+use crate::api::{
+    Challenge, ChallengeSummary, ContainerPreset, ExtraDef, JOB_EXTRA_ID, MAX_READING_PAGES,
+    MAX_WATER_GOAL_ML, MAX_WATER_LOG_ML, MAX_WORKOUT_DURATION_MIN,
+};
 use crate::error::{DromeError, Result};
-use crate::events::{self, EventRow};
+use crate::events::{
+    self, EventRow, GoalChangedPayload, ReadingPayload, WaterAddPayload, WorkoutPayload,
+};
 use crate::projections::Projection;
 use crate::time::{self, LocalInstant};
 
@@ -69,8 +74,56 @@ pub fn parse_snapshot(json: &str) -> Result<Snapshot> {
         if let Some(date) = &e.effective_date {
             time::parse_date(date)?;
         }
+        validate_payload_bounds(e)?;
     }
     Ok(snap)
+}
+
+/// Imported payloads must satisfy the same bounds the log_* APIs enforce
+/// (the shared constants in `api`). Without this, a hand-edited snapshot can
+/// smuggle in values the app could never have written — e.g. a `goal_changed`
+/// of 0 silently auto-completes water for every later day.
+fn validate_payload_bounds(e: &SnapshotEvent) -> Result<()> {
+    match e.kind.as_str() {
+        events::KIND_WATER_ADD => {
+            let p: WaterAddPayload = serde_json::from_value(e.payload.clone())?;
+            if !(1..=MAX_WATER_LOG_ML).contains(&p.ml) {
+                return Err(DromeError::InvalidArgument(format!(
+                    "snapshot event {}: water ml must be in 1..={MAX_WATER_LOG_ML}",
+                    e.uuid
+                )));
+            }
+        }
+        events::KIND_GOAL_CHANGED => {
+            let p: GoalChangedPayload = serde_json::from_value(e.payload.clone())?;
+            if !(1..=MAX_WATER_GOAL_ML).contains(&p.water_goal_ml) {
+                return Err(DromeError::InvalidArgument(format!(
+                    "snapshot event {}: water goal ml must be in 1..={MAX_WATER_GOAL_ML}",
+                    e.uuid
+                )));
+            }
+        }
+        events::KIND_WORKOUT => {
+            let p: WorkoutPayload = serde_json::from_value(e.payload.clone())?;
+            if p.duration_min == 0 || p.duration_min > MAX_WORKOUT_DURATION_MIN {
+                return Err(DromeError::InvalidArgument(format!(
+                    "snapshot event {}: workout duration_min must be in 1..={MAX_WORKOUT_DURATION_MIN}",
+                    e.uuid
+                )));
+            }
+        }
+        events::KIND_READING => {
+            let p: ReadingPayload = serde_json::from_value(e.payload.clone())?;
+            if p.pages == 0 || p.pages > MAX_READING_PAGES {
+                return Err(DromeError::InvalidArgument(format!(
+                    "snapshot event {}: pages must be in 1..={MAX_READING_PAGES}",
+                    e.uuid
+                )));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 impl Snapshot {

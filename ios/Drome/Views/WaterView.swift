@@ -209,19 +209,24 @@ struct WaterView: View {
             )
             .foregroundStyle(Color.dromeInk)
 
-            Button {
-                appModel.undoLast()
-            } label: {
-                Label("Undo last", systemImage: "arrow.uturn.backward")
-                    .font(.system(size: 15, weight: .bold))
-                    .frame(maxWidth: .infinity, minHeight: DromeSpacing.tapTarget)
+            // Targeted undo: revokes exactly the last WATER event logged from
+            // the app — never a workout/diet/photo log. Hidden when there is
+            // no water event to take back.
+            if appModel.lastWaterEventUuid != nil {
+                Button {
+                    appModel.undoLastWater()
+                } label: {
+                    Label("Undo last", systemImage: "arrow.uturn.backward")
+                        .font(.system(size: 15, weight: .bold))
+                        .frame(maxWidth: .infinity, minHeight: DromeSpacing.tapTarget)
+                }
+                .buttonStyle(.plain)
+                .background(
+                    RoundedRectangle(cornerRadius: 14)
+                        .stroke(Color.dromeInk.opacity(0.35), lineWidth: 1.5)
+                )
+                .foregroundStyle(Color.dromeInk)
             }
-            .buttonStyle(.plain)
-            .background(
-                RoundedRectangle(cornerRadius: 14)
-                    .stroke(Color.dromeInk.opacity(0.35), lineWidth: 1.5)
-            )
-            .foregroundStyle(Color.dromeInk)
         }
     }
 

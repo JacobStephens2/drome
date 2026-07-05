@@ -4,10 +4,12 @@
 //
 //  The share card that replaces group-chat workout screenshots. Renders a
 //  story-proportioned (9:16, designed at 360×640pt, exported 1080×1920 @3x)
-//  card from ShareCardData: day number, date, the five-task checklist, the
+//  card from ShareCardData: day number, date, the five-task checklist (done
+//  flags straight from the core — backfilled flags carry no quantities), the
 //  day's workouts with durations + OUTDOOR badges, the current run, and the
-//  honest-but-subtle ruleset label. Structurally photo-free: ShareCardData
-//  carries no photo refs, ever (docs/ARCHITECTURE.md guardrails).
+//  honest-but-subtle ruleset label. Structurally photo-free and note-free:
+//  ShareCardData carries no photo refs or workout notes, ever
+//  (docs/ARCHITECTURE.md guardrails; notes are private).
 //
 //  The card pins its own light desert palette so it renders identically
 //  regardless of the app's light/dark appearance — a share card is a fixed
@@ -95,19 +97,29 @@ struct ShareCardView: View {
                     .tracking(2)
                     .foregroundStyle(Color.dromeInk.opacity(0.7))
                 if data.isBackfilled {
-                    Text("BACKFILLED")
-                        .font(.system(size: 10, weight: .black))
-                        .tracking(1.5)
-                        .foregroundStyle(Color.dromeInk.opacity(0.55))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 4)
-                                .strokeBorder(Color.dromeInk.opacity(0.35), lineWidth: 1)
-                        )
+                    badge("BACKFILLED")
+                }
+                if data.outOfRange {
+                    // The day number is clamped to [1, lengthDays]; this badge
+                    // keeps a pre-start or post-challenge card honest.
+                    badge("OUTSIDE CHALLENGE")
                 }
             }
         }
+    }
+
+    /// Small outlined honesty badge (BACKFILLED / OUTSIDE CHALLENGE).
+    private func badge(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 10, weight: .black))
+            .tracking(1.5)
+            .foregroundStyle(Color.dromeInk.opacity(0.55))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .strokeBorder(Color.dromeInk.opacity(0.35), lineWidth: 1)
+            )
     }
 
     // MARK: Checklist (the five tasks)
@@ -162,12 +174,6 @@ struct ShareCardView: View {
                             .monospacedDigit()
                             .foregroundStyle(Color.dromeInk)
                             .frame(width: 76, alignment: .leading)
-                        if let note = workout.note, !note.isEmpty {
-                            Text(note)
-                                .font(.system(size: 15, weight: .medium))
-                                .foregroundStyle(Color.dromeInk.opacity(0.8))
-                                .lineLimit(1)
-                        }
                         Spacer()
                         if workout.outdoor {
                             Text("OUTDOOR")
@@ -234,37 +240,34 @@ struct ShareCardView: View {
 
     private var maxWorkoutRows: Int { 4 }
 
-    private var shownWorkouts: [WorkoutEntry] {
+    private var shownWorkouts: [ShareWorkout] {
         Array(data.workouts.prefix(maxWorkoutRows))
     }
 
-    /// The five checklist rows. ShareCardData carries totals, not per-task
-    /// flags, so backfilled-complete days check every row (the data shape
-    /// can't distinguish which flags were set on a partial backfill).
+    /// The five checklist rows. Done-ness comes from the core's per-task flags
+    /// (never recomputed from totals here — backfilled flags carry no
+    /// quantities); totals only feed the detail strings.
     private var taskRows: [TaskRow] {
-        let backfilledComplete = data.isBackfilled && data.coreComplete
         let oz = Int(WaterUnits.flOz(fromMl: data.waterTotalMl).rounded())
         let goalOz = Int(WaterUnits.flOz(fromMl: data.waterGoalMl).rounded())
-        let outdoorDone = data.workouts.contains { $0.outdoor } || backfilledComplete
-        let secondDone = data.workouts.count >= 2 || backfilledComplete
         return [
             TaskRow(
                 id: "water",
                 title: "WATER",
                 detail: data.isBackfilled && data.waterTotalMl == 0 ? nil : "\(oz) / \(goalOz) OZ",
-                done: data.waterTotalMl >= data.waterGoalMl || backfilledComplete
+                done: data.waterDone
             ),
             TaskRow(
                 id: "workouts",
                 title: "WORKOUTS ×2",
                 detail: data.workouts.isEmpty ? nil : "\(data.workouts.count) LOGGED",
-                done: outdoorDone && secondDone
+                done: data.outdoorWorkoutDone && data.secondWorkoutDone
             ),
             TaskRow(
                 id: "reading",
                 title: "READING",
                 detail: data.pagesRead > 0 ? "\(data.pagesRead) PAGES" : nil,
-                done: data.pagesRead >= 10 || backfilledComplete
+                done: data.readingDone
             ),
             TaskRow(id: "diet", title: "DIET", detail: nil, done: data.dietDone),
             TaskRow(id: "photo", title: "PHOTO", detail: nil, done: data.photoDone),
@@ -471,6 +474,46 @@ struct ShareCardSheet: View {
     let summary = try! core.summary()
     let briefs = try! core.calendar(from: summary.startDate, to: summary.startDate)
     return ShareCardView(data: try! core.shareCard(date: briefs[0].date))
+}
+
+#Preview("Card — partial backfill (day 13)") {
+    // Fixture day 13: water done via a backfill flag (no quantity), workouts/
+    // diet/photo event-logged, reading missing. Water must render checked.
+    let core = MockDromeCore()
+    let summary = try! core.summary()
+    let today = try! core.today().date
+    let briefs = try! core.calendar(from: summary.startDate, to: today)
+    return ScrollView {
+        ShareCardView(data: try! core.shareCard(date: briefs[12].date))
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .padding()
+    }
+}
+
+#Preview("Card — outside challenge (post-day-75)") {
+    ShareCardView(data: ShareCardData(
+        date: "2026-09-10",
+        dayIndex: 75, // core clamps; outOfRange carries the truth
+        lengthDays: 75,
+        outOfRange: true,
+        rulesetLabel: "Flexible",
+        coreComplete: true,
+        currentRun: 3,
+        waterTotalMl: 3800,
+        waterGoalMl: 3785,
+        waterDone: true,
+        outdoorWorkoutDone: true,
+        secondWorkoutDone: true,
+        pagesRead: 12,
+        readingDone: true,
+        dietDone: true,
+        photoDone: true,
+        workouts: [
+            ShareWorkout(id: "w0", durationMin: 45, outdoor: true),
+            ShareWorkout(id: "w1", durationMin: 30, outdoor: false),
+        ],
+        isBackfilled: false
+    ))
 }
 
 #Preview("Sheet") {

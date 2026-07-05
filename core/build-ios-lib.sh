@@ -47,6 +47,10 @@ if ! rustup target list --installed 2>/dev/null | grep -qx "$TARGET"; then
     exit 1
 fi
 
+# Pin the min iOS version for cc-compiled objects (bundled sqlite3.o) to the
+# app's deployment floor, so the linker doesn't warn about mismatched versions.
+export IPHONEOS_DEPLOYMENT_TARGET=17.0
+
 echo "==> cargo build --lib --target $TARGET ($PROFILE)"
 if [ "$PROFILE" = "release" ]; then
     (cd "$SCRIPT_DIR" && cargo build --lib --target "$TARGET" --release)

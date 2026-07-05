@@ -41,13 +41,36 @@ final class LiveDromeCore: DromeCoreClient, @unchecked Sendable {
 
     /// Local "YYYY-MM-DD" for right now under the given day cutoff (mirrors the
     /// core's step-2 attribution; used only to default NewChallenge.startDate).
+    ///
+    /// Exactly the core's math (time.rs `attribute_date` step 2): wall seconds
+    /// from ONE captured instant, minus the cutoff, floor-divided into epoch
+    /// days. No DateFormatter/Calendar timezone involvement — shifting a Date
+    /// and formatting in the current zone would apply the offset in effect at
+    /// (now − cutoff), diverging from the core across a DST transition.
     private static func localDate(cutoffMinutes: Int) -> DayDate {
-        let formatter = DateFormatter()
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = .current
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: Date().addingTimeInterval(TimeInterval(-cutoffMinutes * 60)))
+        let now = nowInstant()
+        let wallSecs = now.epochSecs + Int64(now.tzOffsetSecs) - Int64(cutoffMinutes) * 60
+        return dateString(fromEpochDays: floorDiv(wallSecs, 86_400))
+    }
+
+    private static func floorDiv(_ a: Int64, _ b: Int64) -> Int64 {
+        let q = a / b
+        return (a % b != 0 && (a < 0) != (b < 0)) ? q - 1 : q
+    }
+
+    /// Civil-from-days (Howard Hinnant's algorithm), matching the core's
+    /// chrono-backed date-from-epoch-days. Pure integer math.
+    private static func dateString(fromEpochDays epochDays: Int64) -> DayDate {
+        let z = epochDays + 719_468
+        let era = floorDiv(z, 146_097)
+        let doe = z - era * 146_097                                        // [0, 146096]
+        let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365 // [0, 399]
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)                  // [0, 365]
+        let mp = (5 * doy + 2) / 153                                       // [0, 11]
+        let day = doy - (153 * mp + 2) / 5 + 1                             // [1, 31]
+        let month = mp < 10 ? mp + 3 : mp - 9                              // [1, 12]
+        let year = yoe + era * 400 + (month <= 2 ? 1 : 0)
+        return String(format: "%04d-%02d-%02d", year, month, day)
     }
 
     // MARK: - Error translation
@@ -447,19 +470,24 @@ private extension LiveDromeCore {
             date: c.date,
             dayIndex: Int(c.dayIndex),
             lengthDays: lengthDays,
+            outOfRange: c.outOfRange,
             // Core emits the lowercase label ("flexible"); Models wants "Flexible".
             rulesetLabel: Ruleset(rawValue: c.rulesetLabel)?.label ?? c.rulesetLabel,
             coreComplete: c.coreComplete,
             currentRun: Int(c.currentRun),
             waterTotalMl: c.waterMl,
             waterGoalMl: c.waterGoalMl,
+            waterDone: c.waterDone,
+            outdoorWorkoutDone: c.outdoorWorkoutDone,
+            secondWorkoutDone: c.secondWorkoutDone,
             pagesRead: Int(c.readingPages),
+            readingDone: c.readingDone,
             dietDone: c.dietDone,
             photoDone: c.photoDone,
-            // Share-card workouts carry no UUID/note in the core; synthesize
-            // stable per-card ids for Identifiable.
+            // Core share workouts are duration + outdoor only (no UUID, no
+            // note — notes are private); synthesize stable per-card ids.
             workouts: c.workouts.enumerated().map { idx, w in
-                WorkoutEntry(id: "\(c.date)-workout-\(idx)", durationMin: Int(w.durationMin), outdoor: w.outdoor, note: nil)
+                ShareWorkout(id: "\(c.date)-workout-\(idx)", durationMin: Int(w.durationMin), outdoor: w.outdoor)
             },
             isBackfilled: c.isBackfilled
         )

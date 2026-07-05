@@ -14,8 +14,8 @@ struct DietView: View {
     @Environment(AppModel.self) private var appModel
 
     /// True only right after attesting from this view, so the Undo button can
-    /// only ever revoke the attest it just made (`undoLast` revokes the most
-    /// recent event logged through the model).
+    /// only ever revoke the attest it just made (`undoLastDiet` revokes
+    /// exactly the model's last diet attest — never an event of another kind).
     @State private var attestedJustNow = false
 
     init() {}
@@ -91,9 +91,9 @@ struct DietView: View {
                     .fill(Color.dromeDone.opacity(0.12))
             )
 
-            if attestedJustNow {
+            if attestedJustNow, appModel.lastDietEventUuid != nil {
                 Button {
-                    appModel.undoLast()
+                    appModel.undoLastDiet()
                     attestedJustNow = false
                 } label: {
                     Text("Undo")

@@ -5,19 +5,24 @@
 //  Home-screen day board: "DAY N" header with date + current run, a one-line
 //  "what's left" strip, the five core task tiles (each showing its real data
 //  shape — see DayBoardTiles.swift), and any enabled weekly extra rendered
-//  visibly secondary. Day-closed state shows a banner with a "log for
-//  yesterday" affordance.
+//  visibly secondary. Day lifecycle affordances: a "log for yesterday"
+//  banner whenever yesterday is neither closed nor complete (per the
+//  contract, yesterday stays editable until it's closed), an info banner
+//  once today is closed, and a quiet "close out my day" button when all six
+//  slots are done (the toolbar menu in RootView offers it any time).
 //
 //  Navigation is NOT wired here: water/workouts/reading/photo hand off via
 //  closure callbacks (integration stage connects them to their features).
-//  Diet attest, photo check-off, and weekly-extra done go straight through
-//  AppModel intents.
+//  Diet attest, photo check-off, weekly-extra done, and close-day go
+//  straight through AppModel intents.
 //
 
 import SwiftUI
 
 struct DayBoardView: View {
     @Environment(AppModel.self) private var appModel
+
+    @State private var closeConfirmPresented = false
 
     private let onOpenWater: () -> Void
     private let onOpenWorkouts: () -> Void
@@ -47,6 +52,9 @@ struct DayBoardView: View {
                     if today.day.isClosed {
                         closedBanner(today)
                     }
+                    if yesterdayNeedsFinishing {
+                        yesterdayBanner
+                    }
                     whatsLeftStrip(today.day)
                     tiles(today)
                     ForEach(today.weekExtras) { extra in
@@ -55,6 +63,9 @@ struct DayBoardView: View {
                             weekIndex: today.weekIndex,
                             onMarkDone: { appModel.logExtraDone(id: extra.id) }
                         )
+                    }
+                    if today.day.coreComplete && !today.day.isClosed {
+                        closeDayButton
                     }
                 }
                 .padding(.horizontal, DromeSpacing.m)
@@ -66,6 +77,17 @@ struct DayBoardView: View {
         }
         .background(Color.dromeSand.ignoresSafeArea())
         .onAppear { appModel.refresh() }
+        // Closing can't be un-done from the UI, so it asks once, plainly.
+        .confirmationDialog(
+            "Close out Day \(appModel.todayState?.dayIndex ?? 0)?",
+            isPresented: $closeConfirmPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Close the day") { appModel.closeDay() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Anything you log after this counts toward tomorrow.")
+        }
     }
 
     // MARK: - Header
@@ -144,16 +166,48 @@ struct DayBoardView: View {
         return items
     }
 
-    // MARK: - Day-closed banner
+    // MARK: - Day lifecycle (closed banner, yesterday affordance, close-out)
 
+    /// Info-only: today is closed, later logs roll to tomorrow. The "log for
+    /// yesterday" affordance lives in `yesterdayBanner`, keyed off
+    /// yesterday's actual state, not today's.
     private func closedBanner(_ today: TodayState) -> some View {
+        VStack(alignment: .leading, spacing: DromeSpacing.xs) {
+            Text("Day \(today.dayIndex) is closed")
+                .font(.subheadline.weight(.black))
+                .monospacedDigit()
+                .foregroundStyle(Color.dromeInk)
+            Text("New logs count toward tomorrow.")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(Color.dromeInk.opacity(0.6))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(DromeSpacing.m)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color.dromeCamel.opacity(0.12))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.dromeCamel.opacity(0.4), lineWidth: 1)
+        )
+    }
+
+    /// Per the contract, yesterday stays editable until it's closed — offer
+    /// the retroactive sheet whenever yesterday is neither closed nor
+    /// complete (and is a real challenge day).
+    private var yesterdayNeedsFinishing: Bool {
+        guard let yesterday = appModel.yesterdayState else { return false }
+        return !yesterday.isClosed && !yesterday.coreComplete && !yesterday.outOfRange
+    }
+
+    private var yesterdayBanner: some View {
         HStack(spacing: DromeSpacing.m) {
             VStack(alignment: .leading, spacing: DromeSpacing.xs) {
-                Text("Day \(today.dayIndex) is closed")
+                Text("Yesterday is still open")
                     .font(.subheadline.weight(.black))
-                    .monospacedDigit()
                     .foregroundStyle(Color.dromeInk)
-                Text("New logs count toward tomorrow.")
+                Text("Forgot to log something? It counts until you close the day.")
                     .font(.footnote.weight(.semibold))
                     .foregroundStyle(Color.dromeInk.opacity(0.6))
             }
@@ -176,6 +230,25 @@ struct DayBoardView: View {
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(Color.dromeCamel.opacity(0.4), lineWidth: 1)
+        )
+    }
+
+    /// Quiet close-out under the tiles, shown once all six slots are done.
+    /// "The day ends when you tell it you're done."
+    private var closeDayButton: some View {
+        Button {
+            closeConfirmPresented = true
+        } label: {
+            Label("Close out my day", systemImage: "checkmark.seal")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(Color.dromeInk.opacity(0.7))
+                .frame(maxWidth: .infinity, minHeight: DromeSpacing.tapTarget)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(Color.dromeInk.opacity(0.25), lineWidth: 1.5)
         )
     }
 

@@ -4,14 +4,19 @@
 //
 //  First-run flow: intro → setup form → (only when starting in the past) the
 //  BackfillView catch-up grid. The "join mid-challenge on Day 14 in minutes" path.
+//  The intro page also offers "Restore from backup" — the core only imports
+//  into a store with no active challenge, so first-run is the ONE place a
+//  backup can actually be restored.
 //
-//  Creates the challenge through the injected `DromeCoreClient` directly —
-//  AppModel exposes no challenge-creation/preset/extra intents — then hands
-//  past-start users to BackfillView, applies the backfill, and calls
-//  `onComplete`. Integration should refresh the AppModel inside `onComplete`.
+//  Creates the challenge (or restores the snapshot) through the injected
+//  `DromeCoreClient` directly — AppModel exposes no challenge-creation/
+//  preset/extra intents — then hands past-start users to BackfillView,
+//  applies the backfill, and calls `onComplete`. Integration should refresh
+//  the AppModel inside `onComplete`.
 //
 
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct OnboardingView: View {
 
@@ -70,6 +75,7 @@ struct OnboardingView: View {
     @State private var presetRows = [PresetRow(name: "24 oz bottle", oz: "24")]
     @State private var jobExtraEnabled = false
     @State private var errorMessage: String?
+    @State private var restoreImporterPresented = false
 
     @State private var createdChallenge: Challenge?
     @State private var backfillEndDate: DayDate?
@@ -93,6 +99,12 @@ struct OnboardingView: View {
             if let message = errorMessage {
                 errorBanner(message)
             }
+        }
+        .fileImporter(
+            isPresented: $restoreImporterPresented,
+            allowedContentTypes: [.json]
+        ) { result in
+            handleRestorePick(result)
         }
     }
 
@@ -122,6 +134,17 @@ struct OnboardingView: View {
                             .strokeBorder(Color.dromeCamel.opacity(0.6), lineWidth: 1.5)
                     )
                 primaryButton("Get started") { page = .setup }
+                Button {
+                    errorMessage = nil
+                    restoreImporterPresented = true
+                } label: {
+                    Text("Restore from backup")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Color.dromeClay)
+                        .frame(minHeight: DromeSpacing.tapTarget)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
                 Text("Not affiliated with 75 HARD® / 44Seven Media")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Color.dromeInk.opacity(0.55))
@@ -353,6 +376,51 @@ struct OnboardingView: View {
             }
         } catch {
             errorMessage = message(for: error)
+        }
+    }
+
+    /// Restore path (fileImporter → importJson). On success it takes the
+    /// SAME completion path as setup — `onComplete()` refreshes the AppModel
+    /// and the app lands on the restored board.
+    private func handleRestorePick(_ result: Result<URL, Error>) {
+        errorMessage = nil
+        switch result {
+        case .success(let url):
+            let secured = url.startAccessingSecurityScopedResource()
+            defer { if secured { url.stopAccessingSecurityScopedResource() } }
+            let snapshot: String
+            do {
+                snapshot = try String(contentsOf: url, encoding: .utf8)
+            } catch {
+                errorMessage = "Couldn't read that file: \(error.localizedDescription)"
+                return
+            }
+            do {
+                try client.importJson(snapshot)
+                onComplete()
+            } catch {
+                errorMessage = restoreMessage(for: error)
+            }
+        case .failure(let error):
+            errorMessage = "Couldn't open the file: \(error.localizedDescription)"
+        }
+    }
+
+    private func restoreMessage(for error: Error) -> String {
+        guard let dromeError = error as? DromeError else {
+            return "Couldn't restore: \(error)"
+        }
+        switch dromeError {
+        case .challengeAlreadyActive:
+            return "A challenge is already active on this device — restore only works into a fresh app."
+        case .invalidArgument(let detail), .invalidDate(let detail):
+            return "That file isn't a Drome backup this version can read: \(detail)."
+        case .notFound(let detail):
+            return "Missing: \(detail)."
+        case .storage(let detail):
+            return "Couldn't restore: \(detail)."
+        case .noActiveChallenge:
+            return "Couldn't restore: \(dromeError)"
         }
     }
 
