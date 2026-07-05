@@ -43,7 +43,8 @@ struct LogWaterIntent: AppIntent {
         let addMl = Int64(presetMl)
         guard addMl > 0 else { return .result() }
 
-        let client = WidgetCore.client
+        // Store failed to open: log nothing (the widget shows "Open Drome").
+        guard let client = WidgetCore.client else { return .result() }
         let check = try client.checkChug(addMl: addMl)
         if check.shouldWarn {
             // Anti-chug guard tripped: log NOTHING from the widget.

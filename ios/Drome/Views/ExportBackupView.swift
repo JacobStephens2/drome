@@ -12,19 +12,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-// MARK: - Restore shim
-
-/// docs/ARCHITECTURE.md pins `import_json` in the core API, but the Phase-1
-/// `DromeCoreClient` facade omits it. A client that can restore snapshots
-/// declares this conformance; the restore flow reports honestly when the
-/// cast fails. Integration: conform LiveDromeCore (or fold `importJson`
-/// into DromeCoreClient and drop this shim).
-protocol DromeSnapshotRestoring: AnyObject {
-    /// Restores an `exportJson` snapshot. Only valid while no challenge is
-    /// active in the store.
-    func importJson(_ snapshot: String) throws
-}
-
 // MARK: - Export document
 
 private struct TextExportDocument: FileDocument {
@@ -340,15 +327,8 @@ struct ExportBackupView: View {
         guard let snapshot = pendingRestoreJson else { return }
         pendingRestoreJson = nil
 
-        guard let restorer = client as? DromeSnapshotRestoring else {
-            presentError(
-                "Restore unavailable",
-                "This build can't restore backups yet. Your backup file is fine — keep it safe."
-            )
-            return
-        }
         do {
-            try restorer.importJson(snapshot)
+            try client.importJson(snapshot)
             appModel?.refresh()
             restoreSucceeded = true
         } catch DromeError.challengeAlreadyActive {
@@ -393,7 +373,7 @@ private func exportErrorText(_ error: Error) -> String {
 // MARK: - Previews
 
 #Preview("Export & Backup") {
-    let core = SettingsPreviewCore()
+    let core = MockDromeCore()
     NavigationStack {
         ExportBackupView(client: core)
     }
@@ -401,7 +381,7 @@ private func exportErrorText(_ error: Error) -> String {
 }
 
 #Preview("Export & Backup — dark") {
-    let core = SettingsPreviewCore()
+    let core = MockDromeCore()
     NavigationStack {
         ExportBackupView(client: core)
     }

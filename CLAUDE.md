@@ -30,4 +30,6 @@ Build & contracts:
   App: `xcodebuild -project ios/Drome.xcodeproj -scheme Drome -destination 'platform=iOS
   Simulator,name=Chart35iPhone' build` (use a private -derivedDataPath when building in
   parallel with other agents).
+- DEBUG launch arg `-drome-demo-seed`: when the store has no challenge, seeds the demo fixture (Day 14 mid-challenge) through the real client.
+- DEBUG launch arg `-drome-screen <water|workout|reading|history|settings|share>`: presents that screen on launch, for screenshots.
 - Bundle IDs: `day.drome.app` / `day.drome.app.widget`; App Group `group.day.drome.app`.

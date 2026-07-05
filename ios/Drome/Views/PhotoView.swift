@@ -131,12 +131,10 @@ struct PhotoView: View {
             try jpeg.write(to: directory.appendingPathComponent(filename), options: .atomic)
 
             // AppModel has no photoRef-carrying intent, so log through the
-            // shared client and mirror AppModel's completion handling.
+            // shared client and hand the result back for the standard
+            // completion-moment/refresh handling.
             let result = try client.logPhotoDone(photoRef: filename, effectiveDate: nil)
-            if result.dayBecameComplete {
-                appModel.pendingCompletionMoment = true
-            }
-            appModel.refresh()
+            appModel.noteExternalLog(result)
             thumbnail = image
         } catch {
             attachFailed = true

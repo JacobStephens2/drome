@@ -17,8 +17,7 @@ Bundle ID `day.drome.app`. Not affiliated with or endorsed by 75 HARD® / 44Seve
 ## Build
 
 ```sh
-cd core && cargo test                 # rules engine tests (also CI; see CLAUDE.md for
-                                      # the CARGO_TARGET_DIR requirement on this Mac)
+cd core && cargo test                 # rules engine tests (same as CI)
 core/build-ios-lib.sh                 # Rust → sim staticlib + UniFFI Swift bindings
 xcodebuild -project ios/Drome.xcodeproj -scheme Drome \
   -destination 'platform=iOS Simulator,name=Chart35iPhone' build

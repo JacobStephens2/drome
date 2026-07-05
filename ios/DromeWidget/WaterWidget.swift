@@ -19,46 +19,12 @@ import WidgetKit
 // MARK: - Core seam
 
 enum WidgetCore {
-    // =====================================================================
-    // INTEGRATION: swap to LiveDromeCore when the bindings stage lands:
-    //
-    //     static let client: DromeCoreClient =
-    //         LiveDromeCore(dbPath: SharedPaths.databasePath)
-    //
-    // (the shared App Group DB — see DromeShared/SharedPaths.swift).
-    // MockDromeCore is in-memory and per-process: widget logs do NOT
-    // persist and are NOT visible to the app until this swap happens.
-    // =====================================================================
-    static let client: DromeCoreClient = MockDromeCore()
-}
-
-// MARK: - Pace-check flag (chug warning surfaced without a dialog)
-
-/// A widget has no room for the anti-chug confirmation dialog, so when the
-/// facade's chug check warns, LogWaterIntent logs NOTHING and raises this
-/// flag; the next timeline render shows the "Open Drome — pace check" state.
-/// The flag expires with the chug guard's trailing-hour window and clears on
-/// the next successful log.
-enum WidgetPaceCheck {
-    private static let key = "widget.paceCheckPendingAt"
-
-    private static var defaults: UserDefaults {
-        UserDefaults(suiteName: SharedPaths.appGroupID) ?? .standard
-    }
-
-    static func setPending(now: Date = Date()) {
-        defaults.set(now.timeIntervalSince1970, forKey: key)
-    }
-
-    static func clear() {
-        defaults.removeObject(forKey: key)
-    }
-
-    static var isPending: Bool {
-        let raisedAt = defaults.double(forKey: key)
-        guard raisedAt > 0 else { return false }
-        return Date().timeIntervalSince1970 - raisedAt < 3600
-    }
+    /// The REAL store, shared with the app (App Group SQLite, WAL). nil when
+    /// the store fails to open — the widget then renders the honest
+    /// "Open Drome" state and logs nothing. NEVER a mock: fake gauge data
+    /// (or logs into a throwaway store) is this widget's cardinal sin.
+    /// (WidgetPaceCheck — the shared chug flag — lives in DromeShared.)
+    static let client: DromeCoreClient? = try? LiveDromeCore(dbPath: SharedPaths.databasePath)
 }
 
 // MARK: - Local palette (hexes pinned in docs/ARCHITECTURE.md — keep in sync)
@@ -143,7 +109,10 @@ struct WaterProvider: TimelineProvider {
     }
 
     private func makeEntry(date: Date) -> WaterEntry {
-        let client = WidgetCore.client
+        guard let client = WidgetCore.client else {
+            // Store failed to open: honest "Open Drome" state, never mock data.
+            return WaterEntry(date: date, water: nil, dayIndex: 0, presets: [], paceCheckPending: false)
+        }
         let today = try? client.today()
         let presets = ((try? client.containerPresets()) ?? [])
             .sorted { $0.sortOrder < $1.sortOrder }

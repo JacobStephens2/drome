@@ -403,6 +403,20 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
         goalChanges.append((date: currentDate(Date()), ml: ml))
     }
 
+    func setDietDescription(_ desc: String) throws {
+        lock.lock(); defer { lock.unlock() }
+        challenge.dietDescription = desc
+    }
+
+    func setWakingWindow(startMinutes: UInt16, endMinutes: UInt16) throws {
+        guard startMinutes < endMinutes else {
+            throw DromeError.invalidArgument("waking window must start before it ends")
+        }
+        lock.lock(); defer { lock.unlock() }
+        challenge.wakingStartMinutes = Int(startMinutes)
+        challenge.wakingEndMinutes = Int(endMinutes)
+    }
+
     // MARK: - DromeCoreClient: logging
 
     func logWater(ml: Int64, effectiveDate: DayDate?) throws -> LogResult {
@@ -549,20 +563,40 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
         )
     }
 
+    /// Snapshot shape shared by `exportJson`/`importJson`. Events are not
+    /// round-tripped by the mock (the real core exports its full event log).
+    private struct Snapshot: Codable {
+        var challenge: Challenge
+        var presets: [ContainerPreset]
+        var extras: [ExtraDef]
+        var closedDates: [DayDate]
+    }
+
     func exportJson() throws -> String {
         lock.lock(); defer { lock.unlock() }
-        struct Export: Codable {
-            var challenge: Challenge
-            var presets: [ContainerPreset]
-            var extras: [ExtraDef]
-            var closedDates: [DayDate]
-        }
-        let export = Export(challenge: challenge, presets: presets, extras: extras,
-                            closedDates: closedDates.sorted())
+        let export = Snapshot(challenge: challenge, presets: presets, extras: extras,
+                              closedDates: closedDates.sorted())
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(export)
         return String(decoding: data, as: UTF8.self)
+    }
+
+    // MARK: - DromeCoreClient: restore
+
+    /// Mirrors the core's contract: only into a store with no active challenge.
+    func importJson(_ snapshot: String) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard !challenge.active else { throw DromeError.challengeAlreadyActive }
+        guard let restored = try? JSONDecoder().decode(Snapshot.self, from: Data(snapshot.utf8)) else {
+            throw DromeError.invalidArgument("that file isn't a Drome backup")
+        }
+        challenge = restored.challenge
+        presets = restored.presets
+        extras = restored.extras
+        closedDates = Set(restored.closedDates)
+        events.removeAll()
+        goalChanges.removeAll()
     }
 
     func exportCsv() throws -> String {

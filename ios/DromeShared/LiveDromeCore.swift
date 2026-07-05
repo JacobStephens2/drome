@@ -125,6 +125,14 @@ final class LiveDromeCore: DromeCoreClient, @unchecked Sendable {
         try call { try store.setWaterGoal(ml: ml, now: Self.nowInstant()) }
     }
 
+    func setDietDescription(_ desc: String) throws {
+        try call { try store.setDietDescription(desc: desc) }
+    }
+
+    func setWakingWindow(startMinutes: UInt16, endMinutes: UInt16) throws {
+        try call { try store.setWakingWindow(startMinutes: startMinutes, endMinutes: endMinutes) }
+    }
+
     // MARK: - DromeCoreClient: logging
 
     func logWater(ml: Int64, effectiveDate: DayDate?) throws -> LogResult {
@@ -266,7 +274,7 @@ final class LiveDromeCore: DromeCoreClient, @unchecked Sendable {
         try call { try store.exportCsv(now: Self.nowInstant()) }
     }
 
-    // MARK: - Restore (not part of DromeCoreClient; used by the backup/restore flow)
+    // MARK: - DromeCoreClient: restore
 
     /// Restores an `exportJson` snapshot. Only into a store with no active
     /// challenge (core-enforced); throws `DromeError.challengeAlreadyActive`.

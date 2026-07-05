@@ -38,6 +38,12 @@ protocol DromeCoreClient: AnyObject, Sendable {
     func setExtraEnabled(id: String, enabled: Bool) throws
     func setCurrentBook(_ title: String) throws
     func setWaterGoal(ml: Int64) throws
+    /// Display config; safe to edit mid-challenge (never rewrites past days).
+    func setDietDescription(_ desc: String) throws
+    /// Waking window (minutes after midnight); water pacing only.
+    /// NOTE: day_cutoff_minutes deliberately has NO setter — changing it
+    /// mid-challenge would re-attribute past events (docs/ARCHITECTURE.md).
+    func setWakingWindow(startMinutes: UInt16, endMinutes: UInt16) throws
 
     // MARK: Logging intents
     //
@@ -89,6 +95,12 @@ protocol DromeCoreClient: AnyObject, Sendable {
     func shareCard(date: DayDate) throws -> ShareCardData
     func exportJson() throws -> String
     func exportCsv() throws -> String
+
+    // MARK: Restore
+
+    /// Restores an `exportJson` snapshot. Only valid while no challenge is
+    /// active in the store; throws `DromeError.challengeAlreadyActive`.
+    func importJson(_ snapshot: String) throws
 }
 
 // MARK: - Convenience overloads (today-attributed logging)

@@ -142,6 +142,10 @@ create_challenge(cfg: NewChallenge) -> Challenge        // NewChallenge includes
 update_presets(presets: Vec<ContainerPreset>) / set_extra_enabled(id, bool)
 container_presets() -> Vec<ContainerPreset> / extra_defs() -> Vec<ExtraDef>
 set_current_book(title) / set_water_goal(ml, now)       // goal change = event
+set_diet_description(desc) / set_waking_window(start_minutes, end_minutes)  // display/pacing config; safe to edit mid-challenge
+// NOTE: day_cutoff_minutes has deliberately NO setter — changing it mid-challenge would
+// re-attribute past events (could flip completed days). Needs goal_changed-style
+// as-of-day semantics; deferred past Phase 1. UI shows the value read-only.
 import_json(snapshot: String) -> ()   // restore an export_json snapshot; only into a store with no active challenge
 log_water(ml, now, effective_date: Option<String>) -> LogResult
 log_workout(duration_min, outdoor, note, started_at: Option<LocalInstant>, now, effective_date) -> LogResult

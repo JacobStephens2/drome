@@ -12,23 +12,6 @@
 
 import SwiftUI
 
-// MARK: - Config-editing shim
-
-/// Mutations the Phase-1 `DromeCoreClient` facade doesn't expose: the
-/// challenge table stores `diet_description` and the day-rhythm fields, but
-/// the pinned core API (docs/ARCHITECTURE.md) has no setters for them. A
-/// client that can persist these declares this conformance; SettingsView
-/// disables the affected editors otherwise. Integration: conform
-/// LiveDromeCore (or fold these into DromeCoreClient) and the editors
-/// light up on their own.
-protocol DromeConfigEditing: AnyObject {
-    func setDietDescription(_ text: String) throws
-    /// Minutes after midnight where the day boundary sits (default 240 = 4 AM).
-    func setDayCutoffMinutes(_ minutes: Int) throws
-    /// Waking window (minutes after midnight); used for water pacing only.
-    func setWakingWindow(startMinutes: Int, endMinutes: Int) throws
-}
-
 // MARK: - SettingsView
 
 @MainActor
@@ -67,8 +50,6 @@ struct SettingsView: View {
         self.client = client
     }
 
-    private var configEditor: DromeConfigEditing? { client as? DromeConfigEditing }
-
     var body: some View {
         Form {
             challengeSection
@@ -87,7 +68,6 @@ struct SettingsView: View {
         .navigationTitle("Settings")
         .task { load() }
         .onChange(of: presets) { pushPresets() }
-        .onChange(of: cutoffMinutes) { saveCutoff() }
         .onChange(of: wakingStartMinutes) { saveWakingWindow() }
         .onChange(of: wakingEndMinutes) { saveWakingWindow() }
         .alert("Couldn't save", isPresented: errorPresented) {
@@ -177,20 +157,21 @@ struct SettingsView: View {
         .listRowBackground(rowBackground)
     }
 
+    /// Read-only on purpose: changing the cutoff mid-challenge would
+    /// re-attribute past events and could flip completed days
+    /// (docs/ARCHITECTURE.md — the core deliberately has no setter).
     private var cutoffSection: some View {
         Section {
-            Picker("Day cutoff", selection: $cutoffMinutes) {
-                ForEach(cutoffOptions, id: \.self) { minutes in
-                    Text(timeLabel(minutes)).tag(minutes)
-                }
+            LabeledContent("Day cutoff") {
+                Text(timeLabel(cutoffMinutes))
+                    .monospacedDigit()
+                    .foregroundStyle(Color.dromeInk.opacity(0.75))
             }
-            .disabled(configEditor == nil)
             .frame(minHeight: DromeSpacing.tapTarget)
         } header: {
             sectionHeader("Day rhythm")
         } footer: {
-            Text("Your day ends when you close it or at the cutoff — late nights count toward the day you lived them."
-                 + rhythmLockedNote)
+            Text("Late nights count toward the day you lived them — your day rolls over at this cutoff. Locked during a challenge — changing it would rewrite past days. Coming later.")
         }
         .listRowBackground(rowBackground)
     }
@@ -210,14 +191,9 @@ struct SettingsView: View {
             }
             .frame(minHeight: DromeSpacing.tapTarget)
         } footer: {
-            Text("Used for water pacing only — your goal is spread across these waking hours." + rhythmLockedNote)
+            Text("Used for water pacing only — your goal is spread across these waking hours.")
         }
-        .disabled(configEditor == nil)
         .listRowBackground(rowBackground)
-    }
-
-    private var rhythmLockedNote: String {
-        configEditor == nil ? " (This build can't change day rhythm yet.)" : ""
     }
 
     private var extrasSection: some View {
@@ -266,9 +242,8 @@ struct SettingsView: View {
             HStack(alignment: .top, spacing: DromeSpacing.s) {
                 TextField("Diet description", text: $dietText, axis: .vertical)
                     .lineLimit(1...4)
-                    .disabled(configEditor == nil)
                     .onSubmit { saveDiet() }
-                if configEditor != nil, dietText != savedDietText {
+                if dietText != savedDietText {
                     Button("Save") { saveDiet() }
                         .font(.headline.weight(.black))
                         .foregroundStyle(Color.dromeClay)
@@ -278,9 +253,7 @@ struct SettingsView: View {
         } header: {
             sectionHeader("Diet")
         } footer: {
-            Text(configEditor == nil
-                 ? "Set when you created your challenge — this build can't change it yet."
-                 : "Your rule, in your words. Changing it doesn't rewrite past days.")
+            Text("Your rule, in your words. Changing it doesn't rewrite past days.")
         }
         .listRowBackground(rowBackground)
     }
@@ -373,10 +346,6 @@ struct SettingsView: View {
         return date.formatted(date: .omitted, time: .shortened)
     }
 
-    private var cutoffOptions: [Int] {
-        pickerOptions(stride(from: 0, through: 360, by: 60), including: cutoffMinutes)
-    }
-
     private var wakingStartOptions: [Int] {
         pickerOptions(stride(from: 240, through: 720, by: 60), including: wakingStartMinutes)
     }
@@ -458,20 +427,16 @@ struct SettingsView: View {
         }
     }
 
-    private func saveCutoff() {
-        guard let editor = configEditor else { return }
-        do {
-            try editor.setDayCutoffMinutes(cutoffMinutes)
-            appModel?.refresh()
-        } catch {
-            errorMessage = settingsErrorText(error)
-        }
-    }
-
     private func saveWakingWindow() {
-        guard let editor = configEditor else { return }
+        guard wakingStartMinutes < wakingEndMinutes else {
+            errorMessage = "The waking window must start before it ends."
+            return
+        }
         do {
-            try editor.setWakingWindow(startMinutes: wakingStartMinutes, endMinutes: wakingEndMinutes)
+            try client.setWakingWindow(
+                startMinutes: UInt16(clamping: wakingStartMinutes),
+                endMinutes: UInt16(clamping: wakingEndMinutes)
+            )
             appModel?.refresh()
         } catch {
             errorMessage = settingsErrorText(error)
@@ -508,9 +473,8 @@ struct SettingsView: View {
     }
 
     private func saveDiet() {
-        guard let editor = configEditor else { return }
         do {
-            try editor.setDietDescription(dietText)
+            try client.setDietDescription(dietText)
             savedDietText = dietText
             appModel?.refresh()
         } catch {
@@ -561,177 +525,10 @@ private func settingsErrorText(_ error: Error) -> String {
     }
 }
 
-// MARK: - Preview support
-
-/// Preview-support client: wraps MockDromeCore and adds the config-editing
-/// and restore shims so SettingsView and ExportBackupView can be exercised
-/// end-to-end standalone. Previews only — integration wires the real core
-/// client, never this.
-final class SettingsPreviewCore: DromeCoreClient, DromeConfigEditing, DromeSnapshotRestoring, @unchecked Sendable {
-
-    private let base = MockDromeCore()
-    private let lock = NSLock()
-    private var dietOverride: String?
-    private var cutoffOverride: Int?
-    private var wakingStartOverride: Int?
-    private var wakingEndOverride: Int?
-
-    // MARK: DromeConfigEditing
-
-    func setDietDescription(_ text: String) throws {
-        lock.lock(); defer { lock.unlock() }
-        dietOverride = text
-    }
-
-    func setDayCutoffMinutes(_ minutes: Int) throws {
-        guard (0..<1440).contains(minutes) else {
-            throw DromeError.invalidArgument("Day cutoff must fall within the day.")
-        }
-        lock.lock(); defer { lock.unlock() }
-        cutoffOverride = minutes
-    }
-
-    func setWakingWindow(startMinutes: Int, endMinutes: Int) throws {
-        guard startMinutes < endMinutes else {
-            throw DromeError.invalidArgument("The waking window must start before it ends.")
-        }
-        lock.lock(); defer { lock.unlock() }
-        wakingStartOverride = startMinutes
-        wakingEndOverride = endMinutes
-    }
-
-    // MARK: DromeSnapshotRestoring
-    //
-    // The mock always has an active challenge, so restore reports exactly
-    // what the core would: snapshots only import into a fresh store.
-
-    func importJson(_ snapshot: String) throws {
-        let data = Data(snapshot.utf8)
-        guard (try? JSONSerialization.jsonObject(with: data)) != nil else {
-            throw DromeError.invalidArgument("That file isn't a Drome backup.")
-        }
-        throw DromeError.challengeAlreadyActive
-    }
-
-    // MARK: DromeCoreClient (forwarded, with config overlays)
-
-    func activeChallenge() throws -> Challenge? {
-        guard var challenge = try base.activeChallenge() else { return nil }
-        lock.lock(); defer { lock.unlock() }
-        if let dietOverride { challenge.dietDescription = dietOverride }
-        if let cutoffOverride { challenge.dayCutoffMinutes = cutoffOverride }
-        if let wakingStartOverride { challenge.wakingStartMinutes = wakingStartOverride }
-        if let wakingEndOverride { challenge.wakingEndMinutes = wakingEndOverride }
-        return challenge
-    }
-
-    @discardableResult
-    func createChallenge(_ cfg: NewChallenge) throws -> Challenge {
-        try base.createChallenge(cfg)
-    }
-
-    func containerPresets() throws -> [ContainerPreset] {
-        try base.containerPresets()
-    }
-
-    func updatePresets(_ presets: [ContainerPreset]) throws {
-        try base.updatePresets(presets)
-    }
-
-    func extraDefs() throws -> [ExtraDef] {
-        try base.extraDefs()
-    }
-
-    func setExtraEnabled(id: String, enabled: Bool) throws {
-        try base.setExtraEnabled(id: id, enabled: enabled)
-    }
-
-    func setCurrentBook(_ title: String) throws {
-        try base.setCurrentBook(title)
-    }
-
-    func setWaterGoal(ml: Int64) throws {
-        try base.setWaterGoal(ml: ml)
-    }
-
-    func logWater(ml: Int64, effectiveDate: DayDate?) throws -> LogResult {
-        try base.logWater(ml: ml, effectiveDate: effectiveDate)
-    }
-
-    func logWorkout(durationMin: Int, outdoor: Bool, note: String?, effectiveDate: DayDate?) throws -> LogResult {
-        try base.logWorkout(durationMin: durationMin, outdoor: outdoor, note: note, effectiveDate: effectiveDate)
-    }
-
-    func logReading(bookTitle: String, pages: Int, effectiveDate: DayDate?) throws -> LogResult {
-        try base.logReading(bookTitle: bookTitle, pages: pages, effectiveDate: effectiveDate)
-    }
-
-    func logDietOk(effectiveDate: DayDate?) throws -> LogResult {
-        try base.logDietOk(effectiveDate: effectiveDate)
-    }
-
-    func logPhotoDone(photoRef: String?, effectiveDate: DayDate?) throws -> LogResult {
-        try base.logPhotoDone(photoRef: photoRef, effectiveDate: effectiveDate)
-    }
-
-    func logExtraDone(extraId: String, effectiveDate: DayDate?) throws -> LogResult {
-        try base.logExtraDone(extraId: extraId, effectiveDate: effectiveDate)
-    }
-
-    @discardableResult
-    func closeDay(date: DayDate) throws -> DayState {
-        try base.closeDay(date: date)
-    }
-
-    func revokeEvent(eventUuid: String) throws {
-        try base.revokeEvent(eventUuid: eventUuid)
-    }
-
-    func backfillDays(_ days: [BackfilledDay]) throws {
-        try base.backfillDays(days)
-    }
-
-    func dayState(date: DayDate) throws -> DayState {
-        try base.dayState(date: date)
-    }
-
-    func today() throws -> TodayState {
-        try base.today()
-    }
-
-    func summary() throws -> ChallengeSummary {
-        try base.summary()
-    }
-
-    func calendar(from: DayDate, to: DayDate) throws -> [DayBrief] {
-        try base.calendar(from: from, to: to)
-    }
-
-    func waterState() throws -> WaterState {
-        try base.waterState()
-    }
-
-    func checkChug(addMl: Int64) throws -> ChugCheck {
-        try base.checkChug(addMl: addMl)
-    }
-
-    func shareCard(date: DayDate) throws -> ShareCardData {
-        try base.shareCard(date: date)
-    }
-
-    func exportJson() throws -> String {
-        try base.exportJson()
-    }
-
-    func exportCsv() throws -> String {
-        try base.exportCsv()
-    }
-}
-
 // MARK: - Previews
 
 #Preview("Settings") {
-    let core = SettingsPreviewCore()
+    let core = MockDromeCore()
     NavigationStack {
         SettingsView(client: core)
     }
@@ -739,7 +536,7 @@ final class SettingsPreviewCore: DromeCoreClient, DromeConfigEditing, DromeSnaps
 }
 
 #Preview("Settings — dark") {
-    let core = SettingsPreviewCore()
+    let core = MockDromeCore()
     NavigationStack {
         SettingsView(client: core)
     }
