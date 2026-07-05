@@ -1,0 +1,19 @@
+# Rust (Cargo.lock stays committed for reproducible builds)
+core/target/
+
+# Apple / Xcode
+ios/Frameworks/DromeCore.xcframework/
+ios/DromeShared/Generated/*.h
+ios/DromeShared/Generated/*.modulemap
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+*.xcscmblueprint
+
+# macOS
+.DS_Store
+
+# Scratch
+*.log
+.scratch/

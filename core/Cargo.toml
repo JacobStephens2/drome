@@ -1,0 +1,17 @@
+[package]
+name = "drome-core"
+version = "0.1.0"
+edition = "2021"
+license = "UNLICENSED"
+publish = false
+
+[lib]
+name = "drome_core"
+crate-type = ["lib", "staticlib", "cdylib"]
+
+# Dependencies are added by the core build stage (uniffi, rusqlite bundled, serde,
+# serde_json, thiserror, uuid; dev: proptest). Kept empty in the scaffold commit so
+# CI is green from day one.
+[dependencies]
+
+[dev-dependencies]
