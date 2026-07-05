@@ -99,7 +99,7 @@ struct RootView: View {
         // must be a no-op — clearing pending state there would swallow a
         // confirmed "Log anyway". Both buttons clear the state explicitly.
         .alert(
-            "Over a liter in an hour",
+            "Over 34 oz in an hour",
             isPresented: Binding(
                 get: { appModel.pendingChugWarning != nil && sheet == nil },
                 set: { _ in }
@@ -109,7 +109,10 @@ struct RootView: View {
             Button("Log anyway") { appModel.confirmPendingWater() }
             Button("Wait", role: .cancel) { appModel.cancelPendingWater() }
         } message: { warning in
-            Text("That would be over \(warning.limitMl) ml in the last hour. Your body handles about 1 liter an hour — it counts just the same in a while.")
+            // Ounces, matching WaterView's copy (display unit is fl oz;
+            // ml stays the core's canonical unit).
+            let limitOz = Int(WaterUnits.flOz(fromMl: warning.limitMl).rounded())
+            Text("That would put you past about \(limitOz) oz within an hour. Kidneys process roughly 27–34 oz an hour — it counts just the same in a while.")
         }
         // Failed writes must never look like successful taps: any intent
         // error lands here as an honest alert. Yields to a presented sheet,
@@ -255,7 +258,7 @@ private struct IntentErrorAlert: ViewModifier {
 
 // MARK: - Yesterday sheet (retroactive one-tap logging, honestly labeled)
 
-/// Compact "log for yesterday" sheet: the five task tiles (workout tile =
+/// Compact "log for yesterday" sheet: the six task tiles (workout tile =
 /// two slots) as one-tap buttons writing with `effectiveDate` = yesterday,
 /// plus yesterday's removable pour log (corrections cut both ways). This
 /// edits yesterday only — the header says so plainly.
@@ -265,6 +268,11 @@ private struct YesterdayLogSheet: View {
 
     @State private var yesterdayDate: DayDate?
     @State private var day: DayState?
+
+    /// The no-junk row goes client-direct (no AppModel intent yet), so a
+    /// failed write can't reach the shared IntentErrorAlert; this drives the
+    /// same inline "didn't save" line DayBoardNoJunkTile shows.
+    @State private var noJunkSaveFailed = false
 
     /// Yesterday's non-revoked pours — live logs from the day itself plus
     /// any "backdated" adds made from this sheet. Yesterday stays editable
@@ -304,6 +312,12 @@ private struct YesterdayLogSheet: View {
                         title: "Diet",
                         buttonLabel: "Kept it"
                     ) { log { appModel.logDietOk(effectiveDate: $0) } }
+                    taskRow(
+                        done: day.noJunkDone,
+                        title: "No junk or alcohol",
+                        errorText: noJunkSaveFailed ? "That didn't save — try again" : nil,
+                        buttonLabel: "Clean day"
+                    ) { log { logNoJunkOk(for: $0) } }
                     taskRow(
                         done: day.photoDone,
                         title: "Progress photo",
@@ -382,6 +396,7 @@ private struct YesterdayLogSheet: View {
         done: Bool,
         title: String,
         detail: String? = nil,
+        errorText: String? = nil,
         buttonLabel: String,
         action: @escaping () -> Void
     ) -> some View {
@@ -398,6 +413,13 @@ private struct YesterdayLogSheet: View {
                         .font(.footnote.weight(.semibold))
                         .monospacedDigit()
                         .foregroundStyle(Color.dromeInk.opacity(0.55))
+                }
+                // Quiet inline failure line (DayBoardNoJunkTile's pattern) —
+                // a failed write must never look like a dead button.
+                if let errorText, !done {
+                    Text(errorText)
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(Color.dromeMiss)
                 }
             }
             Spacer(minLength: 0)
@@ -435,6 +457,23 @@ private struct YesterdayLogSheet: View {
         guard let date = yesterdayDate else { return }
         intent(date)
         reload()
+    }
+
+    /// Client-direct no-junk attest (flagged for the review pass): AppModel —
+    /// owned by a concurrent stage — has no logNoJunkOk intent yet, so this
+    /// calls the SAME shared client and hands the result back through
+    /// `noteExternalLog`, PhotoView's photoRef pattern (a retroactive log can
+    /// still flip yesterday complete and must fire its completion moment).
+    /// On failure the row says so inline (`noJunkSaveFailed`, matching
+    /// DayBoardNoJunkTile); `lastErrorMessage` is private(set) and
+    /// unreachable from here.
+    private func logNoJunkOk(for date: DayDate) {
+        guard let result = try? appModel.client.logNoJunkOk(effectiveDate: date) else {
+            noJunkSaveFailed = true
+            return
+        }
+        noJunkSaveFailed = false
+        appModel.noteExternalLog(result)
     }
 
     private func load() {

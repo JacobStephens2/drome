@@ -4,7 +4,7 @@
 //
 //  The share card that replaces group-chat workout screenshots. Renders a
 //  story-proportioned (9:16, designed at 360×640pt, exported 1080×1920 @3x)
-//  card from ShareCardData: day number, date, the five-task checklist (done
+//  card from ShareCardData: day number, date, the six-task checklist (done
 //  flags straight from the core — backfilled flags carry no quantities), the
 //  day's workouts with durations + OUTDOOR badges, the current run, and the
 //  honest-but-subtle ruleset label. Structurally photo-free and note-free:
@@ -122,7 +122,7 @@ struct ShareCardView: View {
             )
     }
 
-    // MARK: Checklist (the five tasks)
+    // MARK: Checklist (the six tasks)
 
     private var checklist: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -244,7 +244,7 @@ struct ShareCardView: View {
         Array(data.workouts.prefix(maxWorkoutRows))
     }
 
-    /// The five checklist rows. Done-ness comes from the core's per-task flags
+    /// The six checklist rows. Done-ness comes from the core's per-task flags
     /// (never recomputed from totals here — backfilled flags carry no
     /// quantities); totals only feed the detail strings.
     private var taskRows: [TaskRow] {
@@ -270,6 +270,7 @@ struct ShareCardView: View {
                 done: data.readingDone
             ),
             TaskRow(id: "diet", title: "DIET", detail: nil, done: data.dietDone),
+            TaskRow(id: "no-junk", title: "NO JUNK OR ALCOHOL", detail: nil, done: data.noJunkDone),
             TaskRow(id: "photo", title: "PHOTO", detail: nil, done: data.photoDone),
         ]
     }
@@ -460,6 +461,7 @@ struct ShareCardSheet: View {
     _ = try! core.logWorkout(durationMin: 30, outdoor: false, note: "Lifting")
     _ = try! core.logReading(bookTitle: "Atomic Habits", pages: 12)
     _ = try! core.logDietOk()
+    _ = try! core.logNoJunkOk()
     _ = try! core.logPhotoDone(photoRef: nil)
     let today = try! core.today().date
     return ScrollView {
@@ -507,6 +509,7 @@ struct ShareCardSheet: View {
         pagesRead: 12,
         readingDone: true,
         dietDone: true,
+        noJunkDone: true,
         photoDone: true,
         workouts: [
             ShareWorkout(id: "w0", durationMin: 45, outdoor: true),

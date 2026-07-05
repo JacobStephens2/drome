@@ -9,7 +9,7 @@ use crate::api::{Challenge, DayState, WorkoutEntry};
 use crate::error::{DromeError, Result};
 use crate::events::{
     self, DayBackfilledPayload, DayClosedPayload, EventRow, ExtraDonePayload, GoalChangedPayload,
-    ReadingPayload, WaterAddPayload, WorkoutPayload,
+    ReadingPayload, WaterAddPayload, WaterAdjustPayload, WorkoutPayload,
 };
 use crate::rules::{RulesetKind, READING_PAGES_TARGET};
 use crate::time::{self, attribute_date, day_index, format_date, LocalInstant};
@@ -35,10 +35,16 @@ pub fn goal_as_of_day(initial_ml: i64, sorted_changes: &[GoalChange], date: Naiv
 
 #[derive(Debug, Default)]
 struct DayAccum {
+    /// Per-day water total: `water_add` + `water_adjust` ml folded in
+    /// (logged_at, id) order with a running floor at 0. A correction can
+    /// never consume more than the water logged before it, so revoking the
+    /// add a correction was validated against leaves the day at 0 — never
+    /// with hidden negative debt that would silently swallow later pours.
     water_ml: i64,
     workouts: Vec<WorkoutEntry>,
     pages: u32,
     diet: bool,
+    no_junk: bool,
     photo: bool,
     extras: BTreeSet<String>,
 }
@@ -54,14 +60,25 @@ pub struct Projection {
     days: BTreeMap<NaiveDate, DayAccum>,
     goal_changes: Vec<GoalChange>,
     backfills: BTreeMap<NaiveDate, DayBackfilledPayload>,
-    /// Non-revoked water adds as `(logged_at_epoch, ml)`, for the chug guard.
-    /// Excludes explicitly backdated logs (`effective_date` set): retroactive
-    /// water is bookkeeping, not current intake, and must never poison the
-    /// trailing-hour window.
+    /// Non-revoked water adds AND adjustments as `(logged_at_epoch, ml)` —
+    /// adjustments carry negative ml — for the chug guard. A live adjustment
+    /// nets against the trailing-hour window so honestly correcting a
+    /// fat-fingered pour also clears the false chug warning it caused
+    /// (`trailing_hour_ml` floors the net at 0 so corrections can never
+    /// manufacture headroom to chug against). Excludes explicitly backdated
+    /// logs (`effective_date` set) of either kind: retroactive water is
+    /// bookkeeping, not current intake, and must never poison the window.
     water_by_epoch: Vec<(i64, i64)>,
     /// UUIDs targeted by a `revoked` event — the single source of truth for
     /// per-event liveness queries (e.g. the water log).
     revoked: HashSet<String>,
+    /// The no-junk feature boundary: the earliest local date any event was
+    /// written by a six-task-era build (`schema_version >=`
+    /// [`events::SIX_TASK_SCHEMA_VERSION`]). Days strictly before it inherit
+    /// `diet_done` for `no_junk_done` — the live-log twin of the backfill
+    /// fallback in `DayBackfilledPayload::no_junk_effective`. `None` means
+    /// the whole log predates the feature (every day inherits).
+    no_junk_since: Option<NaiveDate>,
 }
 
 impl Projection {
@@ -93,6 +110,36 @@ impl Projection {
             *entry = (*entry).min(e.logged_at.epoch_secs);
         }
 
+        // The no-junk feature boundary: the earliest local date any event was
+        // written by a six-task-era build, by plain cutoff attribution of
+        // `logged_at` (the real-world day that build was first used — so
+        // revoked events count too and explicit `effective_date`s are
+        // ignored; the min handles westward-travel epoch reordering). On a
+        // log with no pre-era rows the challenge's creation date bounds it
+        // as well: a challenge created by a six-task build requires the
+        // attestation from its very first day, even before its first event.
+        let mut no_junk_since: Option<NaiveDate> = None;
+        let mut has_pre_era_events = false;
+        let no_closes = BTreeMap::new();
+        for e in events {
+            if e.schema_version >= events::SIX_TASK_SCHEMA_VERSION {
+                let d =
+                    attribute_date(e.logged_at, None, challenge.day_cutoff_minutes, &no_closes)?;
+                no_junk_since = Some(no_junk_since.map_or(d, |b| b.min(d)));
+            } else {
+                has_pre_era_events = true;
+            }
+        }
+        if !has_pre_era_events {
+            let d = attribute_date(
+                challenge.created_at,
+                None,
+                challenge.day_cutoff_minutes,
+                &no_closes,
+            )?;
+            no_junk_since = Some(no_junk_since.map_or(d, |b| b.min(d)));
+        }
+
         let mut proj = Projection {
             ruleset: challenge.ruleset,
             start_date,
@@ -105,6 +152,7 @@ impl Projection {
             backfills: BTreeMap::new(),
             water_by_epoch: Vec::new(),
             revoked: HashSet::new(),
+            no_junk_since,
         };
 
         for e in events.iter().filter(live) {
@@ -112,7 +160,19 @@ impl Projection {
                 events::KIND_WATER_ADD => {
                     let p: WaterAddPayload = e.payload_as()?;
                     let day = proj.day_mut(e)?;
-                    day.water_ml = day.water_ml.saturating_add(p.ml);
+                    day.water_ml = day.water_ml.saturating_add(p.ml).max(0);
+                    if e.effective_date.is_none() {
+                        proj.water_by_epoch.push((e.logged_at.epoch_secs, p.ml));
+                    }
+                }
+                events::KIND_WATER_ADJUST => {
+                    let p: WaterAdjustPayload = e.payload_as()?;
+                    let day = proj.day_mut(e)?;
+                    // p.ml is negative (log/import validation). The running
+                    // floor clips an over-correction — possible only after a
+                    // revoke reordered history — at 0 right here, so it can
+                    // never debit pours folded after it (see DayAccum).
+                    day.water_ml = day.water_ml.saturating_add(p.ml).max(0);
                     if e.effective_date.is_none() {
                         proj.water_by_epoch.push((e.logged_at.epoch_secs, p.ml));
                     }
@@ -134,6 +194,7 @@ impl Projection {
                     day.pages = day.pages.saturating_add(p.pages);
                 }
                 events::KIND_DIET_OK => proj.day_mut(e)?.diet = true,
+                events::KIND_NO_JUNK_OK => proj.day_mut(e)?.no_junk = true,
                 events::KIND_PHOTO_DONE => proj.day_mut(e)?.photo = true,
                 events::KIND_EXTRA_DONE => {
                     let p: ExtraDonePayload = e.payload_as()?;
@@ -222,11 +283,27 @@ impl Projection {
         let water_goal_ml = self.ruleset.water_goal_ml(self.goal_for_date(date));
         let (outdoor, second) = self.ruleset.workouts_satisfied(&accum.workouts);
 
-        let water_done = bf(|b| b.water) || accum.water_ml >= water_goal_ml;
+        // Already non-negative: the fold applies a running floor per event
+        // (see DayAccum). Kept as defense in depth for future event kinds.
+        let water_ml = accum.water_ml.max(0);
+
+        let water_done = bf(|b| b.water) || water_ml >= water_goal_ml;
         let outdoor_workout_done = bf(|b| b.outdoor_workout) || outdoor;
         let second_workout_done = bf(|b| b.second_workout) || second;
         let reading_done = bf(|b| b.reading) || accum.pages >= READING_PAGES_TARGET;
         let diet_done = bf(|b| b.diet) || accum.diet;
+        // "No Junk or Alcohol" landed after stores already existed, so both
+        // storage shapes get the same honest legacy reading: a backfill
+        // payload missing the key inherits its `diet` flag (no_junk_effective),
+        // and a day lived strictly before this store's six-task boundary
+        // (`no_junk_since`) inherits the live diet attestation — the user's
+        // sheet kept the two columns equal. An explicit backfill wins over
+        // era inheritance; days on/after the boundary need the real attest.
+        let pre_no_junk_era = self.no_junk_since.is_none_or(|since| date < since);
+        let no_junk_done = match backfill {
+            Some(b) => b.no_junk_effective() || accum.no_junk,
+            None => accum.no_junk || (accum.diet && pre_no_junk_era),
+        };
         let photo_done = bf(|b| b.photo) || accum.photo;
 
         let mut extras_done: BTreeSet<String> = accum.extras.clone();
@@ -241,7 +318,7 @@ impl Projection {
             in_range: idx >= 1 && idx <= i64::from(self.length_days),
             is_backfilled: backfill.is_some(),
             is_closed: self.is_closed(date),
-            water_ml: accum.water_ml,
+            water_ml,
             water_goal_ml,
             water_done,
             workouts: accum.workouts.clone(),
@@ -250,13 +327,17 @@ impl Projection {
             reading_pages: accum.pages,
             reading_done,
             diet_done,
+            no_junk_done,
             photo_done,
             extras_done: extras_done.into_iter().collect(),
+            // All six core tasks, in both rulesets (mirrors the sheet's
+            // separate "Nutrition/Diet" and "No Junk or Alcohol" columns).
             core_complete: water_done
                 && outdoor_workout_done
                 && second_workout_done
                 && reading_done
                 && diet_done
+                && no_junk_done
                 && photo_done,
         }
     }
@@ -333,7 +414,9 @@ impl Projection {
             outdoor =
                 outdoor.saturating_add(day.workouts.iter().filter(|w| w.outdoor).count() as u32);
             pages = pages.saturating_add(u64::from(day.pages));
-            water = water.saturating_add(day.water_ml);
+            // day.water_ml is already fold-floored per event (never
+            // negative); the .max(0) matches day_state's defense in depth.
+            water = water.saturating_add(day.water_ml.max(0));
         }
         (workouts, outdoor, pages, water)
     }

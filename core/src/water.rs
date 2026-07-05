@@ -62,15 +62,31 @@ pub fn compute_water_state(
     }
 }
 
-/// Sum of water logged in the trailing 60 minutes: `(epoch_secs, ml)` pairs
-/// with `now - 60min < epoch <= now`.
+/// Net water logged in the trailing 60 minutes: `(epoch_secs, ml)` pairs with
+/// `now - 60min < epoch <= now`, folded in time order with a running floor
+/// at 0. Corrections (`water_adjust`, negative ml) inside the window net
+/// against the intake logged BEFORE them, so honestly fixing a fat-fingered
+/// pour also clears the false chug warning it caused — the guard should never
+/// nag about water that was never drunk. The running floor means a correction
+/// can never offset intake logged AFTER it: a stale correction (its original
+/// add already aged out of the window) clips to 0 instead of manufacturing
+/// "headroom" that would let a genuinely large later chug pass the guard.
+/// (Corrections carry no link to the pour they correct, so one logged after
+/// real in-window intake still nets against that; the exact per-pour undo is
+/// revoking the pour itself, which removes its timestamp from the window.)
 pub fn trailing_hour_ml(water_events: &[(i64, i64)], now_epoch: i64) -> i64 {
     let window_start = now_epoch.saturating_sub(CHUG_WINDOW_SECS);
-    water_events
+    let mut in_window: Vec<(i64, i64)> = water_events
         .iter()
         .filter(|(epoch, _)| *epoch > window_start && *epoch <= now_epoch)
-        .map(|(_, ml)| *ml)
-        .fold(0i64, i64::saturating_add)
+        .copied()
+        .collect();
+    // Callers pass log-ordered slices already; sort defensively (stable, so
+    // same-epoch events keep their log order) because the fold is order-aware.
+    in_window.sort_by_key(|(epoch, _)| *epoch);
+    in_window
+        .iter()
+        .fold(0i64, |acc, (_, ml)| acc.saturating_add(*ml).max(0))
 }
 
 pub fn check_chug(trailing_60min_ml: i64, add_ml: i64) -> ChugCheck {
@@ -168,5 +184,34 @@ mod tests {
             (now + 5, 400), // future (other process clock skew): outside
         ];
         assert_eq!(trailing_hour_ml(&events, now), 500);
+    }
+
+    #[test]
+    fn trailing_window_nets_adjustments_and_floors_at_zero() {
+        let now = 100_000;
+        // A fat-fingered 2000 corrected by -1900 nets to 100.
+        let corrected = [(now - 600, 2_000i64), (now - 540, -1_900)];
+        assert_eq!(trailing_hour_ml(&corrected, now), 100);
+        // The corrected add aged out of the window but the correction hasn't:
+        // it clips at 0 instead of going negative (no chug "headroom").
+        let orphaned = [(now - CHUG_WINDOW_SECS, 800i64), (now - 60, -700)];
+        assert_eq!(trailing_hour_ml(&orphaned, now), 0);
+        assert!(!check_chug(trailing_hour_ml(&orphaned, now), 1_000).warn);
+        assert!(check_chug(trailing_hour_ml(&orphaned, now), 1_001).warn);
+    }
+
+    #[test]
+    fn stale_correction_never_offsets_later_intake() {
+        let now = 100_000;
+        // A stale correction (its add aged out) followed by a genuine liter:
+        // the running floor clips the correction to 0 BEFORE the add, so the
+        // fresh intake counts in full. Sum-then-floor would report 100 here
+        // and let ~1.9 L inside the hour pass unwarned.
+        let events = [(now - 600, -900i64), (now - 300, 1_000)];
+        assert_eq!(trailing_hour_ml(&events, now), 1_000);
+        assert!(check_chug(trailing_hour_ml(&events, now), 1).warn);
+        // Same events arriving unsorted fold identically.
+        let shuffled = [(now - 300, 1_000i64), (now - 600, -900)];
+        assert_eq!(trailing_hour_ml(&shuffled, now), 1_000);
     }
 }

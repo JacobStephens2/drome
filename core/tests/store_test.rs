@@ -87,6 +87,7 @@ fn demo_store() -> (TempDir, String, Arc<DromeStore>) {
             second_workout: true,
             reading: i != 13,
             diet: true,
+            no_junk: true,
             photo: true,
             extra_ids: if i == 3 {
                 vec![JOB_EXTRA_ID.into()]
@@ -127,6 +128,7 @@ fn demo_fixture_day_indexing_and_counts() {
     assert!(day13.outdoor_workout_done);
     assert!(day13.second_workout_done);
     assert!(day13.diet_done);
+    assert!(day13.no_junk_done);
     assert!(day13.photo_done);
     assert!(!day13.core_complete);
 
@@ -179,6 +181,10 @@ fn demo_completion_moment_fires_exactly_once() {
     let r = store
         .log_diet_ok(at("2026-07-04", 21, 0), None)
         .expect("log diet");
+    flips.push(r.day_became_complete);
+    let r = store
+        .log_no_junk_ok(at("2026-07-04", 21, 10), None)
+        .expect("log no junk");
     flips.push(r.day_became_complete);
 
     // The final open task: this one fires the completion moment.
@@ -307,6 +313,7 @@ fn revocation_hides_events_and_backfills_from_projections() {
                 second_workout: true,
                 reading: true,
                 diet: true,
+                no_junk: true,
                 photo: true,
                 extra_ids: vec![],
             }],
@@ -410,23 +417,23 @@ fn csv_export_mirrors_the_sheet() {
     assert_eq!(lines.len(), 15); // header + days 1..=14
     assert_eq!(
         lines[0],
-        "Date,Day,Workout (Outside),Workout (Inside),Nutrition/Diet,Read (10 Pages),\
-         Progress Picture,Water (oz),Apply to 1 job/week,Complete"
+        "Date,Day,Workout (Outside),Workout (Inside),Nutrition/Diet,No Junk or Alcohol,\
+         Read (10 Pages),Progress Picture,Water (oz),Apply to 1 job/week,Complete"
     );
     // Day 3 carries the weekly extra; backfilled days export 0 oz (flags only).
     assert_eq!(
         lines[3],
-        "2026-06-23,3,TRUE,TRUE,TRUE,TRUE,TRUE,0,TRUE,TRUE"
+        "2026-06-23,3,TRUE,TRUE,TRUE,TRUE,TRUE,TRUE,0,TRUE,TRUE"
     );
     // Day 13: everything but reading.
     assert_eq!(
         lines[13],
-        "2026-07-03,13,TRUE,TRUE,TRUE,FALSE,TRUE,0,,FALSE"
+        "2026-07-03,13,TRUE,TRUE,TRUE,TRUE,FALSE,TRUE,0,,FALSE"
     );
     // Day 14 is live and still empty at 10:00.
     assert_eq!(
         lines[14],
-        "2026-07-04,14,FALSE,FALSE,FALSE,FALSE,FALSE,0,,FALSE"
+        "2026-07-04,14,FALSE,FALSE,FALSE,FALSE,FALSE,FALSE,0,,FALSE"
     );
 }
 
@@ -750,11 +757,18 @@ fn import_json_round_trips_into_a_fresh_store() {
             sort_order: 0,
         }])
         .expect("presets");
-    // A varied live tail: water, workout, a revoked reading, a goal change,
-    // a closed day, and a post-close log that rolls to the next day.
+    // A varied live tail: water, a signed correction, a no-junk attestation,
+    // a workout, a revoked reading, a goal change, a closed day, and a
+    // post-close log that rolls to the next day.
     source
         .log_water(710, at("2026-07-04", 10, 0), None)
         .expect("water");
+    source
+        .log_water_adjustment(-150, at("2026-07-04", 10, 30), None)
+        .expect("adjustment");
+    source
+        .log_no_junk_ok(at("2026-07-04", 11, 0), None)
+        .expect("no junk");
     source
         .log_workout(
             45,
@@ -1010,6 +1024,10 @@ fn import_rejects_payloads_the_log_apis_reject() {
         with_event("goal_changed", serde_json::json!({ "water_goal_ml": 0 })),
         with_event("water_add", serde_json::json!({ "ml": -500 })),
         with_event("water_add", serde_json::json!({ "ml": 10_001 })),
+        // Adjustments are negative-only and bounded like adds.
+        with_event("water_adjust", serde_json::json!({ "ml": 0 })),
+        with_event("water_adjust", serde_json::json!({ "ml": 200 })),
+        with_event("water_adjust", serde_json::json!({ "ml": -10_001 })),
         with_event(
             "workout",
             serde_json::json!({ "duration_min": 0, "outdoor": true }),
@@ -1039,15 +1057,18 @@ fn water_log_matches_day_projection_on_a_mixed_day() {
     let day = "2026-07-04"; // fixture day 14
 
     // A mixed day 14: two live pours with a revoke in between, a live pour
-    // after the revoke, a post-cutoff-window pour at 1:30 AM of the next
-    // calendar date (attributes back to day 14), and a retroactive pour
-    // logged the next day with an explicit effective_date.
+    // after the revoke, a signed correction, a post-cutoff-window pour at
+    // 1:30 AM of the next calendar date (attributes back to day 14), and a
+    // retroactive pour logged the next day with an explicit effective_date.
     let a = store.log_water(500, at(day, 8, 0), None).expect("pour a");
     let b = store.log_water(946, at(day, 10, 0), None).expect("pour b");
     store
         .revoke_event(b.event_uuid.clone(), at(day, 10, 5))
         .expect("revoke b mid-list");
     let c = store.log_water(700, at(day, 12, 0), None).expect("pour c");
+    let adj = store
+        .log_water_adjustment(-200, at(day, 12, 30), None)
+        .expect("correction");
     let d = store
         .log_water(400, at("2026-07-05", 1, 30), None)
         .expect("pour d (1:30 AM, 4:00 cutoff -> day 14)");
@@ -1058,23 +1079,26 @@ fn water_log_matches_day_projection_on_a_mixed_day() {
     let now = at("2026-07-05", 10, 0);
     let entries = store.water_log(day.into(), now).expect("water log");
 
-    // Revoked pour absent; order is logged_at ascending; retro only on e.
+    // Revoked pour absent; the correction appears in place, signed; order is
+    // logged_at ascending; retro only on e.
     let uuids: Vec<&str> = entries.iter().map(|e| e.event_uuid.as_str()).collect();
     assert_eq!(
         uuids,
         vec![
             a.event_uuid.as_str(),
             c.event_uuid.as_str(),
+            adj.event_uuid.as_str(),
             d.event_uuid.as_str(),
             e.event_uuid.as_str(),
         ]
     );
     assert_eq!(
         entries.iter().map(|e| e.retro).collect::<Vec<_>>(),
-        vec![false, false, false, true]
+        vec![false, false, false, false, true]
     );
     assert_eq!(entries[0].ml, 500);
-    assert_eq!(entries[2].logged_at, at("2026-07-05", 1, 30));
+    assert_eq!(entries[2].ml, -200);
+    assert_eq!(entries[3].logged_at, at("2026-07-05", 1, 30));
 
     // Entries always sum to the day projection's water total.
     let day_state = store.day_state(day.into(), now).expect("day state");
@@ -1082,7 +1106,7 @@ fn water_log_matches_day_projection_on_a_mixed_day() {
         entries.iter().map(|e| e.ml).sum::<i64>(),
         day_state.water_ml
     );
-    assert_eq!(day_state.water_ml, 500 + 700 + 400 + 300);
+    assert_eq!(day_state.water_ml, 500 + 700 - 200 + 400 + 300);
 
     // None of the pours leaked onto 2026-07-05.
     let next = store.water_log("2026-07-05".into(), now).expect("log");
@@ -1136,6 +1160,7 @@ fn current_run_ignores_days_past_the_challenge_end() {
             second_workout: true,
             reading: true,
             diet: true,
+            no_junk: true,
             photo: true,
             extra_ids: vec![],
         });
@@ -1154,4 +1179,474 @@ fn current_run_ignores_days_past_the_challenge_end() {
     assert!(summary.today_out_of_range);
     assert!(summary.current_run <= summary.length_days);
     assert!(summary.current_run <= summary.days_complete_count);
+}
+
+#[test]
+fn water_adjustment_bounds_and_over_correction() {
+    let (_dir, _path, store) = demo_store();
+    let day = "2026-07-04";
+
+    // Bounds: zero, positive, and beyond -10_000 are all rejected.
+    for ml in [0, 1, 500, -10_001] {
+        assert!(
+            matches!(
+                store.log_water_adjustment(ml, at(day, 9, 0), None),
+                Err(DromeError::InvalidArgument(_))
+            ),
+            "ml {ml} should be out of bounds"
+        );
+    }
+
+    // Nothing logged yet: any adjustment over-corrects.
+    assert!(matches!(
+        store.log_water_adjustment(-1, at(day, 9, 30), None),
+        Err(DromeError::InvalidArgument(_))
+    ));
+
+    store.log_water(500, at(day, 10, 0), None).expect("add");
+    // Beyond the day's current total: rejected (the UI clamps, the core enforces).
+    assert!(matches!(
+        store.log_water_adjustment(-501, at(day, 10, 5), None),
+        Err(DromeError::InvalidArgument(_))
+    ));
+    // Up to the total: accepted. Never a chug warning, never a completion.
+    let r = store
+        .log_water_adjustment(-200, at(day, 10, 6), None)
+        .expect("adjust");
+    assert_eq!(r.day_state.water_ml, 300);
+    assert!(!r.day_became_complete);
+    assert!(r.chug_warning.is_none());
+    let r = store
+        .log_water_adjustment(-300, at(day, 10, 7), None)
+        .expect("adjust to zero");
+    assert_eq!(r.day_state.water_ml, 0);
+    assert!(matches!(
+        store.log_water_adjustment(-1, at(day, 10, 8), None),
+        Err(DromeError::InvalidArgument(_))
+    ));
+
+    // Retroactive adjustments validate against the TARGET day's total, and a
+    // backfill water flag carries no quantity to correct (day 13's total is 0).
+    assert!(matches!(
+        store.log_water_adjustment(-1, at(day, 11, 0), Some("2026-07-03".into())),
+        Err(DromeError::InvalidArgument(_))
+    ));
+}
+
+#[test]
+fn adjustment_nets_the_chug_window_and_floors_at_zero() {
+    let (_dir, _path, store) = demo_store();
+    let t0 = at("2026-07-04", 10, 0);
+
+    // A fat-fingered 950: the next 200 would cross the 1000 ml threshold.
+    store.log_water(950, t0, None).expect("add");
+    let check = store.check_chug(plus_min(t0, 5), 200).expect("check");
+    assert!(check.warn);
+
+    // Honestly correcting the fat-finger clears the false warning.
+    store
+        .log_water_adjustment(-900, plus_min(t0, 6), None)
+        .expect("adjust");
+    let check = store.check_chug(plus_min(t0, 7), 200).expect("check");
+    assert!(!check.warn);
+    assert_eq!(check.trailing_60min_ml, 50);
+
+    // 65 min later the add has aged out of the window but the correction has
+    // not: the running fold clips it at 0 instead of going negative, so
+    // corrections never create extra headroom to chug against.
+    let check = store.check_chug(plus_min(t0, 65), 1_000).expect("check");
+    assert_eq!(check.trailing_60min_ml, 0);
+    assert!(!check.warn);
+    let check = store.check_chug(plus_min(t0, 65), 1_001).expect("check");
+    assert!(check.warn);
+
+    // A retroactive adjustment (explicit effective_date) is bookkeeping and
+    // never nets against the live window.
+    store.log_water(800, plus_min(t0, 70), None).expect("add");
+    store
+        .log_water_adjustment(-800, plus_min(t0, 71), Some("2026-07-04".into()))
+        .expect("retro adjust");
+    let check = store.check_chug(plus_min(t0, 72), 300).expect("check");
+    assert_eq!(check.trailing_60min_ml, 800);
+    assert!(check.warn);
+}
+
+#[test]
+fn revoking_adjustments_and_adds_keeps_water_floored() {
+    let (_dir, _path, store) = demo_store();
+    let day = "2026-07-04";
+
+    let add = store.log_water(1_000, at(day, 8, 0), None).expect("add");
+    let adj = store
+        .log_water_adjustment(-400, at(day, 8, 30), None)
+        .expect("adjust");
+    assert_eq!(adj.day_state.water_ml, 600);
+
+    // Revoking the adjustment restores the water it subtracted.
+    store
+        .revoke_event(adj.event_uuid, at(day, 9, 0))
+        .expect("revoke adjustment");
+    let state = store.day_state(day.into(), at(day, 9, 5)).expect("state");
+    assert_eq!(state.water_ml, 1_000);
+
+    // Adjust away the full total, then revoke the UNDERLYING ADD: the ledger
+    // sums to -1000 but the day's fold clips the orphaned correction at 0 —
+    // the log-time over-correction guard can't be gamed into a negative total.
+    let r = store
+        .log_water_adjustment(-1_000, at(day, 9, 30), None)
+        .expect("adjust all");
+    assert_eq!(r.day_state.water_ml, 0);
+    store
+        .revoke_event(add.event_uuid, at(day, 10, 0))
+        .expect("revoke add");
+    let state = store.day_state(day.into(), at(day, 10, 5)).expect("state");
+    assert_eq!(state.water_ml, 0);
+    assert!(!state.water_done);
+
+    // The ledger stays honest: entries sum to the raw signed total while the
+    // day folds with the running floor.
+    let entries = store.water_log(day.into(), at(day, 10, 10)).expect("log");
+    assert_eq!(entries.iter().map(|e| e.ml).sum::<i64>(), -1_000);
+
+    // And the aggregate total floors per-day too: never negative.
+    let summary = store.summary(at(day, 10, 15)).expect("summary");
+    assert_eq!(summary.total_water_ml, 0);
+
+    // The orphaned correction is spent, not banked: a fresh pour counts in
+    // full instead of repaying hidden debt.
+    let r = store
+        .log_water(500, at(day, 10, 20), None)
+        .expect("new pour");
+    assert_eq!(r.day_state.water_ml, 500);
+    let entries = store.water_log(day.into(), at(day, 10, 25)).expect("log");
+    assert_eq!(entries.iter().map(|e| e.ml).sum::<i64>(), -500);
+    let summary = store.summary(at(day, 10, 30)).expect("summary");
+    assert_eq!(summary.total_water_ml, 500);
+}
+
+#[test]
+fn orphaned_correction_never_swallows_later_pours() {
+    // The shipped-UI sequence: preset pour 32 oz, drag Jerome down 32 oz
+    // (correction), then swipe-remove the pour row (revoke the ADD). The
+    // correction is left orphaned; later real pours must count in full —
+    // regression for the phantom-debt bug where the day stayed at 0 until
+    // 946 ml had been silently repaid.
+    let (_dir, _path, store) = demo_store();
+    let day = "2026-07-04";
+
+    let add = store.log_water(946, at(day, 9, 0), None).expect("pour");
+    store
+        .log_water_adjustment(-946, at(day, 9, 10), None)
+        .expect("correction");
+    store
+        .revoke_event(add.event_uuid, at(day, 9, 20))
+        .expect("revoke the corrected pour");
+
+    let r = store.log_water(500, at(day, 10, 0), None).expect("pour");
+    assert_eq!(r.day_state.water_ml, 500, "the new pour must count in full");
+    let r = store.log_water(946, at(day, 11, 0), None).expect("pour");
+    assert_eq!(r.day_state.water_ml, 1_446);
+
+    // The visible ledger keeps the raw history; the day total simply never
+    // dips below zero mid-fold.
+    let entries = store.water_log(day.into(), at(day, 11, 30)).expect("log");
+    assert_eq!(
+        entries.iter().map(|e| e.ml).collect::<Vec<_>>(),
+        vec![-946, 500, 946]
+    );
+}
+
+#[test]
+fn stale_correction_never_masks_fresh_intake_from_the_chug_guard() {
+    let (_dir, _path, store) = demo_store();
+    let t0 = at("2026-07-04", 8, 0);
+
+    // A double-logged morning pour, honestly corrected half an hour later.
+    store.log_water(950, t0, None).expect("add");
+    store
+        .log_water_adjustment(-900, plus_min(t0, 30), None)
+        .expect("correction");
+
+    // An hour on, the pour has aged out but the correction is still in the
+    // window; it must not bank headroom against fresh intake.
+    let r = store.log_water(1_000, plus_min(t0, 61), None).expect("add");
+    assert!(r.chug_warning.is_none()); // exactly at the limit, window truly empty
+    let check = store.check_chug(plus_min(t0, 65), 900).expect("check");
+    assert_eq!(check.trailing_60min_ml, 1_000);
+    assert!(check.warn, "1.9 L inside five minutes must warn");
+}
+
+#[test]
+fn six_tasks_gate_completion_and_no_junk_last_fires_once() {
+    let (_dir, _path, store) = demo_store();
+    let d = "2026-07-04";
+
+    store
+        .log_water(GALLON_ML, at(d, 9, 0), None)
+        .expect("water");
+    store
+        .log_water(200, at(d, 11, 0), None)
+        .expect("more water");
+    store
+        .log_workout(45, true, None, None, at(d, 10, 0), None)
+        .expect("outdoor workout");
+    store
+        .log_workout(30, false, None, None, at(d, 12, 0), None)
+        .expect("second workout");
+    store
+        .log_reading("Deep Work".into(), 10, at(d, 13, 0), None)
+        .expect("reading");
+    store.log_diet_ok(at(d, 14, 0), None).expect("diet");
+    let r = store
+        .log_photo_done(None, at(d, 15, 0), None)
+        .expect("photo");
+
+    // All of the original five done, diet included — without the no-junk
+    // attestation the day must NOT be complete.
+    assert!(r.day_state.diet_done);
+    assert!(!r.day_state.no_junk_done);
+    assert!(!r.day_state.core_complete);
+    assert!(!r.day_became_complete);
+
+    // The attestation is the last open task: it fires the moment, once.
+    let r = store.log_no_junk_ok(at(d, 16, 0), None).expect("no junk");
+    assert!(r.day_state.no_junk_done);
+    assert!(r.day_state.core_complete);
+    assert!(r.day_became_complete);
+    let r = store
+        .log_no_junk_ok(at(d, 16, 30), None)
+        .expect("no junk again");
+    assert!(!r.day_became_complete);
+
+    // An adjustment can only lower water: it never fires the moment, and a
+    // still-above-goal day stays complete.
+    let r = store
+        .log_water_adjustment(-100, at(d, 17, 0), None)
+        .expect("adjust");
+    assert!(r.day_state.core_complete);
+    assert!(!r.day_became_complete);
+
+    let summary = store.summary(at(d, 18, 0)).expect("summary");
+    assert_eq!(summary.days_complete_count, 13);
+}
+
+#[test]
+fn purist_requires_the_no_junk_attestation_too() {
+    let (_dir, _path, store) = open_store();
+    store
+        .create_challenge(challenge_cfg(
+            RulesetKind::Purist,
+            "2026-06-21",
+            at("2026-06-21", 6, 0),
+        ))
+        .expect("create");
+    store
+        .backfill_days(
+            vec![BackfilledDay {
+                date: "2026-06-21".into(),
+                water: true,
+                outdoor_workout: true,
+                second_workout: true,
+                reading: true,
+                diet: true,
+                no_junk: false,
+                photo: true,
+                extra_ids: vec![],
+            }],
+            at("2026-06-22", 9, 0),
+        )
+        .expect("backfill");
+
+    let now = at("2026-06-22", 10, 0);
+    let day = store.day_state("2026-06-21".into(), now).expect("state");
+    assert!(day.diet_done);
+    assert!(!day.no_junk_done);
+    assert!(!day.core_complete);
+
+    let r = store
+        .log_no_junk_ok(at("2026-06-22", 10, 30), Some("2026-06-21".into()))
+        .expect("attest");
+    assert!(r.day_state.no_junk_done);
+    assert!(r.day_state.core_complete);
+    assert!(r.day_became_complete);
+}
+
+#[test]
+fn legacy_backfill_payloads_default_no_junk_to_diet() {
+    // Two backfilled days whose explicit no_junk is the OPPOSITE of diet, so
+    // the legacy fallback is distinguishable from reading the stored key.
+    let (_d1, _p1, source) = open_store();
+    source
+        .create_challenge(challenge_cfg(
+            RulesetKind::Flexible,
+            "2026-06-21",
+            at("2026-06-23", 9, 0),
+        ))
+        .expect("create");
+    source
+        .backfill_days(
+            vec![
+                BackfilledDay {
+                    date: "2026-06-21".into(),
+                    water: true,
+                    outdoor_workout: true,
+                    second_workout: true,
+                    reading: true,
+                    diet: true,
+                    no_junk: false,
+                    photo: true,
+                    extra_ids: vec![],
+                },
+                BackfilledDay {
+                    date: "2026-06-22".into(),
+                    water: true,
+                    outdoor_workout: true,
+                    second_workout: true,
+                    reading: true,
+                    diet: false,
+                    no_junk: true,
+                    photo: true,
+                    extra_ids: vec![],
+                },
+            ],
+            at("2026-06-23", 9, 5),
+        )
+        .expect("backfill");
+    let now = at("2026-06-23", 10, 0);
+
+    // With the key present, the stored value wins — no diet coupling.
+    let day1 = source.day_state("2026-06-21".into(), now).expect("state");
+    assert!(day1.diet_done && !day1.no_junk_done && !day1.core_complete);
+    let day2 = source.day_state("2026-06-22".into(), now).expect("state");
+    assert!(!day2.diet_done && day2.no_junk_done && !day2.core_complete);
+
+    // Strip the no_junk keys, simulating a snapshot exported before the
+    // no-junk task existed, and restore it into a fresh store.
+    let snapshot = source.export_json(now).expect("export");
+    let mut doc: serde_json::Value = serde_json::from_str(&snapshot).expect("parse");
+    for e in doc["events"].as_array_mut().expect("events") {
+        if e["kind"] == "day_backfilled" {
+            e["payload"]
+                .as_object_mut()
+                .expect("payload object")
+                .remove("no_junk");
+        }
+    }
+    let (_d2, _p2, dest) = open_store();
+    dest.import_json(doc.to_string()).expect("legacy import");
+
+    // Without the key, no_junk inherits diet (the sheet kept them equal).
+    let day1 = dest.day_state("2026-06-21".into(), now).expect("state");
+    assert!(day1.diet_done && day1.no_junk_done && day1.core_complete);
+    let day2 = dest.day_state("2026-06-22".into(), now).expect("state");
+    assert!(!day2.diet_done && !day2.no_junk_done && !day2.core_complete);
+}
+
+#[test]
+fn pre_no_junk_stores_keep_live_logged_days_complete() {
+    // A store whose whole log predates the no-junk task (schema-v1 rows, no
+    // no_junk_ok anywhere): its LIVE-logged complete days must stay complete
+    // after upgrading, exactly like legacy backfill payloads do — otherwise
+    // an upgrade silently collapses days_complete_count and the current run.
+    let (_d1, _p1, source) = open_store();
+    source
+        .create_challenge(challenge_cfg(
+            RulesetKind::Flexible,
+            "2026-06-21",
+            at("2026-06-21", 6, 0),
+        ))
+        .expect("create");
+    let d1 = "2026-06-21";
+    source
+        .log_water(GALLON_ML, at(d1, 9, 0), None)
+        .expect("water");
+    source
+        .log_workout(45, true, None, None, at(d1, 10, 0), None)
+        .expect("outdoor");
+    source
+        .log_workout(30, false, None, None, at(d1, 12, 0), None)
+        .expect("second");
+    source
+        .log_reading("Deep Work".into(), 10, at(d1, 13, 0), None)
+        .expect("reading");
+    source.log_diet_ok(at(d1, 14, 0), None).expect("diet");
+    source
+        .log_photo_done(None, at(d1, 15, 0), None)
+        .expect("photo");
+
+    // Rewrite the export as a five-task-era store: v1 rows only.
+    let snapshot = source.export_json(at("2026-06-22", 9, 0)).expect("export");
+    let mut doc: serde_json::Value = serde_json::from_str(&snapshot).expect("parse");
+    for e in doc["events"].as_array_mut().expect("events") {
+        e["schema_version"] = serde_json::json!(1);
+    }
+    let (_d2, _p2, store) = open_store();
+    store.import_json(doc.to_string()).expect("legacy import");
+
+    // Nothing logged since the upgrade: the whole log is pre-era, so the
+    // lived day inherits its diet attestation and stays complete.
+    let now = at("2026-06-22", 10, 0);
+    let day1 = store.day_state(d1.into(), now).expect("state");
+    assert!(day1.diet_done && day1.no_junk_done && day1.core_complete);
+    assert!(!day1.is_backfilled);
+    assert_eq!(store.summary(now).expect("summary").days_complete_count, 1);
+
+    // The first post-upgrade write pins the boundary at ITS day: day 1 stays
+    // complete, but from that day on the attestation is genuinely required.
+    let d2 = "2026-06-22";
+    store
+        .log_water(GALLON_ML, at(d2, 9, 0), None)
+        .expect("water");
+    store
+        .log_workout(45, true, None, None, at(d2, 10, 0), None)
+        .expect("outdoor");
+    store
+        .log_workout(30, false, None, None, at(d2, 12, 0), None)
+        .expect("second");
+    store
+        .log_reading("Deep Work".into(), 10, at(d2, 13, 0), None)
+        .expect("reading");
+    store.log_diet_ok(at(d2, 14, 0), None).expect("diet");
+    let r = store
+        .log_photo_done(None, at(d2, 15, 0), None)
+        .expect("photo");
+    assert!(r.day_state.diet_done);
+    assert!(
+        !r.day_state.no_junk_done,
+        "post-upgrade days need the attestation"
+    );
+    assert!(!r.day_state.core_complete);
+    let day1 = store.day_state(d1.into(), at(d2, 15, 30)).expect("state");
+    assert!(
+        day1.no_junk_done && day1.core_complete,
+        "pre-era day keeps its completion after new logs"
+    );
+
+    let r = store.log_no_junk_ok(at(d2, 16, 0), None).expect("attest");
+    assert!(r.day_state.core_complete);
+    assert!(r.day_became_complete);
+    let summary = store.summary(at(d2, 17, 0)).expect("summary");
+    assert_eq!(summary.days_complete_count, 2);
+    assert_eq!(summary.current_run, 2);
+}
+
+#[test]
+fn new_challenges_require_the_attestation_from_day_one() {
+    // A challenge created by a six-task build has no pre-era history: even
+    // before its first event, retroactive diet logging (the yesterday sheet)
+    // must not complete the no-junk task for lived days.
+    let (_dir, _path, store) = open_store();
+    store
+        .create_challenge(challenge_cfg(
+            RulesetKind::Flexible,
+            "2026-06-21",
+            at("2026-06-21", 6, 0),
+        ))
+        .expect("create");
+    let r = store
+        .log_diet_ok(at("2026-06-22", 9, 0), Some("2026-06-21".into()))
+        .expect("retro diet");
+    assert!(r.day_state.diet_done);
+    assert!(!r.day_state.no_junk_done);
+    assert!(!r.day_state.core_complete);
 }

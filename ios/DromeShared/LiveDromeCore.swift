@@ -164,6 +164,14 @@ final class LiveDromeCore: DromeCoreClient, @unchecked Sendable {
         }
     }
 
+    func logWaterAdjustment(ml: Int64, effectiveDate: DayDate?) throws -> LogResult {
+        try call {
+            Self.logResult(try store.logWaterAdjustment(
+                ml: ml, now: Self.nowInstant(), effectiveDate: effectiveDate
+            ))
+        }
+    }
+
     func logWorkout(durationMin: Int, outdoor: Bool, note: String?, effectiveDate: DayDate?) throws -> LogResult {
         guard durationMin > 0 else { throw DromeError.invalidArgument("workout duration_min must be in 1..=1440") }
         return try call {
@@ -198,6 +206,12 @@ final class LiveDromeCore: DromeCoreClient, @unchecked Sendable {
     func logDietOk(effectiveDate: DayDate?) throws -> LogResult {
         try call {
             Self.logResult(try store.logDietOk(now: Self.nowInstant(), effectiveDate: effectiveDate))
+        }
+    }
+
+    func logNoJunkOk(effectiveDate: DayDate?) throws -> LogResult {
+        try call {
+            Self.logResult(try store.logNoJunkOk(now: Self.nowInstant(), effectiveDate: effectiveDate))
         }
     }
 
@@ -373,6 +387,7 @@ private extension LiveDromeCore {
             secondWorkout: d.secondWorkout,
             reading: d.reading,
             diet: d.diet,
+            noJunk: d.noJunk,
             photo: d.photo,
             extraIds: d.extraIds
         )
@@ -397,6 +412,7 @@ private extension LiveDromeCore {
             pagesRead: Int(d.readingPages),
             readingDone: d.readingDone,
             dietDone: d.dietDone,
+            noJunkDone: d.noJunkDone,
             photoDone: d.photoDone,
             extrasDone: d.extrasDone,
             coreComplete: d.coreComplete,
@@ -499,6 +515,7 @@ private extension LiveDromeCore {
             pagesRead: Int(c.readingPages),
             readingDone: c.readingDone,
             dietDone: c.dietDone,
+            noJunkDone: c.noJunkDone,
             photoDone: c.photoDone,
             // Core share workouts are duration + outdoor only (no UUID, no
             // note — notes are private); synthesize stable per-card ids.

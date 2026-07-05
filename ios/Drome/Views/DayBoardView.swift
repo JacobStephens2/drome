@@ -3,18 +3,21 @@
 //  Drome
 //
 //  Home-screen day board: "DAY N" header with date + current run, a one-line
-//  "what's left" strip, the five core task tiles (each showing its real data
+//  "what's left" strip, the six core task tiles (each showing its real data
 //  shape — see DayBoardTiles.swift), and any enabled weekly extra rendered
 //  visibly secondary. Day lifecycle affordances: a "log for yesterday"
 //  banner whenever yesterday is neither closed nor complete (per the
 //  contract, yesterday stays editable until it's closed), an info banner
-//  once today is closed, and a quiet "close out my day" button when all six
-//  slots are done (the toolbar menu in RootView offers it any time).
+//  once today is closed, and a quiet "close out my day" button when all
+//  seven slots are done (the toolbar menu in RootView offers it any time).
 //
 //  Navigation is NOT wired here: water/workouts/reading/photo hand off via
 //  closure callbacks (integration stage connects them to their features).
-//  Diet attest, photo check-off, weekly-extra done, and close-day go
-//  straight through AppModel intents.
+//  Diet attest, workout slot check/undo, photo check-off, weekly-extra done,
+//  and close-day go straight through AppModel intents. The no-junk attest is
+//  the one exception: AppModel (owned by another stage) has no logNoJunkOk
+//  intent yet, so `attestNoJunk()` calls the shared client directly —
+//  PhotoView's photoRef pattern.
 //
 
 import SwiftUI
@@ -124,7 +127,7 @@ struct DayBoardView: View {
             if items.isEmpty {
                 HStack(spacing: DromeSpacing.s) {
                     Image(systemName: "checkmark.circle.fill")
-                    Text("All six done.")
+                    Text("All seven done.")
                 }
                 .font(.footnote.weight(.bold))
                 .foregroundStyle(Color.dromeDone)
@@ -162,6 +165,7 @@ struct DayBoardView: View {
         if !day.secondWorkoutDone { items.append("2nd workout") }
         if !day.readingDone { items.append(DayBoardFormat.pagesLeftLabel(day.pagesRead)) }
         if !day.dietDone { items.append("diet") }
+        if !day.noJunkDone { items.append("no junk") }
         if !day.photoDone { items.append("photo") }
         return items
     }
@@ -233,7 +237,7 @@ struct DayBoardView: View {
         )
     }
 
-    /// Quiet close-out under the tiles, shown once all six slots are done.
+    /// Quiet close-out under the tiles, shown once all seven slots are done.
     /// "The day ends when you tell it you're done."
     private var closeDayButton: some View {
         Button {
@@ -257,7 +261,17 @@ struct DayBoardView: View {
     private func tiles(_ today: TodayState) -> some View {
         VStack(spacing: DromeSpacing.s) {
             DayBoardWaterTile(day: today.day, onOpen: onOpenWater)
-            DayBoardWorkoutsTile(day: today.day, onOpen: onOpenWorkouts)
+            DayBoardWorkoutsTile(
+                day: today.day,
+                onOpen: onOpenWorkouts,
+                onLogSlot: { outdoor in
+                    appModel.logWorkout(
+                        durationMin: DayBoardWorkoutsTile.defaultDurationMin,
+                        outdoor: outdoor
+                    )
+                },
+                onUndoEntry: { appModel.revoke(eventUuid: $0.id) }
+            )
             DayBoardReadingTile(
                 day: today.day,
                 book: appModel.challenge?.currentBook ?? "",
@@ -268,11 +282,35 @@ struct DayBoardView: View {
                 done: today.day.dietDone,
                 onAttest: { appModel.logDietOk() }
             )
+            DayBoardNoJunkTile(
+                done: today.day.noJunkDone,
+                onAttest: attestNoJunk,
+                onUndo: { appModel.revoke(eventUuid: $0) }
+            )
             DayBoardPhotoTile(
                 done: today.day.photoDone,
                 onOpen: onOpenPhoto,
                 onMarkDone: { appModel.logPhotoDone() }
             )
+        }
+    }
+
+    // MARK: - No-junk attest (client-direct; flagged for the review pass)
+
+    /// AppModel has no logNoJunkOk intent yet (the model file is owned by a
+    /// concurrent stage), so this calls the SAME shared client directly and
+    /// feeds the LogResult back through `noteExternalLog` — exactly the
+    /// pattern PhotoView uses for photoRef logs — so completion moments and
+    /// refresh stay centralized. Returns the event uuid for the tile's
+    /// same-session undo; nil means the write failed (surfaced inline by the
+    /// tile — `lastErrorMessage` is private(set) and unreachable from here).
+    private func attestNoJunk() -> String? {
+        do {
+            let result = try appModel.client.logNoJunkOk(effectiveDate: nil)
+            appModel.noteExternalLog(result)
+            return result.eventUuid
+        } catch {
+            return nil
         }
     }
 
@@ -328,6 +366,7 @@ struct DayBoardView: View {
     _ = try? core.logWorkout(durationMin: 30, outdoor: false, note: "Lifting")
     _ = try? core.logReading(bookTitle: "Atomic Habits", pages: 12)
     _ = try? core.logDietOk()
+    _ = try? core.logNoJunkOk()
     _ = try? core.logPhotoDone()
     _ = try? core.logExtraDone(extraId: "job_application")
     return DayBoardView()

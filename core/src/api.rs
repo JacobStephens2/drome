@@ -108,6 +108,10 @@ pub struct BackfilledDay {
     pub second_workout: bool,
     pub reading: bool,
     pub diet: bool,
+    /// "No Junk or Alcohol" — the sheet's sixth column, a peer of diet.
+    /// Always explicit through this API; only *stored* legacy payloads
+    /// missing the key default to `diet` (events::DayBackfilledPayload).
+    pub no_junk: bool,
     pub photo: bool,
     pub extra_ids: Vec<String>,
 }
@@ -138,6 +142,8 @@ pub struct DayState {
     pub reading_pages: u32,
     pub reading_done: bool,
     pub diet_done: bool,
+    /// "No Junk or Alcohol" attestation — sixth core task, a peer of diet.
+    pub no_junk_done: bool,
     pub photo_done: bool,
     pub extras_done: Vec<String>,
     pub core_complete: bool,
@@ -213,16 +219,23 @@ pub struct ShareCardData {
     pub reading_pages: u32,
     pub reading_done: bool,
     pub diet_done: bool,
+    pub no_junk_done: bool,
     pub photo_done: bool,
     pub workouts: Vec<ShareCardWorkout>,
 }
 
-/// One non-revoked `water_add` event attributed to a given date — the per-day
-/// pour log backing "correct an over-recorded pour". Backfill flags carry no
-/// quantity and never appear here; entries always sum to `DayState.water_ml`.
+/// One non-revoked `water_add` or `water_adjust` event attributed to a given
+/// date — the per-day signed pour ledger. Adds carry positive `ml`,
+/// corrections negative. Backfill flags carry no quantity and never appear
+/// here. Entries sum to the day's raw signed total; `DayState.water_ml`
+/// folds the same entries with a running floor at 0 (an orphaned correction
+/// clips instead of debiting later pours), so the two only diverge — the day
+/// reading higher, never lower — after a revoke has reordered history
+/// underneath a validated adjustment.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct WaterLogEntry {
     pub event_uuid: String,
+    /// Positive for `water_add`, negative for `water_adjust`.
     pub ml: i64,
     pub logged_at: LocalInstant,
     /// True when the event carried an explicit `effective_date` (retroactive
@@ -244,6 +257,18 @@ pub struct LogResult {
 #[derive(uniffi::Object)]
 pub struct DromeStore {
     conn: Mutex<Connection>,
+}
+
+/// Water-specific behavior of a `log_kind` call (internal).
+#[derive(Debug, Clone, Copy)]
+enum WaterOp {
+    /// Not a water-quantity event.
+    None,
+    /// A live `water_add`: run the anti-chug guard over this many ml.
+    ChugCheckedAdd(i64),
+    /// A `water_adjust`: reject when this (positive) magnitude exceeds the
+    /// attributed day's current water total (the over-correction guard).
+    BoundedDebit(i64),
 }
 
 /// Everything loaded for a projection pass.
@@ -480,10 +505,10 @@ impl DromeStore {
         }
         // Retroactive water (explicit effective_date) is bookkeeping, not
         // current intake: it never trips the anti-chug guard.
-        let chug_add_ml = if effective_date.is_some() {
-            None
+        let water_op = if effective_date.is_some() {
+            WaterOp::None
         } else {
-            Some(ml)
+            WaterOp::ChugCheckedAdd(ml)
         };
         self.log_kind(
             events::KIND_WATER_ADD,
@@ -491,7 +516,34 @@ impl DromeStore {
             now,
             effective_date,
             None,
-            chug_add_ml,
+            water_op,
+        )
+    }
+
+    /// Signed correction for over-recorded water. NEGATIVE-ONLY
+    /// (`-10_000..=-1`); positive intake stays `log_water`. Rejected
+    /// (`InvalidArgument`) when the magnitude exceeds the attributed day's
+    /// current water total — the UI clamps, the core enforces. It can only
+    /// lower a day's water, so `day_became_complete` never fires from it,
+    /// and it returns no chug warning (corrections are not intake).
+    pub fn log_water_adjustment(
+        &self,
+        ml: i64,
+        now: LocalInstant,
+        effective_date: Option<String>,
+    ) -> Result<LogResult, DromeError> {
+        if !(-MAX_WATER_LOG_ML..=-1).contains(&ml) {
+            return Err(DromeError::InvalidArgument(format!(
+                "water adjustment ml must be in -{MAX_WATER_LOG_ML}..=-1"
+            )));
+        }
+        self.log_kind(
+            events::KIND_WATER_ADJUST,
+            json!({ "ml": ml }),
+            now,
+            effective_date,
+            None,
+            WaterOp::BoundedDebit(-ml),
         )
     }
 
@@ -521,7 +573,7 @@ impl DromeStore {
             now,
             effective_date,
             None,
-            None,
+            WaterOp::None,
         )
     }
 
@@ -543,7 +595,7 @@ impl DromeStore {
             now,
             effective_date,
             None,
-            None,
+            WaterOp::None,
         )
     }
 
@@ -558,7 +610,24 @@ impl DromeStore {
             now,
             effective_date,
             None,
+            WaterOp::None,
+        )
+    }
+
+    /// "No Junk or Alcohol" attestation — the sixth core task, mirroring the
+    /// sheet's column of the same name (a separate peer of "Nutrition/Diet").
+    pub fn log_no_junk_ok(
+        &self,
+        now: LocalInstant,
+        effective_date: Option<String>,
+    ) -> Result<LogResult, DromeError> {
+        self.log_kind(
+            events::KIND_NO_JUNK_OK,
+            json!({}),
+            now,
+            effective_date,
             None,
+            WaterOp::None,
         )
     }
 
@@ -574,7 +643,7 @@ impl DromeStore {
             now,
             effective_date,
             None,
-            None,
+            WaterOp::None,
         )
     }
 
@@ -602,7 +671,7 @@ impl DromeStore {
             now,
             effective_date,
             Some(extra_id.clone()),
-            None,
+            WaterOp::None,
         )
     }
 
@@ -684,6 +753,7 @@ impl DromeStore {
                 "second_workout": day.second_workout,
                 "reading": day.reading,
                 "diet": day.diet,
+                "no_junk": day.no_junk,
                 "photo": day.photo,
                 "extra_ids": day.extra_ids,
             });
@@ -708,10 +778,13 @@ impl DromeStore {
         Ok(loaded.projection.day_state(parsed))
     }
 
-    /// Every non-revoked `water_add` event attributed to `date`, ordered by
-    /// `logged_at` ascending. Attribution is exactly the day projection's
-    /// (cutoff, closed-day rollover, explicit effective_date), so the entries
-    /// always sum to that date's `DayState.water_ml`. `day_backfilled` water
+    /// Every non-revoked `water_add` / `water_adjust` event attributed to
+    /// `date` (adds positive, corrections negative), ordered by `logged_at`
+    /// ascending. Attribution is exactly the day projection's (cutoff,
+    /// closed-day rollover, explicit effective_date), so the entries sum to
+    /// that date's raw signed total — `DayState.water_ml` folds the same
+    /// entries with a running floor at 0 and only diverges (reading higher,
+    /// never lower) after a revoke reorders history. `day_backfilled` water
     /// is a flag with no quantity and is deliberately excluded.
     pub fn water_log(
         &self,
@@ -727,16 +800,19 @@ impl DromeStore {
         // `loaded.events` is ordered by (logged_at_epoch, id) — already the
         // required logged_at-ascending order.
         for e in &loaded.events {
-            if e.kind != events::KIND_WATER_ADD || proj.is_revoked(&e.uuid) {
+            let ml = match e.kind.as_str() {
+                events::KIND_WATER_ADD => e.payload_as::<events::WaterAddPayload>()?.ml,
+                events::KIND_WATER_ADJUST => e.payload_as::<events::WaterAdjustPayload>()?.ml,
+                _ => continue,
+            };
+            if proj.is_revoked(&e.uuid)
+                || proj.attribute(e.logged_at, e.effective_date.as_deref())? != parsed
+            {
                 continue;
             }
-            if proj.attribute(e.logged_at, e.effective_date.as_deref())? != parsed {
-                continue;
-            }
-            let payload: events::WaterAddPayload = e.payload_as()?;
             entries.push(WaterLogEntry {
                 event_uuid: e.uuid.clone(),
-                ml: payload.ml,
+                ml,
                 logged_at: e.logged_at,
                 retro: e.effective_date.is_some(),
             });
@@ -882,6 +958,7 @@ impl DromeStore {
             reading_pages: day.reading_pages,
             reading_done: day.reading_done,
             diet_done: day.diet_done,
+            no_junk_done: day.no_junk_done,
             photo_done: day.photo_done,
             workouts: day
                 .workouts
@@ -1015,7 +1092,7 @@ impl DromeStore {
             .map_err(|_| DromeError::Internal("connection lock poisoned".into()))
     }
 
-    /// Shared write path for the six log_* methods: project, insert, re-project,
+    /// Shared write path for the log_* methods: project, insert, re-project,
     /// and report the incomplete -> complete flips (the completion moments).
     fn log_kind(
         &self,
@@ -1024,7 +1101,7 @@ impl DromeStore {
         now: LocalInstant,
         effective_date: Option<String>,
         week_extra_id: Option<String>,
-        chug_add_ml: Option<i64>,
+        water_op: WaterOp,
     ) -> Result<LogResult, DromeError> {
         now.wall_secs()?;
         let conn = self.lock()?;
@@ -1038,12 +1115,25 @@ impl DromeStore {
             Some(id) => pre.week_extra_done(id, week_idx)?,
             None => false,
         };
-        let chug_warning = chug_add_ml
-            .map(|ml| {
+        let chug_warning = match water_op {
+            WaterOp::ChugCheckedAdd(ml) => {
                 let trailing = water::trailing_hour_ml(pre.water_events_by_epoch(), now.epoch_secs);
-                water::check_chug(trailing, ml)
-            })
-            .filter(|check| check.warn);
+                Some(water::check_chug(trailing, ml)).filter(|check| check.warn)
+            }
+            WaterOp::None | WaterOp::BoundedDebit(_) => None,
+        };
+        if let WaterOp::BoundedDebit(debit) = water_op {
+            // Over-correction guard: an adjustment may remove at most the
+            // water currently attributed to the day. `pre_day.water_ml` is
+            // already floored at 0, so this bound is against what the user
+            // actually sees. (The UI clamps; the core enforces.)
+            if debit > pre_day.water_ml {
+                return Err(DromeError::InvalidArgument(format!(
+                    "water adjustment of -{debit} ml exceeds the day's current total of {} ml",
+                    pre_day.water_ml
+                )));
+            }
+        }
 
         let event_uuid = insert_event(
             &conn,
@@ -1308,7 +1398,7 @@ fn insert_event(
     conn.execute(
         "INSERT INTO events (uuid, challenge_id, logged_at_epoch, tz_offset_secs,
                              effective_date, kind, payload, schema_version)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             uuid,
             challenge_id,
@@ -1317,6 +1407,9 @@ fn insert_event(
             effective_date,
             kind,
             serde_json::to_string(payload)?,
+            // The log dialect this build writes; v1 rows mark pre-no-junk
+            // history (see events::SIX_TASK_SCHEMA_VERSION).
+            events::EVENT_SCHEMA_VERSION,
         ],
     )?;
     Ok(uuid)

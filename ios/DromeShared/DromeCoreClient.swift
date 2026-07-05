@@ -53,9 +53,20 @@ protocol DromeCoreClient: AnyObject, Sendable {
     // unless the caller passes a title.
 
     func logWater(ml: Int64, effectiveDate: DayDate?) throws -> LogResult
+    /// Signed correction for over-recorded water. `ml` is NEGATIVE-ONLY
+    /// (-10_000 ... -1); positive intake stays `logWater`. Throws
+    /// `DromeError.invalidArgument` when |ml| exceeds the attributed day's
+    /// current water total — clamp in the UI, but the core enforces it.
+    /// Never returns a chug warning and never fires `dayBecameComplete`
+    /// (it can only lower water). Revoking the correction's event restores
+    /// the water it subtracted.
+    func logWaterAdjustment(ml: Int64, effectiveDate: DayDate?) throws -> LogResult
     func logWorkout(durationMin: Int, outdoor: Bool, note: String?, effectiveDate: DayDate?) throws -> LogResult
     func logReading(bookTitle: String, pages: Int, effectiveDate: DayDate?) throws -> LogResult
     func logDietOk(effectiveDate: DayDate?) throws -> LogResult
+    /// "No Junk or Alcohol" attestation — the sixth core task, a peer of
+    /// diet. Required for `coreComplete` alongside the other five.
+    func logNoJunkOk(effectiveDate: DayDate?) throws -> LogResult
     func logPhotoDone(photoRef: String?, effectiveDate: DayDate?) throws -> LogResult
     func logExtraDone(extraId: String, effectiveDate: DayDate?) throws -> LogResult
 
@@ -114,6 +125,16 @@ extension DromeCoreClient {
     @discardableResult
     func logWater(ml: Int64) throws -> LogResult {
         try logWater(ml: ml, effectiveDate: nil)
+    }
+
+    @discardableResult
+    func logWaterAdjustment(ml: Int64) throws -> LogResult {
+        try logWaterAdjustment(ml: ml, effectiveDate: nil)
+    }
+
+    @discardableResult
+    func logNoJunkOk() throws -> LogResult {
+        try logNoJunkOk(effectiveDate: nil)
     }
 
     @discardableResult

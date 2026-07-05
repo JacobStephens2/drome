@@ -107,8 +107,12 @@ struct ExtraDef: Identifiable, Sendable, Hashable, Codable {
 
 // MARK: - Core tasks & day state
 
-/// The five tiles / six slots of a flexible-mode day. Weekly extras are NOT
-/// core tasks and never gate `coreComplete`.
+/// The tiles/slots of a flexible-mode day. Weekly extras are NOT core tasks
+/// and never gate `coreComplete`.
+/// NOTE: the "No Junk or Alcohol" attestation (DayState.noJunkDone) is a
+/// sixth core task in the core engine but is deliberately NOT a case here
+/// yet — adding it changes every exhaustive switch and the day-board tile
+/// layout, which the UI stage owns.
 enum CoreTask: String, CaseIterable, Identifiable, Sendable {
     case water
     case outdoorWorkout
@@ -157,11 +161,17 @@ struct DayState: Identifiable, Sendable, Hashable {
     var pagesRead: Int
     var readingDone: Bool
     var dietDone: Bool
+    /// "No Junk or Alcohol" attestation — the sixth core task, a peer of diet
+    /// (the sheet tracks them as separate columns). Gates `coreComplete`.
+    /// Defaulted for source compatibility with existing construction sites;
+    /// always set it explicitly in new code.
+    var noJunkDone: Bool = false
     var photoDone: Bool
     /// IDs of extras completed on this date (informational; extras never gate).
     var extrasDone: [String]
 
-    /// All six core slots done.
+    /// All seven core slots done (water, both workouts, reading, diet,
+    /// no-junk, photo).
     var coreComplete: Bool
     var isClosed: Bool
     var isBackfilled: Bool
@@ -225,12 +235,16 @@ struct DayBrief: Identifiable, Sendable, Hashable {
     var id: DayDate { date }
 }
 
-/// One non-revoked water pour attributed to a day — the per-day pour log
-/// backing "correct an over-recorded pour". Entries always sum to that day's
-/// `DayState.waterTotalMl` (backfill flags carry no quantity and never appear).
+/// One non-revoked water pour OR signed correction attributed to a day — the
+/// per-day pour ledger backing "correct an over-recorded pour". Pours carry
+/// positive `ml`, corrections (logWaterAdjustment) negative. Entries sum to
+/// the day's raw signed total; `DayState.waterTotalMl` is that sum floored at
+/// 0 (they only diverge after a revoke reorders history). Backfill flags
+/// carry no quantity and never appear.
 struct WaterLogEntry: Identifiable, Sendable, Hashable {
     /// Event UUID (usable with `revokeEvent`).
     var id: String
+    /// Positive for a pour, negative for a correction.
     var ml: Int64
     /// The absolute moment the pour was logged.
     var loggedAt: Date
@@ -314,6 +328,9 @@ struct ShareCardData: Sendable, Hashable {
     var pagesRead: Int
     var readingDone: Bool
     var dietDone: Bool
+    /// "No Junk or Alcohol" attestation state, straight from the core.
+    /// Defaulted for source compatibility; always set it explicitly.
+    var noJunkDone: Bool = false
     var photoDone: Bool
     var workouts: [ShareWorkout]
     var isBackfilled: Bool
@@ -329,6 +346,12 @@ struct BackfilledDay: Sendable, Hashable, Codable {
     var secondWorkout: Bool
     var reading: Bool
     var diet: Bool
+    /// "No Junk or Alcohol" — sixth core task, a peer of diet. Defaulted to
+    /// `false` ONLY for source compatibility with existing construction
+    /// sites; a backfill UI must set it explicitly (a full day backfilled
+    /// with the default `false` will never read as complete). Legacy
+    /// *stored* payloads missing the flag default to `diet` in the core.
+    var noJunk: Bool = false
     var photo: Bool
     var extraIds: [String]
 }

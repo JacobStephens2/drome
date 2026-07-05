@@ -187,26 +187,39 @@ proptest! {
         }
     }
 
-    // (g) Anti-chug: events inside the trailing hour count, older ones don't,
-    // and the warning is exactly `sum + add > 1000`.
+    // (g) Anti-chug: only events inside the trailing hour count (adds
+    // positive, adjustments negative). They fold in time order with a running
+    // floor at 0 — a correction nets only against what came before it, never
+    // against later intake — and the warning is exactly `net + add > 1000`.
     #[test]
     fn chug_counts_only_the_trailing_hour(
         now in 10_000i64..1_000_000_000,
-        raw_events in prop::collection::vec((0i64..7_200, 1i64..1_500), 0..20),
+        raw_events in prop::collection::vec((0i64..7_200, -1_500i64..1_500), 0..20),
         add in 0i64..2_000,
     ) {
         let events: Vec<(i64, i64)> = raw_events
             .iter()
             .map(|(age_secs, ml)| (now - age_secs, *ml))
             .collect();
-        let expected_sum: i64 = raw_events
+        // Model: window filter, chronological (stable) order, running floor.
+        let mut in_window: Vec<(i64, i64)> = events
             .iter()
-            .filter(|(age_secs, _)| *age_secs < 3_600)
-            .map(|(_, ml)| ml)
-            .sum();
+            .filter(|(epoch, _)| *epoch > now - 3_600 && *epoch <= now)
+            .copied()
+            .collect();
+        in_window.sort_by_key(|(epoch, _)| *epoch);
+        let expected_net = in_window
+            .iter()
+            .fold(0i64, |acc, (_, ml)| acc.saturating_add(*ml).max(0));
+        let gross_intake: i64 = in_window.iter().map(|&(_, ml)| ml.max(0)).sum();
+
         let trailing = water::trailing_hour_ml(&events, now);
-        prop_assert_eq!(trailing, expected_sum);
+        prop_assert_eq!(trailing, expected_net);
+        // Implementation-independent bounds: never negative, never more than
+        // the window's gross intake (corrections can only reduce, not bank).
+        prop_assert!(trailing >= 0);
+        prop_assert!(trailing <= gross_intake);
         let check = water::check_chug(trailing, add);
-        prop_assert_eq!(check.warn, expected_sum + add > 1_000);
+        prop_assert_eq!(check.warn, expected_net + add > 1_000);
     }
 }

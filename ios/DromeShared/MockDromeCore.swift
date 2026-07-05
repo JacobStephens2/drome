@@ -23,9 +23,12 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
 
     private enum EventKind {
         case water(ml: Int64)
+        /// Signed correction; ml is always negative (see logWaterAdjustment).
+        case waterAdjust(ml: Int64)
         case workout(durationMin: Int, outdoor: Bool, note: String?)
         case reading(book: String, pages: Int)
         case dietOk
+        case noJunkOk
         case photoDone(ref: String?)
         case extraDone(id: String)
         case backfill(BackfilledDay)
@@ -100,7 +103,7 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
             let date = Self.shift(startDate, by: offset, formatter: f, calendar: cal)
             let day = BackfilledDay(
                 date: date, water: true, outdoorWorkout: true, secondWorkout: true,
-                reading: true, diet: true, photo: true,
+                reading: true, diet: true, noJunk: true, photo: true,
                 extraIds: offset == 4 ? ["job_application"] : []
             )
             events.append(Event(uuid: UUID().uuidString, date: date, kind: .backfill(day),
@@ -117,7 +120,7 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
             uuid: UUID().uuidString, date: day13,
             kind: .backfill(BackfilledDay(
                 date: day13, water: true, outdoorWorkout: false, secondWorkout: false,
-                reading: false, diet: false, photo: false, extraIds: []
+                reading: false, diet: false, noJunk: false, photo: false, extraIds: []
             )),
             loggedAt: y(-10)
         ))
@@ -126,6 +129,8 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
         events.append(Event(uuid: UUID().uuidString, date: day13,
                             kind: .workout(durationMin: 30, outdoor: false, note: "Lifting"), loggedAt: y(-2)))
         events.append(Event(uuid: UUID().uuidString, date: day13, kind: .dietOk, loggedAt: y(1)))
+        // No-junk attested alongside diet (they're separate peer tasks).
+        events.append(Event(uuid: UUID().uuidString, date: day13, kind: .noJunkOk, loggedAt: y(1.1)))
         events.append(Event(uuid: UUID().uuidString, date: day13, kind: .photoDone(ref: nil), loggedAt: y(1.2)))
 
         // Day 14 (today): two default-bottle pours (~half the gallon) + one
@@ -182,17 +187,24 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
         var workouts: [WorkoutEntry] = []
         var pages = 0
         var diet = false
+        var noJunk = false
         var photo = false
         var extrasDone: [String] = []
         var backfilled: BackfilledDay?
 
         for event in events where event.date == date && !event.revoked {
             switch event.kind {
-            case .water(let ml): waterMl += ml
+            case .water(let ml), .waterAdjust(let ml):
+                // Fold with a running floor like the core: a correction can
+                // never consume more than the water logged before it, so an
+                // orphaned correction (its add revoked later) clips at 0
+                // instead of silently swallowing later pours.
+                waterMl = max(0, waterMl + ml)
             case .workout(let durationMin, let outdoor, let note):
                 workouts.append(WorkoutEntry(id: event.uuid, durationMin: durationMin, outdoor: outdoor, note: note))
             case .reading(_, let p): pages += p
             case .dietOk: diet = true
+            case .noJunkOk: noJunk = true
             case .photoDone: photo = true
             case .extraDone(let id): extrasDone.append(id)
             case .backfill(let day): backfilled = day
@@ -205,6 +217,7 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
         let secondDone = workouts.count >= 2 || backfilled?.secondWorkout == true
         let readingDone = pages >= 10 || backfilled?.reading == true
         let dietDone = diet || backfilled?.diet == true
+        let noJunkDone = noJunk || backfilled?.noJunk == true
         let photoDone = photo || backfilled?.photo == true
         if let backfillExtras = backfilled?.extraIds {
             extrasDone.append(contentsOf: backfillExtras.filter { !extrasDone.contains($0) })
@@ -224,9 +237,11 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
             pagesRead: pages,
             readingDone: readingDone,
             dietDone: dietDone,
+            noJunkDone: noJunkDone,
             photoDone: photoDone,
             extrasDone: extrasDone,
-            coreComplete: waterDone && outdoorDone && secondDone && readingDone && dietDone && photoDone,
+            coreComplete: waterDone && outdoorDone && secondDone && readingDone
+                && dietDone && noJunkDone && photoDone,
             isClosed: closedDates.contains(date),
             isBackfilled: backfilled != nil
         )
@@ -262,8 +277,19 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
     private func computeChug(now: Date, addMl: Int64) -> ChugCheck {
         let cutoff = now.addingTimeInterval(-3600)
         var trailing: Int64 = 0
-        for event in events where !event.revoked && event.loggedAt >= cutoff && event.loggedAt <= now {
-            if case .water(let ml) = event.kind { trailing += ml }
+        // Retroactive logs (explicit effectiveDate) are bookkeeping, not
+        // current intake: they never enter the window. Live corrections net
+        // against the pours logged BEFORE them, folded in time order with a
+        // running floor at 0 (like the core), so an honest fat-finger fix
+        // clears the false warning but a stale correction can never offset
+        // intake logged after it — no manufactured chug headroom.
+        for event in events.sorted(by: { $0.loggedAt < $1.loggedAt })
+            where !event.revoked && !event.retro
+            && event.loggedAt >= cutoff && event.loggedAt <= now {
+            switch event.kind {
+            case .water(let ml), .waterAdjust(let ml): trailing = max(0, trailing + ml)
+            default: break
+            }
         }
         let limit: Int64 = 1000
         return ChugCheck(shouldWarn: trailing + addMl > limit, trailingHourMl: trailing, addMl: addMl, limitMl: limit)
@@ -332,10 +358,10 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
         let after = computeDayState(date: date)
         let extraDoneAfter = extraId.map { weekExtraDone(extraId: $0, weekIndex: weekIndex) != nil } ?? false
         var chug: ChugCheck?
-        if case .water(let ml) = kind {
+        if case .water(let ml) = kind, effectiveDate == nil {
             let check = computeChug(now: now, addMl: 0) // event already appended
             chug = ChugCheck(shouldWarn: check.trailingHourMl > check.limitMl,
-                             trailingHourMl: check.trailingHourMl - ml,
+                             trailingHourMl: max(0, check.trailingHourMl - ml),
                              addMl: ml,
                              limitMl: check.limitMl)
             if chug?.shouldWarn == false { chug = nil }
@@ -438,6 +464,24 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
         return append(kind: .water(ml: ml), effectiveDate: effectiveDate, now: Date())
     }
 
+    func logWaterAdjustment(ml: Int64, effectiveDate: DayDate?) throws -> LogResult {
+        guard (-10_000 ... -1).contains(ml) else {
+            throw DromeError.invalidArgument("water adjustment ml must be in -10000 ... -1")
+        }
+        lock.lock(); defer { lock.unlock() }
+        let now = Date()
+        // Over-correction guard, mirroring the core: an adjustment may remove
+        // at most the attributed day's current (floored) total.
+        let date = attributedDate(effectiveDate: effectiveDate, now: now)
+        let total = computeDayState(date: date).waterTotalMl
+        guard -ml <= total else {
+            throw DromeError.invalidArgument(
+                "water adjustment of \(ml) ml exceeds the day's current total of \(total) ml"
+            )
+        }
+        return append(kind: .waterAdjust(ml: ml), effectiveDate: effectiveDate, now: now)
+    }
+
     func logWorkout(durationMin: Int, outdoor: Bool, note: String?, effectiveDate: DayDate?) throws -> LogResult {
         guard durationMin > 0 else { throw DromeError.invalidArgument("duration must be positive") }
         lock.lock(); defer { lock.unlock() }
@@ -454,6 +498,11 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
     func logDietOk(effectiveDate: DayDate?) throws -> LogResult {
         lock.lock(); defer { lock.unlock() }
         return append(kind: .dietOk, effectiveDate: effectiveDate, now: Date())
+    }
+
+    func logNoJunkOk(effectiveDate: DayDate?) throws -> LogResult {
+        lock.lock(); defer { lock.unlock() }
+        return append(kind: .noJunkOk, effectiveDate: effectiveDate, now: Date())
     }
 
     func logPhotoDone(photoRef: String?, effectiveDate: DayDate?) throws -> LogResult {
@@ -546,15 +595,20 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
         return computeWaterState(now: Date())
     }
 
-    /// Non-revoked water pours attributed to `date` (the mock resolves
-    /// attribution at append time), ordered by loggedAt ascending — the same
-    /// entries `computeDayState` sums, so they always match its water total.
+    /// Non-revoked water pours AND signed corrections attributed to `date`
+    /// (the mock resolves attribution at append time), ordered by loggedAt
+    /// ascending — the same entries `computeDayState` folds (its total
+    /// applies a running floor at 0 per event, like the core).
     func waterLog(date: DayDate) throws -> [WaterLogEntry] {
         lock.lock(); defer { lock.unlock() }
         return events
             .compactMap { event -> WaterLogEntry? in
-                guard !event.revoked, event.date == date,
-                      case .water(let ml) = event.kind else { return nil }
+                guard !event.revoked, event.date == date else { return nil }
+                let ml: Int64
+                switch event.kind {
+                case .water(let m), .waterAdjust(let m): ml = m
+                default: return nil
+                }
                 return WaterLogEntry(
                     id: event.uuid,
                     ml: ml,
@@ -596,6 +650,7 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
             pagesRead: state.pagesRead,
             readingDone: state.readingDone,
             dietDone: state.dietDone,
+            noJunkDone: state.noJunkDone,
             photoDone: state.photoDone,
             // Cards carry duration + outdoor only — workout notes stay private.
             workouts: state.workouts.map {
@@ -644,7 +699,7 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
     func exportCsv() throws -> String {
         lock.lock(); defer { lock.unlock() }
         let todayIdx = dayIndex(of: currentDate(Date()))
-        var rows = ["date,day,water_ml,water_goal_ml,outdoor_workout,second_workout,pages,diet,photo,extras,complete,backfilled"]
+        var rows = ["date,day,water_ml,water_goal_ml,outdoor_workout,second_workout,pages,diet,no_junk,photo,extras,complete,backfilled"]
         let lastIdx = min(max(todayIdx, 1), challenge.lengthDays)
         for idx in 1...lastIdx {
             let date = shift(challenge.startDate, by: idx - 1)
@@ -652,7 +707,8 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
             rows.append([
                 date, String(idx), String(s.waterTotalMl), String(s.waterGoalMl),
                 String(s.outdoorWorkoutDone), String(s.secondWorkoutDone), String(s.pagesRead),
-                String(s.dietDone), String(s.photoDone), s.extrasDone.joined(separator: "|"),
+                String(s.dietDone), String(s.noJunkDone), String(s.photoDone),
+                s.extrasDone.joined(separator: "|"),
                 String(s.coreComplete), String(s.isBackfilled),
             ].joined(separator: ","))
         }

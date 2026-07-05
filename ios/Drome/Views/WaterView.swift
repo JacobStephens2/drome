@@ -15,7 +15,10 @@
 //
 //  Drag to pour: dragging up on Jerome previews a pour by raising the water
 //  line under the finger; release logs the previewed amount through the exact
-//  same check-then-confirm flow the presets use. Nothing is logged — and no
+//  same check-then-confirm flow the presets use. Dragging DOWN is the mirror:
+//  it previews lowering the line and release logs a signed correction
+//  (logWaterAdjustment) for over-recorded water — no chug gate, because
+//  decreasing needs no safety confirmation. Nothing is logged — and no
 //  counter or pace line moves — until release.
 //
 
@@ -36,6 +39,8 @@ struct WaterView: View {
     @State private var pourLog: [WaterLogEntry] = []
 
     // Drag-to-pour preview state (direct manipulation of the water line).
+    // Signed: positive while dragging up (pour), negative while dragging
+    // down (correction).
     @State private var dragPendingMl: Int64 = 0
     @State private var isDragging = false
     @State private var dragHapticStep = 0
@@ -72,7 +77,7 @@ struct WaterView: View {
                         }
                     }
                     .overlay(alignment: .top) { pendingPill }
-                    .accessibilityHint("Drag up to pour water. The buttons below log preset amounts.")
+                    .accessibilityHint("Drag up to pour water, or drag down to remove water recorded by mistake. The buttons below log preset amounts.")
                     .padding(.horizontal, DromeSpacing.l)
                 if !hasDragPoured {
                     Text("Drag Jerome up to add water")
@@ -118,7 +123,7 @@ struct WaterView: View {
         } content: {
             CustomAmountSheet { ml in pendingCustomMl = ml }
         }
-        .alert("Over a liter in an hour", isPresented: chugAlertPresented) {
+        .alert("Over 34 oz in an hour", isPresented: chugAlertPresented) {
             Button("Log anyway") {
                 let previousUuid = appModel.lastWaterEventUuid
                 appModel.confirmPendingWater()
@@ -157,11 +162,14 @@ struct WaterView: View {
 
     // MARK: - Drag to pour (supplementary; presets/custom stay the accessible path)
 
-    /// Upward finger travel as a fraction of the camel's height maps straight
-    /// onto the fill — the user drags the water line up with their finger.
-    /// The pending amount snaps to whole ounces and is clamped so the preview
-    /// never exceeds the goal (the metaphor is the water line: it tops out at
-    /// a full camel; larger logs stay available via presets/custom).
+    /// Finger travel as a fraction of the camel's height maps straight onto
+    /// the fill — the user drags the water line up (pour) or down (correct
+    /// over-recorded water) with their finger. The pending amount snaps to
+    /// whole ounces in both directions. Upward previews are clamped so they
+    /// never exceed the goal (the metaphor is the water line: it tops out at
+    /// a full camel; larger logs stay available via presets/custom); downward
+    /// previews never exceed today's current total (the line bottoms out at
+    /// an empty camel) — both respect the core's per-log cap.
     private func pourGesture(camelHeight: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 8)
             .updating($dragGestureActive) { _, state, _ in state = true }
@@ -171,17 +179,28 @@ struct WaterView: View {
                     dragHaptics.prepare()
                     withAnimation(.snappy) { isDragging = true }
                 }
-                let fraction = max(0, -value.translation.height / camelHeight)
+                // Signed: up is a pour (+), down a correction (−).
+                let fraction = -value.translation.height / camelHeight
                 let snappedOz = (WaterUnits.flOz(fromMl: water.goalMl) * fraction).rounded()
-                let capMl = max(0, water.goalMl - water.totalMl)
-                // Clamp to the remaining goal (the water line tops out at a
-                // full camel) AND to the core's per-log cap — with a goal
-                // over 10 L a full drag must never build a single log the
-                // core would reject.
-                dragPendingMl = min(WaterUnits.ml(fromFlOz: snappedOz), capMl, AppModel.maxWaterPerLogMl)
+                if snappedOz < 0 {
+                    // Clamp so the pending correction never exceeds today's
+                    // current total (there is nothing below an empty camel to
+                    // take back) nor the core's per-log cap. (WaterUnits.ml
+                    // floors negatives at 0, so convert the magnitude.)
+                    dragPendingMl = -min(WaterUnits.ml(fromFlOz: -snappedOz), water.totalMl, AppModel.maxWaterPerLogMl)
+                } else {
+                    let capMl = max(0, water.goalMl - water.totalMl)
+                    // Clamp to the remaining goal (the water line tops out at
+                    // a full camel) AND to the core's per-log cap — with a
+                    // goal over 338 oz a full drag must never build a single
+                    // log the core would reject.
+                    dragPendingMl = min(WaterUnits.ml(fromFlOz: snappedOz), capMl, AppModel.maxWaterPerLogMl)
+                }
                 // A selection tick each time the previewed amount crosses an
-                // 8 oz step, so a long pour "clicks" as it grows.
-                let step = oz(dragPendingMl) / 8
+                // 8 oz step (in either direction), so a long drag "clicks" as
+                // it grows. Integer division truncates toward zero, keeping
+                // the steps symmetric around the start point.
+                let step = ozSigned(dragPendingMl) / 8
                 if step != dragHapticStep {
                     dragHapticStep = step
                     dragHaptics.selectionChanged()
@@ -201,13 +220,16 @@ struct WaterView: View {
             }
     }
 
-    /// True when releasing now will log the preview. ONE predicate shared by
-    /// `onEnded` and the pill, so the pill never promises a pour that release
-    /// would silently cancel. Below a whole ounce the pour still commits when
-    /// it exactly tops off the remaining goal (recomputed here, at release
-    /// time) — otherwise the "drink the final ounce" state would be the one
-    /// state drag-to-pour can never log.
+    /// True when releasing now will log the preview (in either direction).
+    /// ONE predicate shared by `onEnded` and the pill, so the pill never
+    /// promises a log that release would silently cancel. Below a whole ounce
+    /// an upward pour still commits when it exactly tops off the remaining
+    /// goal (recomputed here, at release time) — otherwise the "drink the
+    /// final ounce" state would be the one state drag-to-pour can never log.
+    /// A sub-ounce downward nudge always cancels: corrections have no
+    /// equivalent must-reach state.
     private var dragCommitsOnRelease: Bool {
+        if dragPendingMl <= -WaterUnits.ml(fromFlOz: 1) { return true }
         guard dragPendingMl > 0 else { return false }
         if dragPendingMl >= WaterUnits.ml(fromFlOz: 1) { return true }
         guard let water else { return false }
@@ -216,8 +238,21 @@ struct WaterView: View {
 
     /// Routes the previewed amount through the EXACT same path as the preset
     /// buttons — AppModel's check-then-confirm chug flow. Never calls the
-    /// client directly, never skips the guard.
+    /// client directly, never skips the guard. A negative preview (drag down)
+    /// commits as a signed correction instead — no chug gate, because
+    /// decreasing recorded water needs no safety confirmation.
     private func commitDragPour(_ ml: Int64) {
+        if ml < 0 {
+            appModel.logWaterAdjustment(ml: ml)
+            // Synchronous like the pour path: the model has refreshed with
+            // the lowered total, so clearing the preview is a no-op for the
+            // fill (preview == logged correction; no double jump).
+            withAnimation(.snappy) {
+                isDragging = false
+                dragPendingMl = 0
+            }
+            return
+        }
         let previousUuid = appModel.lastWaterEventUuid
         let warned = appModel.checkThenLogWater(ml: ml) != nil
         // DromeCoreClient is synchronous, so by the time that returns the
@@ -240,15 +275,15 @@ struct WaterView: View {
         }
     }
 
-    /// Bold "+N oz" pill floating over Jerome while the finger is down.
-    /// Shown exactly when release will log (`dragCommitsOnRelease`) — never
-    /// promising a pour that would cancel. A sub-ounce top-off displays as
-    /// 1 oz (the same never-show-zero convention as `ozCeil`); every other
+    /// Bold "+N oz" / "−N oz" pill floating over Jerome while the finger is
+    /// down. Shown exactly when release will log (`dragCommitsOnRelease`) —
+    /// never promising a log that would cancel. A sub-ounce top-off displays
+    /// as 1 oz (the same never-show-zero convention as `ozCeil`); every other
     /// preview is already snapped to whole ounces.
     @ViewBuilder
     private var pendingPill: some View {
         if isDragging, dragCommitsOnRelease {
-            Text("+\(max(1, oz(dragPendingMl))) oz")
+            Text(dragPendingMl < 0 ? "−\(oz(-dragPendingMl)) oz" : "+\(max(1, oz(dragPendingMl))) oz")
                 .font(.system(size: 20, weight: .black))
                 .monospacedDigit()
                 .padding(.horizontal, DromeSpacing.m)
@@ -333,7 +368,7 @@ struct WaterView: View {
             return "Goal met. You don't need more today."
         }
         if water.discourageCatchUp {
-            return "It's late and \(ozCeil(water.remainingMl)) oz remain. Don't chug to catch up — your body handles about 1 liter an hour. Log what you actually drink."
+            return "It's late and \(ozCeil(water.remainingMl)) oz remain. Don't chug to catch up — your body handles about 34 oz an hour. Log what you actually drink."
         }
         if water.onPace {
             return "On pace. Target by now: \(oz(water.paceTargetMl)) oz."
@@ -473,7 +508,7 @@ struct WaterView: View {
         let trailing = oz(check.trailingHourMl)
         let adding = oz(check.addMl)
         let limit = oz(check.limitMl)
-        return "You've logged \(trailing) oz in the last hour; \(adding) oz more puts you past \(limit) oz (about 1 liter). Kidneys process roughly 0.8–1 liter per hour — it counts just the same in a while."
+        return "You've logged \(trailing) oz in the last hour; \(adding) oz more puts you past about \(limit) oz within an hour. Kidneys process roughly 27–34 oz an hour — it counts just the same in a while."
     }
 }
 
@@ -488,6 +523,12 @@ private func oz(_ ml: Int64) -> Int {
 /// shows as "0 oz to go".
 private func ozCeil(_ ml: Int64) -> Int {
     max(0, Int(WaterUnits.flOz(fromMl: ml).rounded(.up)))
+}
+
+/// Nearest ounce, sign preserved — for the signed drag preview (`oz` floors
+/// negatives at 0, which would erase a downward drag's haptic steps).
+private func ozSigned(_ ml: Int64) -> Int {
+    Int(WaterUnits.flOz(fromMl: ml).rounded())
 }
 
 // MARK: - Custom amount sheet (oz numeric pad)

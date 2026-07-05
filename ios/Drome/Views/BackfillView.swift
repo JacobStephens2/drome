@@ -3,11 +3,12 @@
 //  Drome
 //
 //  Fast mid-challenge catch-up grid: one week per screen, seven day rows,
-//  compact toggle dots for the five core tasks (the workout column carries
-//  both workout slots — one dot sets outdoor + second together), plus ONE
-//  weekly-extra cell per week when enabled. Tuned so 13 days take under a
-//  minute: tap a row's leading check to fill the whole day, tap dots to
-//  fine-tune, or use the bulk button and untick the exceptions.
+//  compact toggle dots for the six core tasks (the workout column carries
+//  both workout slots — one dot sets outdoor + second together; no-junk is
+//  its own column, a peer of diet), plus ONE weekly-extra cell per week when
+//  enabled. Tuned so 13 days take under a minute: tap a row's leading check
+//  to fill the whole day (all six), tap dots to fine-tune, or use the bulk
+//  button and untick the exceptions.
 //
 //  Pure input UI — talks to no client; hands assembled `BackfilledDay`
 //  values (water flag = met goal, not an amount) to `onDone`.
@@ -33,12 +34,16 @@ struct BackfillView: View {
         var workouts = false
         var reading = false
         var diet = false
+        /// "No junk or alcohol" — sixth core task, a peer of diet.
+        var noJunk = false
         var photo = false
 
-        var allDone: Bool { water && workouts && reading && diet && photo }
-        var anyDone: Bool { water || workouts || reading || diet || photo }
+        var allDone: Bool { water && workouts && reading && diet && noJunk && photo }
+        var anyDone: Bool { water || workouts || reading || diet || noJunk || photo }
 
-        static let complete = DayEntry(water: true, workouts: true, reading: true, diet: true, photo: true)
+        static let complete = DayEntry(
+            water: true, workouts: true, reading: true, diet: true, noJunk: true, photo: true
+        )
         static let empty = DayEntry()
     }
 
@@ -55,10 +60,12 @@ struct BackfillView: View {
         TaskColumn(key: \.workouts, symbol: "figure.run", label: "Both workouts", isDual: true),
         TaskColumn(key: \.reading, symbol: "book.fill", label: "Ten pages read", isDual: false),
         TaskColumn(key: \.diet, symbol: "fork.knife", label: "Diet", isDual: false),
+        TaskColumn(key: \.noJunk, symbol: "nosign", label: "No junk or alcohol", isDual: false),
         TaskColumn(key: \.photo, symbol: "camera.fill", label: "Progress photo", isDual: false),
     ]
 
-    private static let columnWidth: CGFloat = 42
+    /// 40pt keeps six dot columns + the day label inside a 390pt screen.
+    private static let columnWidth: CGFloat = 40
     private static let rowHeight: CGFloat = 52
 
     // MARK: - Inputs
@@ -421,6 +428,7 @@ struct BackfillView: View {
                     secondWorkout: entry.workouts,
                     reading: entry.reading,
                     diet: entry.diet,
+                    noJunk: entry.noJunk,
                     photo: entry.photo,
                     extraIds: extraIds
                 ))

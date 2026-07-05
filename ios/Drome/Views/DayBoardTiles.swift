@@ -2,12 +2,12 @@
 //  DayBoardTiles.swift
 //  Drome
 //
-//  Tile components for DayBoardView. Each of the five core tiles shows its
-//  task's REAL data shape (oz vs goal, two workout slots, pages + book, named
-//  diet, photo check) — deliberately NOT identical checkboxes. Completed
-//  tiles read as decisively DONE (dromeDone); open tiles say exactly what's
-//  left. Tiles are dumb: state in, closures out. DayBoardView wires them to
-//  AppModel intents and navigation callbacks.
+//  Tile components for DayBoardView. Each of the six core tiles shows its
+//  task's REAL data shape (oz vs goal, two tappable workout slots, pages +
+//  book, named diet, no-junk attest, photo check) — deliberately NOT
+//  identical checkboxes. Completed tiles read as decisively DONE (dromeDone);
+//  open tiles say exactly what's left. Tiles are dumb: state in, closures
+//  out. DayBoardView wires them to AppModel intents and navigation callbacks.
 //
 
 import SwiftUI
@@ -164,16 +164,34 @@ struct DayBoardWaterTile: View {
     }
 }
 
-// MARK: - Workouts (two slots)
+// MARK: - Workouts (two tappable slots)
 
+/// The two slot rows are direct check controls: tap an unchecked slot to log
+/// a default 45-minute workout for it (outdoor / not per slot), tap a checked
+/// slot to revoke exactly the entry that row displays — no confirmation
+/// either way, undo is one tap away from redo. The header row (with its
+/// chevron) still opens WorkoutView for durations and notes. A slot backed
+/// only by a backfill flag has no entry to revoke and doesn't respond.
 struct DayBoardWorkoutsTile: View {
     var day: DayState
     var onOpen: () -> Void
+    /// Log a default 45-minute workout for a slot (`outdoor` per slot).
+    var onLogSlot: (_ outdoor: Bool) -> Void
+    /// Revoke the workout entry backing a tapped checked slot.
+    var onUndoEntry: (WorkoutEntry) -> Void
+
+    /// Default duration for a slot-tap log.
+    static let defaultDurationMin = 45
 
     private var bothDone: Bool { day.outdoorWorkoutDone && day.secondWorkoutDone }
 
-    /// Maps today's logged workouts onto the two slots: the first outdoor
-    /// workout fills "Outdoor"; any remaining workout fills "Second".
+    /// Maps today's logged workouts onto the two slots — ONE mapping shared
+    /// by display and undo, so a tap always revokes exactly the entry the
+    /// row shows: the first outdoor workout fills "Outdoor"; the first
+    /// remaining workout fills "Second" (`day.workouts` is oldest-first,
+    /// straight from the event log). After revoking a displayed outdoor
+    /// entry the check may legitimately stay on — another outdoor workout
+    /// then backs the slot and the row shows that survivor.
     private var slotEntries: (outdoor: WorkoutEntry?, second: WorkoutEntry?) {
         let outdoor = day.workouts.first { $0.outdoor }
         var rest = day.workouts
@@ -184,56 +202,101 @@ struct DayBoardWorkoutsTile: View {
     }
 
     var body: some View {
-        Button(action: onOpen) {
-            DayBoardTileChrome(done: bothDone) {
-                VStack(alignment: .leading, spacing: DromeSpacing.s) {
+        DayBoardTileChrome(done: bothDone) {
+            VStack(alignment: .leading, spacing: DromeSpacing.s) {
+                Button(action: onOpen) {
                     DayBoardTileHeader(
                         icon: "figure.run", title: "WORKOUTS", tint: .dromeClay,
                         done: bothDone, showsChevron: true
                     )
-                    slotRow(label: "Outdoor", done: day.outdoorWorkoutDone, entry: slotEntries.outdoor)
-                    slotRow(label: "Second", done: day.secondWorkoutDone, entry: slotEntries.second)
+                    .frame(minHeight: DromeSpacing.tapTarget)
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Workouts, open durations and notes")
+                slotRow(
+                    label: "Outdoor", done: day.outdoorWorkoutDone,
+                    entry: slotEntries.outdoor, outdoor: true
+                )
+                slotRow(
+                    label: "Second", done: day.secondWorkoutDone,
+                    entry: slotEntries.second, outdoor: false
+                )
             }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(
-            "Workouts. Outdoor \(day.outdoorWorkoutDone ? "done" : "not yet"). Second \(day.secondWorkoutDone ? "done" : "not yet").")
     }
 
-    private func slotRow(label: String, done: Bool, entry: WorkoutEntry?) -> some View {
-        HStack(spacing: DromeSpacing.s) {
-            Image(systemName: done ? "checkmark.circle.fill" : "circle")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(done ? Color.dromeDone : Color.dromeInk.opacity(0.3))
-            Text(label)
-                .font(.subheadline.weight(.bold))
-                .foregroundStyle(Color.dromeInk)
-            Spacer(minLength: 0)
-            if let entry {
-                HStack(spacing: DromeSpacing.xs) {
-                    if let note = entry.note, !note.isEmpty {
-                        Text(note)
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(Color.dromeInk.opacity(0.5))
-                            .lineLimit(1)
-                    }
-                    Text("\(entry.durationMin) min")
-                        .font(.subheadline.weight(.semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(Color.dromeInk.opacity(0.75))
-                }
-            } else if done {
-                // Done without an entry = backfilled flag.
-                Text("Done")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(Color.dromeDone)
+    private func slotRow(
+        label: String,
+        done: Bool,
+        entry: WorkoutEntry?,
+        outdoor: Bool
+    ) -> some View {
+        Button {
+            if done {
+                // Undo acts on the entry this row displays — never a hidden
+                // one. A slot done only via a backfill flag has no entry and
+                // is disabled below.
+                if let entry { onUndoEntry(entry) }
             } else {
-                Text("not yet")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(Color.dromeInk.opacity(0.5))
+                onLogSlot(outdoor)
             }
+        } label: {
+            HStack(spacing: DromeSpacing.s) {
+                Image(systemName: done ? "checkmark.circle.fill" : "circle")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(done ? Color.dromeDone : Color.dromeInk.opacity(0.3))
+                    .contentTransition(.symbolEffect(.replace))
+                    .animation(.spring(response: 0.3, dampingFraction: 0.55), value: done)
+                Text(label)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(Color.dromeInk)
+                Spacer(minLength: 0)
+                if let entry {
+                    HStack(spacing: DromeSpacing.xs) {
+                        if let note = entry.note, !note.isEmpty {
+                            Text(note)
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(Color.dromeInk.opacity(0.5))
+                                .lineLimit(1)
+                        }
+                        Text("\(entry.durationMin) min")
+                            .font(.subheadline.weight(.semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(Color.dromeInk.opacity(0.75))
+                    }
+                } else if done {
+                    // Done without an entry = backfilled flag (nothing to undo).
+                    Text("Done")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(Color.dromeDone)
+                } else {
+                    Text("tap to log \(Self.defaultDurationMin) min")
+                        .font(.footnote.weight(.semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(Color.dromeInk.opacity(0.5))
+                }
+            }
+            .frame(minHeight: DromeSpacing.tapTarget)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .disabled(done && entry == nil)
+        .accessibilityLabel(slotAccessibilityLabel(
+            label: label, done: done, outdoor: outdoor, canUndo: entry != nil
+        ))
+    }
+
+    /// States the ACTION a tap performs (log / undo), not just the state.
+    private func slotAccessibilityLabel(
+        label: String, done: Bool, outdoor: Bool, canUndo: Bool
+    ) -> String {
+        guard done else {
+            return outdoor
+                ? "Log a \(Self.defaultDurationMin) minute outdoor workout"
+                : "Log a \(Self.defaultDurationMin) minute second workout"
+        }
+        return canUndo ? "Undo \(label.lowercased()) workout" : "\(label) workout done"
     }
 }
 
@@ -345,6 +408,98 @@ struct DayBoardDietTile: View {
     }
 }
 
+// MARK: - No junk or alcohol (inline attest, peer of diet)
+
+/// Sixth core task, same attest interaction as the diet tile (inline button
+/// behind a small confirm). After attesting, an Undo affordance sticks
+/// around for the session and revokes exactly the attest it just made —
+/// never an event of another kind (the DietView same-session-undo pattern,
+/// held locally because AppModel has no no-junk intent yet).
+struct DayBoardNoJunkTile: View {
+    var done: Bool
+    /// Performs the attest (client-direct logNoJunkOk); returns the logged
+    /// event's uuid, or nil when the write failed — the tile then says so
+    /// instead of pretending the tap landed.
+    var onAttest: () -> String?
+    /// Revokes the given event (this session's own attest).
+    var onUndo: (String) -> Void
+
+    @State private var confirming = false
+    @State private var sessionEventUuid: String?
+    @State private var attestFailed = false
+
+    var body: some View {
+        DayBoardTileChrome(done: done) {
+            VStack(alignment: .leading, spacing: DromeSpacing.s) {
+                DayBoardTileHeader(
+                    icon: "nosign", title: "NO JUNK OR ALCOHOL", tint: .dromeCamel, done: done
+                )
+                HStack(spacing: DromeSpacing.m) {
+                    VStack(alignment: .leading, spacing: DromeSpacing.xs) {
+                        Text(done ? "Clean all day" : "No junk food, no alcohol")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(Color.dromeInk)
+                            .lineLimit(2)
+                        if !done {
+                            Text(attestFailed ? "That didn't save — try again" : "Attest for today")
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(attestFailed ? Color.dromeMiss : Color.dromeInk.opacity(0.55))
+                        }
+                    }
+                    Spacer(minLength: 0)
+                    if !done {
+                        Button {
+                            confirming = true
+                        } label: {
+                            Text("I kept it clean")
+                                .font(.subheadline.weight(.bold))
+                                .foregroundStyle(Color.dromeSand)
+                                .padding(.horizontal, DromeSpacing.m)
+                                .frame(minHeight: DromeSpacing.tapTarget)
+                                .background(Capsule().fill(Color.dromeClay))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Attest no junk or alcohol today")
+                        .confirmationDialog(
+                            "No junk or alcohol today?",
+                            isPresented: $confirming,
+                            titleVisibility: .visible
+                        ) {
+                            Button("Yes — clean all day") { attest() }
+                            Button("Not yet", role: .cancel) {}
+                        } message: {
+                            Text("An honest yes for the whole day.")
+                        }
+                    } else if let uuid = sessionEventUuid {
+                        Button {
+                            onUndo(uuid)
+                            sessionEventUuid = nil
+                        } label: {
+                            Text("Undo")
+                                .font(.footnote.weight(.bold))
+                                .foregroundStyle(Color.dromeInk.opacity(0.7))
+                                .padding(.horizontal, DromeSpacing.m)
+                                .frame(minHeight: DromeSpacing.tapTarget)
+                                .background(Capsule().strokeBorder(Color.dromeInk.opacity(0.3), lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Undo today's no junk attest")
+                    }
+                }
+            }
+        }
+    }
+
+    private func attest() {
+        if let uuid = onAttest() {
+            sessionEventUuid = uuid
+            attestFailed = false
+        } else {
+            attestFailed = true
+        }
+    }
+}
+
 // MARK: - Photo (inline check-off; camera/attach flows come later)
 
 struct DayBoardPhotoTile: View {
@@ -447,7 +602,7 @@ struct DayBoardWeekExtraTile: View {
         waterTotalMl: 1420, waterGoalMl: 3785, waterDone: false,
         outdoorWorkoutDone: true, secondWorkoutDone: false,
         workouts: [WorkoutEntry(id: "w1", durationMin: 35, outdoor: true, note: "Morning walk")],
-        pagesRead: 4, readingDone: false, dietDone: false, photoDone: false,
+        pagesRead: 4, readingDone: false, dietDone: false, noJunkDone: false, photoDone: false,
         extrasDone: [], coreComplete: false, isClosed: false, isBackfilled: false
     )
     let doneDay = DayState(
@@ -458,7 +613,7 @@ struct DayBoardWeekExtraTile: View {
             WorkoutEntry(id: "w2", durationMin: 45, outdoor: true, note: "Run"),
             WorkoutEntry(id: "w3", durationMin: 30, outdoor: false, note: "Lifting"),
         ],
-        pagesRead: 12, readingDone: true, dietDone: true, photoDone: true,
+        pagesRead: 12, readingDone: true, dietDone: true, noJunkDone: true, photoDone: true,
         extrasDone: [], coreComplete: true, isClosed: false, isBackfilled: false
     )
     let extra = ExtraDef(id: "job_application", name: "Apply to a job", cadence: .weekly, enabled: true)
@@ -467,12 +622,14 @@ struct DayBoardWeekExtraTile: View {
         VStack(spacing: DromeSpacing.s) {
             DayBoardWaterTile(day: openDay) {}
             DayBoardWaterTile(day: doneDay) {}
-            DayBoardWorkoutsTile(day: openDay) {}
-            DayBoardWorkoutsTile(day: doneDay) {}
+            DayBoardWorkoutsTile(day: openDay, onOpen: {}, onLogSlot: { _ in }, onUndoEntry: { _ in })
+            DayBoardWorkoutsTile(day: doneDay, onOpen: {}, onLogSlot: { _ in }, onUndoEntry: { _ in })
             DayBoardReadingTile(day: openDay, book: "Atomic Habits") {}
             DayBoardReadingTile(day: doneDay, book: "Atomic Habits") {}
             DayBoardDietTile(dietDescription: "no junk, no alcohol", done: false, onAttest: {})
             DayBoardDietTile(dietDescription: "no junk, no alcohol", done: true, onAttest: {})
+            DayBoardNoJunkTile(done: false, onAttest: { "preview-uuid" }, onUndo: { _ in })
+            DayBoardNoJunkTile(done: true, onAttest: { nil }, onUndo: { _ in })
             DayBoardPhotoTile(done: false, onOpen: {}, onMarkDone: {})
             DayBoardPhotoTile(done: true, onOpen: {}, onMarkDone: {})
             DayBoardWeekExtraTile(

@@ -78,6 +78,14 @@ TEXT, payload TEXT (JSON), schema_version INTEGER DEFAULT 1`.
 Kinds (payload fields):
 - `water_add { ml: i64 }` — canonical unit is **milliliters**; UI displays fl oz
   (1 fl oz = 29.5735 ml; 1 gallon = 3785 ml).
+- `water_adjust { ml: i64 }` — NEGATIVE-ONLY signed correction (-10_000..=-1) for
+  over-recorded water (drag-down on Jerome). Day totals fold adds+adjusts
+  chronologically with a running floor at 0; the chug window nets live corrections
+  only against water logged before them. Never fires day_became_complete.
+- `no_junk_ok {}` — the no-junk-or-alcohol attestation, a SIXTH core task (mirrors
+  my sister's sheet's separate column). Events carry `schema_version` (v2 = six-task era);
+  days lived before a store's first v2 event inherit diet for no_junk (legacy
+  grandfathering), as do backfill payloads missing the flag.
 - `workout { duration_min: u32, outdoor: bool, note: Option<String>,
   started_at: Option<LocalInstant> }`
 - `reading { book_title: String, pages: u32 }`
@@ -101,15 +109,17 @@ exactly one optional extra preset: id `job_application`, "Apply to a job", weekl
 
 ## Flexible-mode day completion (mirrors my sister's sheet)
 
-A day's **core tasks** (all five must be done for `core_complete`):
-1. **Water**: sum of ml ≥ goal-as-of-that-day.
+A day's **core tasks** (all six must be done for `core_complete`):
+1. **Water**: folded sum of ml (adds + corrections, floored) ≥ goal-as-of-that-day.
 2. **Workout (outdoor)**: ≥1 workout with `outdoor = true` (any duration in flexible).
 3. **Workout (second)**: total workouts ≥ 2.
 4. **Reading**: pages sum ≥ 10.
 5. **Diet**: ≥1 `diet_ok`.
-6. **Photo**: ≥1 `photo_done`.
-(Water/outdoor/second/reading/diet/photo — displayed as five tiles; the workout tile has
-two slots.) Backfilled flags satisfy tasks directly; such days report `is_backfilled`.
+6. **No junk or alcohol**: ≥1 `no_junk_ok` (see legacy grandfathering above).
+7. **Photo**: ≥1 `photo_done`.
+(Displayed as six tiles; the workout tile has two directly-tappable slots.) Backfilled
+flags satisfy tasks directly; such days report `is_backfilled`. CSV export carries the
+"No Junk or Alcohol" column right after Nutrition/Diet.
 
 Weekly extras bind to week = 7-day blocks by day index (week 1 = days 1–7, matching
 my sister's sheet), **never** gate `core_complete`, and get their own smaller weekly moment.
@@ -148,6 +158,9 @@ set_diet_description(desc) / set_waking_window(start_minutes, end_minutes)  // d
 // as-of-day semantics; deferred past Phase 1. UI shows the value read-only.
 import_json(snapshot: String) -> ()   // restore an export_json snapshot; only into a store with no active challenge
 log_water(ml, now, effective_date: Option<String>) -> LogResult
+log_water_adjustment(ml, now, effective_date) -> LogResult  // negative-only correction; rejected when |ml| exceeds the day's total
+log_no_junk_ok(now, effective_date) -> LogResult
+water_log(date, now) -> Vec<WaterLogEntry>  // signed per-day pour ledger (event_uuid, ml, logged_at, retro), attribution identical to day_state
 log_workout(duration_min, outdoor, note, started_at: Option<LocalInstant>, now, effective_date) -> LogResult
 log_reading(book_title, pages, now, effective_date) -> LogResult
 log_diet_ok(now, effective_date) -> LogResult

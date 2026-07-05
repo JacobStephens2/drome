@@ -13,7 +13,8 @@ use crate::api::{
 };
 use crate::error::{DromeError, Result};
 use crate::events::{
-    self, EventRow, GoalChangedPayload, ReadingPayload, WaterAddPayload, WorkoutPayload,
+    self, EventRow, GoalChangedPayload, ReadingPayload, WaterAddPayload, WaterAdjustPayload,
+    WorkoutPayload,
 };
 use crate::projections::Projection;
 use crate::time::{self, LocalInstant};
@@ -94,6 +95,15 @@ fn validate_payload_bounds(e: &SnapshotEvent) -> Result<()> {
                 )));
             }
         }
+        events::KIND_WATER_ADJUST => {
+            let p: WaterAdjustPayload = serde_json::from_value(e.payload.clone())?;
+            if !(-MAX_WATER_LOG_ML..=-1).contains(&p.ml) {
+                return Err(DromeError::InvalidArgument(format!(
+                    "snapshot event {}: water adjustment ml must be in -{MAX_WATER_LOG_ML}..=-1",
+                    e.uuid
+                )));
+            }
+        }
         events::KIND_GOAL_CHANGED => {
             let p: GoalChangedPayload = serde_json::from_value(e.payload.clone())?;
             if !(1..=MAX_WATER_GOAL_ML).contains(&p.water_goal_ml) {
@@ -121,6 +131,10 @@ fn validate_payload_bounds(e: &SnapshotEvent) -> Result<()> {
                 )));
             }
         }
+        // day_backfilled payloads (flags only) are structurally validated by
+        // the pre-import Projection::build pass; a payload missing the
+        // `no_junk` key stays importable and inherits the day's `diet` flag
+        // (the legacy default — see events::DayBackfilledPayload).
         _ => {}
     }
     Ok(())
@@ -214,8 +228,8 @@ pub fn export_json(
 /// TRUE/FALSE like a Google Sheets checkbox export.
 pub fn export_csv(proj: &Projection, now: LocalInstant) -> Result<String> {
     let mut out = String::from(
-        "Date,Day,Workout (Outside),Workout (Inside),Nutrition/Diet,Read (10 Pages),\
-         Progress Picture,Water (oz),Apply to 1 job/week,Complete\n",
+        "Date,Day,Workout (Outside),Workout (Inside),Nutrition/Diet,No Junk or Alcohol,\
+         Read (10 Pages),Progress Picture,Water (oz),Apply to 1 job/week,Complete\n",
     );
     for idx in 1..=exported_day_count(proj, now)? {
         let date = proj.date_at_index(idx)?;
@@ -227,12 +241,13 @@ pub fn export_csv(proj: &Projection, now: LocalInstant) -> Result<String> {
         };
         let oz = (day.water_ml as f64 / ML_PER_FL_OZ).round() as i64;
         out.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{},{}\n",
             day.date,
             idx,
             csv_bool(day.outdoor_workout_done),
             csv_bool(day.second_workout_done),
             csv_bool(day.diet_done),
+            csv_bool(day.no_junk_done),
             csv_bool(day.reading_done),
             csv_bool(day.photo_done),
             oz,

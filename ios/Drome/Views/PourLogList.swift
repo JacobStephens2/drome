@@ -2,9 +2,13 @@
 //  PourLogList.swift
 //  Drome
 //
-//  Compact, removable ledger of one day's water pours, shared by WaterView
-//  ("TODAY'S POURS") and the yesterday sheet ("YESTERDAY'S POURS"). Rows stay
-//  short and quiet — a ledger, not a feature.
+//  Compact, removable ledger of one day's water pours and corrections,
+//  shared by WaterView ("TODAY'S POURS") and the yesterday sheet
+//  ("YESTERDAY'S POURS"). Rows stay short and quiet — a ledger, not a
+//  feature. Corrections (negative entries from drag-down / logWaterAdjustment)
+//  render as quiet "−N oz" rows with a small capsule — matter-of-fact, never
+//  celebratory, never shaming — and swipe-remove works on them too (revoking
+//  a correction restores the water it subtracted).
 //
 //  Ordering: entries arrive logged_at-ascending (the core contract) and are
 //  displayed newest-first, so the pour just logged — the likeliest removal
@@ -55,6 +59,18 @@ struct PourLogList: View {
                 .font(.system(size: 13, weight: .semibold))
                 .monospacedDigit()
                 .foregroundStyle(Color.dromeInk.opacity(0.55))
+            if entry.ml < 0 {
+                // Signed correction (drag-down / logWaterAdjustment). Same
+                // quiet capsule treatment as "backdated": a plain fact about
+                // the ledger, styled to neither celebrate nor shame.
+                Text("correction")
+                    .font(.system(size: 10, weight: .bold))
+                    .tracking(0.3)
+                    .foregroundStyle(Color.dromeInk.opacity(0.5))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.dromeInk.opacity(0.08), in: Capsule())
+            }
             if entry.retro {
                 // Explicitly-dated pour (an "edit yesterday" add, or an
                 // imported snapshot's dated event) — marked so the ledger is
@@ -73,16 +89,22 @@ struct PourLogList: View {
                     .background(Color.dromeInk.opacity(0.08), in: Capsule())
             }
             Spacer()
-            Text("+\(oz(entry.ml)) oz")
+            Text(entry.ml < 0 ? "−\(oz(-entry.ml)) oz" : "+\(oz(entry.ml)) oz")
                 .font(.system(size: 14, weight: .bold))
                 .monospacedDigit()
-                .foregroundStyle(Color.dromeInk.opacity(0.8))
+                .foregroundStyle(entry.ml < 0 ? Color.dromeMiss.opacity(0.8) : Color.dromeInk.opacity(0.8))
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(
-            "\(oz(entry.ml)) ounces at \(timeText(entry))\(entry.retro ? ", logged retroactively" : "")"
-        )
+        .accessibilityLabel(accessibilityText(entry))
         .accessibilityHint("Swipe up or down with one finger to remove")
+    }
+
+    private func accessibilityText(_ entry: WaterLogEntry) -> String {
+        let retroSuffix = entry.retro ? ", logged retroactively" : ""
+        if entry.ml < 0 {
+            return "Correction, \(oz(-entry.ml)) ounces removed at \(timeText(entry))\(retroSuffix)"
+        }
+        return "\(oz(entry.ml)) ounces at \(timeText(entry))\(retroSuffix)"
     }
 
     /// Wall-clock time of the pour as the user saw it when logging (the
@@ -101,15 +123,16 @@ private func oz(_ ml: Int64) -> Int {
 
 // MARK: - Previews
 
-#Preview("Four pours, one backdated") {
+#Preview("Pours, a correction, one backdated") {
     let tz = TimeZone.current.secondsFromGMT()
     VStack {
         PourLogList(
             entries: [
                 WaterLogEntry(id: "a", ml: 946, loggedAt: Date().addingTimeInterval(-6 * 3600), tzOffsetSecs: tz, retro: false),
                 WaterLogEntry(id: "b", ml: 350, loggedAt: Date().addingTimeInterval(-4 * 3600), tzOffsetSecs: tz, retro: false),
-                WaterLogEntry(id: "c", ml: 946, loggedAt: Date().addingTimeInterval(-2 * 3600), tzOffsetSecs: tz, retro: false),
-                WaterLogEntry(id: "d", ml: 500, loggedAt: Date(), tzOffsetSecs: tz, retro: true),
+                WaterLogEntry(id: "c", ml: -237, loggedAt: Date().addingTimeInterval(-3 * 3600), tzOffsetSecs: tz, retro: false),
+                WaterLogEntry(id: "d", ml: 946, loggedAt: Date().addingTimeInterval(-2 * 3600), tzOffsetSecs: tz, retro: false),
+                WaterLogEntry(id: "e", ml: 500, loggedAt: Date(), tzOffsetSecs: tz, retro: true),
             ],
             onRemove: { _ in }
         )

@@ -39,8 +39,10 @@ enum DromeDebugLaunch {
     // MARK: - Demo seed (demo fixture through the real client)
 
     /// Start = today − 13 days (today is Day 14). Days 1–12 backfilled
-    /// all-complete (job application in week 1), day 13 all-but-reading.
-    /// Today: 1420 ml water + one 45-min outdoor workout already logged.
+    /// all-complete incl. no-junk (job application in week 1); day 13
+    /// all-but-reading, with no-junk EVENT-logged rather than backfilled
+    /// (mirrors the demo fixture's partially-backfilled day). Today: 1420 ml
+    /// water + one 45-min outdoor workout already logged; no-junk left open.
     /// No-op unless `-drome-demo-seed` is passed AND the store is empty.
     static func seedIfRequested(client: DromeCoreClient) {
         guard demoSeedRequested else { return }
@@ -69,14 +71,20 @@ enum DromeDebugLaunch {
                     secondWorkout: true,
                     reading: offset < 12, // day 13 (offset 12): all but reading
                     diet: true,
+                    noJunk: offset < 12,  // day 13's no-junk is event-logged below
                     photo: true,
                     extraIds: offset == 4 ? ["job_application"] : []
                 ))
             }
             try client.backfillDays(days)
 
-            // Today (Day 14): partial. LogResults (incl. any chug flag from
-            // two quick pours) are intentionally ignored — this is seeding.
+            // Day 13's no-junk attest as a real event (not a backfill flag),
+            // mirroring the demo fixture's partially-backfilled day 13.
+            _ = try client.logNoJunkOk(effectiveDate: shift(challenge.startDate, by: 12))
+
+            // Today (Day 14): partial — no-junk deliberately left open.
+            // LogResults (incl. any chug flag from two quick pours) are
+            // intentionally ignored — this is seeding.
             _ = try client.logWater(ml: 946, effectiveDate: nil)
             _ = try client.logWater(ml: 946, effectiveDate: nil)
             _ = try client.logWorkout(durationMin: 45, outdoor: true, note: "Morning run", effectiveDate: nil)

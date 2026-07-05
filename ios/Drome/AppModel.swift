@@ -188,6 +188,26 @@ final class AppModel {
         checkThenLogWater(ml: preset.ml)
     }
 
+    /// Signed water correction (drag DOWN on Jerome): lowers today's recorded
+    /// water. `ml` is negative-only by the facade contract; decreasing intake
+    /// needs no safety gate, so this deliberately skips the chug
+    /// check-then-confirm flow and logs immediately. The UI clamps to the
+    /// day's current total; the core still enforces the over-correction
+    /// guard, and a residual failure surfaces via `lastErrorMessage`.
+    /// Tracked as the last water event so "Undo last" takes back the
+    /// correction (revoking it restores the water) rather than revoking an
+    /// older, unrelated pour.
+    func logWaterAdjustment(ml: Int64) {
+        guard ml < 0 else { return }
+        do {
+            let result = try client.logWaterAdjustment(ml: ml, effectiveDate: nil)
+            lastWaterEventUuid = result.eventUuid
+            handle(result)
+        } catch {
+            lastErrorMessage = "\(error)"
+        }
+    }
+
     /// Retroactive water log ("log for yesterday"). Skips the anti-chug
     /// pre-check on purpose: the water was drunk on the effective day, not in
     /// the trailing hour, so a warning here would be dishonest. Large adds

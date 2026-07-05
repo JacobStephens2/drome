@@ -654,11 +654,27 @@ public protocol DromeStoreProtocol: AnyObject, Sendable {
     
     func logExtraDone(extraId: String, now: LocalInstant, effectiveDate: String?) throws  -> UniLogResult
     
+    /**
+     * "No Junk or Alcohol" attestation — the sixth core task, mirroring the
+     * sheet's column of the same name (a separate peer of "Nutrition/Diet").
+     */
+    func logNoJunkOk(now: LocalInstant, effectiveDate: String?) throws  -> UniLogResult
+    
     func logPhotoDone(photoRef: String?, now: LocalInstant, effectiveDate: String?) throws  -> UniLogResult
     
     func logReading(bookTitle: String, pages: UInt32, now: LocalInstant, effectiveDate: String?) throws  -> UniLogResult
     
     func logWater(ml: Int64, now: LocalInstant, effectiveDate: String?) throws  -> UniLogResult
+    
+    /**
+     * Signed correction for over-recorded water. NEGATIVE-ONLY
+     * (`-10_000..=-1`); positive intake stays `log_water`. Rejected
+     * (`InvalidArgument`) when the magnitude exceeds the attributed day's
+     * current water total — the UI clamps, the core enforces. It can only
+     * lower a day's water, so `day_became_complete` never fires from it,
+     * and it returns no chug warning (corrections are not intake).
+     */
+    func logWaterAdjustment(ml: Int64, now: LocalInstant, effectiveDate: String?) throws  -> UniLogResult
     
     func logWorkout(durationMin: UInt32, outdoor: Bool, note: String?, startedAt: LocalInstant?, now: LocalInstant, effectiveDate: String?) throws  -> UniLogResult
     
@@ -694,10 +710,13 @@ public protocol DromeStoreProtocol: AnyObject, Sendable {
     func updatePresets(presets: [UniContainerPreset]) throws 
     
     /**
-     * Every non-revoked `water_add` event attributed to `date`, ordered by
-     * `logged_at` ascending. Attribution is exactly the day projection's
-     * (cutoff, closed-day rollover, explicit effective_date), so the entries
-     * always sum to that date's `DayState.water_ml`. `day_backfilled` water
+     * Every non-revoked `water_add` / `water_adjust` event attributed to
+     * `date` (adds positive, corrections negative), ordered by `logged_at`
+     * ascending. Attribution is exactly the day projection's (cutoff,
+     * closed-day rollover, explicit effective_date), so the entries sum to
+     * that date's raw signed total — `DayState.water_ml` folds the same
+     * entries with a running floor at 0 and only diverges (reading higher,
+     * never lower) after a revoke reorders history. `day_backfilled` water
      * is a flag with no quantity and is deliberately excluded.
      */
     func waterLog(date: String, now: LocalInstant) throws  -> [UniWaterLogEntry]
@@ -920,6 +939,21 @@ open func logExtraDone(extraId: String, now: LocalInstant, effectiveDate: String
 })
 }
     
+    /**
+     * "No Junk or Alcohol" attestation — the sixth core task, mirroring the
+     * sheet's column of the same name (a separate peer of "Nutrition/Diet").
+     */
+open func logNoJunkOk(now: LocalInstant, effectiveDate: String?)throws  -> UniLogResult  {
+    return try  FfiConverterTypeUniLogResult_lift(try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
+        uniffiCallStatus in
+    uniffi_drome_core_fn_method_dromestore_log_no_junk_ok(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeLocalInstant_lower(now),
+        FfiConverterOptionString.lower(effectiveDate),uniffiCallStatus
+    )
+})
+}
+    
 open func logPhotoDone(photoRef: String?, now: LocalInstant, effectiveDate: String?)throws  -> UniLogResult  {
     return try  FfiConverterTypeUniLogResult_lift(try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
         uniffiCallStatus in
@@ -949,6 +983,26 @@ open func logWater(ml: Int64, now: LocalInstant, effectiveDate: String?)throws  
     return try  FfiConverterTypeUniLogResult_lift(try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
         uniffiCallStatus in
     uniffi_drome_core_fn_method_dromestore_log_water(
+            self.uniffiCloneHandle(),
+        FfiConverterInt64.lower(ml),
+        FfiConverterTypeLocalInstant_lower(now),
+        FfiConverterOptionString.lower(effectiveDate),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Signed correction for over-recorded water. NEGATIVE-ONLY
+     * (`-10_000..=-1`); positive intake stays `log_water`. Rejected
+     * (`InvalidArgument`) when the magnitude exceeds the attributed day's
+     * current water total — the UI clamps, the core enforces. It can only
+     * lower a day's water, so `day_became_complete` never fires from it,
+     * and it returns no chug warning (corrections are not intake).
+     */
+open func logWaterAdjustment(ml: Int64, now: LocalInstant, effectiveDate: String?)throws  -> UniLogResult  {
+    return try  FfiConverterTypeUniLogResult_lift(try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
+        uniffiCallStatus in
+    uniffi_drome_core_fn_method_dromestore_log_water_adjustment(
             self.uniffiCloneHandle(),
         FfiConverterInt64.lower(ml),
         FfiConverterTypeLocalInstant_lower(now),
@@ -1082,10 +1136,13 @@ open func updatePresets(presets: [UniContainerPreset])throws   {try rustCallWith
 }
     
     /**
-     * Every non-revoked `water_add` event attributed to `date`, ordered by
-     * `logged_at` ascending. Attribution is exactly the day projection's
-     * (cutoff, closed-day rollover, explicit effective_date), so the entries
-     * always sum to that date's `DayState.water_ml`. `day_backfilled` water
+     * Every non-revoked `water_add` / `water_adjust` event attributed to
+     * `date` (adds positive, corrections negative), ordered by `logged_at`
+     * ascending. Attribution is exactly the day projection's (cutoff,
+     * closed-day rollover, explicit effective_date), so the entries sum to
+     * that date's raw signed total — `DayState.water_ml` folds the same
+     * entries with a running floor at 0 and only diverges (reading higher,
+     * never lower) after a revoke reorders history. `day_backfilled` water
      * is a flag with no quantity and is deliberately excluded.
      */
 open func waterLog(date: String, now: LocalInstant)throws  -> [UniWaterLogEntry]  {
@@ -1276,18 +1333,30 @@ public struct UniBackfilledDay: Equatable, Hashable {
     public var secondWorkout: Bool
     public var reading: Bool
     public var diet: Bool
+    /**
+     * "No Junk or Alcohol" — the sheet's sixth column, a peer of diet.
+     * Always explicit through this API; only *stored* legacy payloads
+     * missing the key default to `diet` (events::DayBackfilledPayload).
+     */
+    public var noJunk: Bool
     public var photo: Bool
     public var extraIds: [String]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(date: String, water: Bool, outdoorWorkout: Bool, secondWorkout: Bool, reading: Bool, diet: Bool, photo: Bool, extraIds: [String]) {
+    public init(date: String, water: Bool, outdoorWorkout: Bool, secondWorkout: Bool, reading: Bool, diet: Bool, 
+        /**
+         * "No Junk or Alcohol" — the sheet's sixth column, a peer of diet.
+         * Always explicit through this API; only *stored* legacy payloads
+         * missing the key default to `diet` (events::DayBackfilledPayload).
+         */noJunk: Bool, photo: Bool, extraIds: [String]) {
         self.date = date
         self.water = water
         self.outdoorWorkout = outdoorWorkout
         self.secondWorkout = secondWorkout
         self.reading = reading
         self.diet = diet
+        self.noJunk = noJunk
         self.photo = photo
         self.extraIds = extraIds
     }
@@ -1314,6 +1383,7 @@ public struct FfiConverterTypeUniBackfilledDay: FfiConverterRustBuffer {
                 secondWorkout: FfiConverterBool.read(from: &buf), 
                 reading: FfiConverterBool.read(from: &buf), 
                 diet: FfiConverterBool.read(from: &buf), 
+                noJunk: FfiConverterBool.read(from: &buf), 
                 photo: FfiConverterBool.read(from: &buf), 
                 extraIds: FfiConverterSequenceString.read(from: &buf)
         )
@@ -1326,6 +1396,7 @@ public struct FfiConverterTypeUniBackfilledDay: FfiConverterRustBuffer {
         FfiConverterBool.write(value.secondWorkout, into: &buf)
         FfiConverterBool.write(value.reading, into: &buf)
         FfiConverterBool.write(value.diet, into: &buf)
+        FfiConverterBool.write(value.noJunk, into: &buf)
         FfiConverterBool.write(value.photo, into: &buf)
         FfiConverterSequenceString.write(value.extraIds, into: &buf)
     }
@@ -1749,6 +1820,10 @@ public struct UniDayState: Equatable, Hashable {
     public var readingPages: UInt32
     public var readingDone: Bool
     public var dietDone: Bool
+    /**
+     * "No Junk or Alcohol" attestation — sixth core task, a peer of diet.
+     */
+    public var noJunkDone: Bool
     public var photoDone: Bool
     public var extrasDone: [String]
     public var coreComplete: Bool
@@ -1758,7 +1833,10 @@ public struct UniDayState: Equatable, Hashable {
     public init(date: String, 
         /**
          * Raw 1-based day number; may fall outside [1, length_days].
-         */dayIndex: Int64, inRange: Bool, isBackfilled: Bool, isClosed: Bool, waterMl: Int64, waterGoalMl: Int64, waterDone: Bool, workouts: [UniWorkoutEntry], outdoorWorkoutDone: Bool, secondWorkoutDone: Bool, readingPages: UInt32, readingDone: Bool, dietDone: Bool, photoDone: Bool, extrasDone: [String], coreComplete: Bool) {
+         */dayIndex: Int64, inRange: Bool, isBackfilled: Bool, isClosed: Bool, waterMl: Int64, waterGoalMl: Int64, waterDone: Bool, workouts: [UniWorkoutEntry], outdoorWorkoutDone: Bool, secondWorkoutDone: Bool, readingPages: UInt32, readingDone: Bool, dietDone: Bool, 
+        /**
+         * "No Junk or Alcohol" attestation — sixth core task, a peer of diet.
+         */noJunkDone: Bool, photoDone: Bool, extrasDone: [String], coreComplete: Bool) {
         self.date = date
         self.dayIndex = dayIndex
         self.inRange = inRange
@@ -1773,6 +1851,7 @@ public struct UniDayState: Equatable, Hashable {
         self.readingPages = readingPages
         self.readingDone = readingDone
         self.dietDone = dietDone
+        self.noJunkDone = noJunkDone
         self.photoDone = photoDone
         self.extrasDone = extrasDone
         self.coreComplete = coreComplete
@@ -1808,6 +1887,7 @@ public struct FfiConverterTypeUniDayState: FfiConverterRustBuffer {
                 readingPages: FfiConverterUInt32.read(from: &buf), 
                 readingDone: FfiConverterBool.read(from: &buf), 
                 dietDone: FfiConverterBool.read(from: &buf), 
+                noJunkDone: FfiConverterBool.read(from: &buf), 
                 photoDone: FfiConverterBool.read(from: &buf), 
                 extrasDone: FfiConverterSequenceString.read(from: &buf), 
                 coreComplete: FfiConverterBool.read(from: &buf)
@@ -1829,6 +1909,7 @@ public struct FfiConverterTypeUniDayState: FfiConverterRustBuffer {
         FfiConverterUInt32.write(value.readingPages, into: &buf)
         FfiConverterBool.write(value.readingDone, into: &buf)
         FfiConverterBool.write(value.dietDone, into: &buf)
+        FfiConverterBool.write(value.noJunkDone, into: &buf)
         FfiConverterBool.write(value.photoDone, into: &buf)
         FfiConverterSequenceString.write(value.extrasDone, into: &buf)
         FfiConverterBool.write(value.coreComplete, into: &buf)
@@ -2096,12 +2177,13 @@ public struct UniShareCardData: Equatable, Hashable {
     public var readingPages: UInt32
     public var readingDone: Bool
     public var dietDone: Bool
+    public var noJunkDone: Bool
     public var photoDone: Bool
     public var workouts: [ShareCardWorkout]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(date: String, dayIndex: UInt32, outOfRange: Bool, rulesetLabel: String, coreComplete: Bool, isBackfilled: Bool, currentRun: UInt32, waterMl: Int64, waterGoalMl: Int64, waterDone: Bool, outdoorWorkoutDone: Bool, secondWorkoutDone: Bool, readingPages: UInt32, readingDone: Bool, dietDone: Bool, photoDone: Bool, workouts: [ShareCardWorkout]) {
+    public init(date: String, dayIndex: UInt32, outOfRange: Bool, rulesetLabel: String, coreComplete: Bool, isBackfilled: Bool, currentRun: UInt32, waterMl: Int64, waterGoalMl: Int64, waterDone: Bool, outdoorWorkoutDone: Bool, secondWorkoutDone: Bool, readingPages: UInt32, readingDone: Bool, dietDone: Bool, noJunkDone: Bool, photoDone: Bool, workouts: [ShareCardWorkout]) {
         self.date = date
         self.dayIndex = dayIndex
         self.outOfRange = outOfRange
@@ -2117,6 +2199,7 @@ public struct UniShareCardData: Equatable, Hashable {
         self.readingPages = readingPages
         self.readingDone = readingDone
         self.dietDone = dietDone
+        self.noJunkDone = noJunkDone
         self.photoDone = photoDone
         self.workouts = workouts
     }
@@ -2152,6 +2235,7 @@ public struct FfiConverterTypeUniShareCardData: FfiConverterRustBuffer {
                 readingPages: FfiConverterUInt32.read(from: &buf), 
                 readingDone: FfiConverterBool.read(from: &buf), 
                 dietDone: FfiConverterBool.read(from: &buf), 
+                noJunkDone: FfiConverterBool.read(from: &buf), 
                 photoDone: FfiConverterBool.read(from: &buf), 
                 workouts: FfiConverterSequenceTypeShareCardWorkout.read(from: &buf)
         )
@@ -2173,6 +2257,7 @@ public struct FfiConverterTypeUniShareCardData: FfiConverterRustBuffer {
         FfiConverterUInt32.write(value.readingPages, into: &buf)
         FfiConverterBool.write(value.readingDone, into: &buf)
         FfiConverterBool.write(value.dietDone, into: &buf)
+        FfiConverterBool.write(value.noJunkDone, into: &buf)
         FfiConverterBool.write(value.photoDone, into: &buf)
         FfiConverterSequenceTypeShareCardWorkout.write(value.workouts, into: &buf)
     }
@@ -2271,12 +2356,20 @@ public func FfiConverterTypeUniTodayState_lower(_ value: UniTodayState) -> RustB
 
 
 /**
- * One non-revoked `water_add` event attributed to a given date — the per-day
- * pour log backing "correct an over-recorded pour". Backfill flags carry no
- * quantity and never appear here; entries always sum to `DayState.water_ml`.
+ * One non-revoked `water_add` or `water_adjust` event attributed to a given
+ * date — the per-day signed pour ledger. Adds carry positive `ml`,
+ * corrections negative. Backfill flags carry no quantity and never appear
+ * here. Entries sum to the day's raw signed total; `DayState.water_ml`
+ * folds the same entries with a running floor at 0 (an orphaned correction
+ * clips instead of debiting later pours), so the two only diverge — the day
+ * reading higher, never lower — after a revoke has reordered history
+ * underneath a validated adjustment.
  */
 public struct UniWaterLogEntry: Equatable, Hashable {
     public var eventUuid: String
+    /**
+     * Positive for `water_add`, negative for `water_adjust`.
+     */
     public var ml: Int64
     public var loggedAt: LocalInstant
     /**
@@ -2287,7 +2380,10 @@ public struct UniWaterLogEntry: Equatable, Hashable {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(eventUuid: String, ml: Int64, loggedAt: LocalInstant, 
+    public init(eventUuid: String, 
+        /**
+         * Positive for `water_add`, negative for `water_adjust`.
+         */ml: Int64, loggedAt: LocalInstant, 
         /**
          * True when the event carried an explicit `effective_date` (retroactive
          * logging / "edit yesterday"), as opposed to live cutoff attribution.
@@ -3210,6 +3306,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_drome_core_checksum_method_dromestore_log_extra_done() != 65338) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_drome_core_checksum_method_dromestore_log_no_junk_ok() != 46336) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_drome_core_checksum_method_dromestore_log_photo_done() != 64515) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -3217,6 +3316,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_drome_core_checksum_method_dromestore_log_water() != 2379) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_drome_core_checksum_method_dromestore_log_water_adjustment() != 19858) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_drome_core_checksum_method_dromestore_log_workout() != 4364) {
@@ -3252,7 +3354,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_drome_core_checksum_method_dromestore_update_presets() != 43732) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_drome_core_checksum_method_dromestore_water_log() != 47978) {
+    if (uniffi_drome_core_checksum_method_dromestore_water_log() != 5565) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_drome_core_checksum_method_dromestore_water_state() != 292) {
