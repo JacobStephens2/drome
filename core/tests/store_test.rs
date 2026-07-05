@@ -2,7 +2,9 @@
 //! fixture from docs/ARCHITECTURE.md (start 2026-06-21, days 1–12 backfilled
 //! complete, day 13 missing reading, day 14 live).
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use drome_core::{
     BackfilledDay, DromeError, DromeStore, LocalInstant, NewChallenge, RevocableTask, RulesetKind,
@@ -563,16 +565,20 @@ fn day_index_clamps_and_flags_out_of_range() {
     let summary = store.summary(before).expect("summary");
     assert_eq!(summary.today_day_index, 1);
     assert!(summary.today_out_of_range);
+    assert_eq!(summary.today_raw_day_index, -1);
     let today = store.today(before).expect("today");
     assert!(today.out_of_range);
     assert_eq!(today.day.day_index, -1);
     assert!(!today.day.in_range);
 
-    // Day 100, far past the end of the 75.
+    // Day 100, far past the end of the 75. The clamped index is for display;
+    // the raw index is the honest "days lived" figure the reset flow's
+    // deletion copy uses (out-of-range days still attribute events).
     let after = at("2026-09-28", 10, 0);
     let summary = store.summary(after).expect("summary");
     assert_eq!(summary.today_day_index, 75);
     assert!(summary.today_out_of_range);
+    assert_eq!(summary.today_raw_day_index, 100);
     let day = store.day_state("2026-09-28".into(), after).expect("state");
     assert_eq!(day.day_index, 100);
     assert!(!day.in_range);
@@ -2125,4 +2131,293 @@ fn new_challenges_require_the_attestation_from_day_one() {
     assert!(r.day_state.diet_done);
     assert!(!r.day_state.no_junk_done);
     assert!(!r.day_state.core_complete);
+}
+
+// ---------------------------------------------------------------------------
+// reset_all_data — the app's ONE destructive operation. The cardinal rule is
+// "data cannot be lost", so these tests pin the three safety properties: the
+// wipe is total, the recreated append-only guard still bites, and the
+// export → reset → import escape hatch is lossless. A failed reset must be a
+// perfect no-op (single transaction).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reset_all_data_wipes_everything_and_rearms_the_append_only_guard() {
+    let (_dir, path, store) = demo_store();
+    store
+        .log_water(500, at("2026-07-04", 10, 0), None)
+        .expect("water");
+
+    store.reset_all_data().expect("reset");
+
+    // Never-used state: no challenge, and every table literally empty.
+    assert!(store.active_challenge().expect("query").is_none());
+    assert!(matches!(
+        store.summary(at("2026-07-04", 11, 0)),
+        Err(DromeError::NoActiveChallenge)
+    ));
+    let conn = rusqlite::Connection::open(&path).expect("raw open");
+    for table in ["events", "challenge", "container_presets", "extra_defs"] {
+        let count: i64 = conn
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .expect("count");
+        assert_eq!(count, 0, "{table} not empty after reset");
+    }
+
+    // A fresh challenge starts cleanly at day 1, nothing inherited.
+    store
+        .create_challenge(challenge_cfg(
+            RulesetKind::Flexible,
+            "2026-08-01",
+            at("2026-08-01", 8, 0),
+        ))
+        .expect("fresh challenge");
+    let now = at("2026-08-01", 9, 0);
+    let today = store.today(now).expect("today");
+    assert_eq!(today.date, "2026-08-01");
+    assert_eq!(today.day_index, 1);
+    assert!(!today.day.core_complete);
+    assert_eq!(today.day.water_ml, 0);
+    let summary = store.summary(now).expect("summary");
+    assert_eq!(summary.days_complete_count, 0);
+    assert_eq!(summary.current_run, 0);
+    assert_eq!(summary.today_day_index, 1);
+
+    // The RECREATED triggers still enforce append-only: insert an event on
+    // the fresh challenge, then raw UPDATE/DELETE must RAISE exactly like a
+    // never-reset store — proof the guard was rebuilt, not just dropped.
+    store
+        .log_water(500, at("2026-08-01", 9, 30), None)
+        .expect("water");
+    let update = conn.execute("UPDATE events SET kind = 'tampered'", []);
+    let err = update.expect_err("update must be rejected").to_string();
+    assert!(err.contains("append-only"), "unexpected error: {err}");
+    let delete = conn.execute("DELETE FROM events", []);
+    let err = delete.expect_err("delete must be rejected").to_string();
+    assert!(err.contains("append-only"), "unexpected error: {err}");
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+        .expect("count");
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn reset_then_restore_round_trip_rebuilds_identical_projections() {
+    // The product's escape hatch: export → reset → import must be lossless.
+    let (_dir, _path, store) = demo_store();
+    store
+        .update_presets(vec![drome_core::ContainerPreset {
+            id: "bottle".into(),
+            name: "24 oz bottle".into(),
+            ml: 710,
+            sort_order: 0,
+        }])
+        .expect("presets");
+    // A mixed live week on top of the fixture: water + a signed correction,
+    // both workouts, reading (one entry revoked), all three attestations, a
+    // photo with a ref, a revoked task, a goal change, a closed day, and a
+    // post-close log that rolls to the next date.
+    let d = "2026-07-04";
+    store.log_water(2_000, at(d, 8, 0), None).expect("water");
+    store
+        .log_water_adjustment(-250, at(d, 8, 30), None)
+        .expect("adjustment");
+    store
+        .log_workout(45, true, Some("run".into()), None, at(d, 9, 0), None)
+        .expect("outdoor workout");
+    store
+        .log_workout(30, false, None, None, at(d, 18, 0), None)
+        .expect("second workout");
+    let r = store
+        .log_reading("Deep Work".into(), 4, at(d, 12, 0), None)
+        .expect("reading");
+    store
+        .revoke_event(r.event_uuid, at(d, 12, 5))
+        .expect("revoke reading");
+    store
+        .log_reading("Deep Work".into(), 12, at(d, 12, 10), None)
+        .expect("reading again");
+    store.log_diet_ok(at(d, 13, 0), None).expect("diet");
+    store.log_no_junk_ok(at(d, 13, 5), None).expect("no junk");
+    store
+        .log_photo_done(Some("2026-07-04.jpg".into()), at(d, 13, 10), None)
+        .expect("photo");
+    store
+        .revoke_task(d.into(), RevocableTask::Diet, at(d, 14, 0))
+        .expect("revoke diet");
+    store.log_diet_ok(at(d, 14, 30), None).expect("diet again");
+    store
+        .log_extra_done(JOB_EXTRA_ID.into(), at(d, 15, 0), None)
+        .expect("extra");
+    store.set_water_goal(3_000, at(d, 16, 0)).expect("goal");
+    store.close_day(d.into(), at(d, 22, 0)).expect("close");
+    store
+        .log_water(200, at(d, 23, 0), None)
+        .expect("late water");
+
+    let now = at("2026-07-05", 9, 0);
+    let pre_states: Vec<drome_core::DayState> = (1..=15)
+        .map(|day| store.day_state(fixture_date(day), now).expect("pre state"))
+        .collect();
+    let pre_summary = store.summary(now).expect("pre summary");
+    let pre_csv = store.export_csv(now).expect("pre csv");
+    let pre_presets = store.container_presets().expect("pre presets");
+    let pre_extras = store.extra_defs().expect("pre extras");
+    let pre_challenge = store
+        .active_challenge()
+        .expect("query")
+        .expect("pre challenge");
+    let snapshot = store.export_json(now).expect("export");
+
+    store.reset_all_data().expect("reset");
+    assert!(store.active_challenge().expect("query").is_none());
+
+    store.import_json(snapshot).expect("restore");
+
+    // Projections identical to pre-reset, day by day and in aggregate.
+    for (day, pre) in (1..=15).zip(pre_states) {
+        assert_eq!(
+            pre,
+            store.day_state(fixture_date(day), now).expect("post state"),
+            "day {day} diverged across reset + restore"
+        );
+    }
+    assert_eq!(pre_summary, store.summary(now).expect("post summary"));
+    assert_eq!(pre_csv, store.export_csv(now).expect("post csv"));
+    assert_eq!(
+        pre_presets,
+        store.container_presets().expect("post presets")
+    );
+    assert_eq!(pre_extras, store.extra_defs().expect("post extras"));
+    assert_eq!(
+        pre_challenge,
+        store
+            .active_challenge()
+            .expect("query")
+            .expect("post challenge")
+    );
+}
+
+#[test]
+fn failed_mid_transaction_reset_leaves_everything_intact() {
+    let (_dir, path, store) = demo_store();
+    let now = at("2026-07-04", 10, 0);
+    store
+        .log_water(500, at("2026-07-04", 9, 0), None)
+        .expect("water");
+    let pre_summary = store.summary(now).expect("pre summary");
+    let pre_day13 = store
+        .day_state(fixture_date(13), now)
+        .expect("pre day state");
+
+    // Simulate a failure MID-transaction, after the append-only triggers
+    // were already dropped: a saboteur BEFORE DELETE trigger (own name, so
+    // the reset's drops don't remove it) makes the wipe's `DELETE FROM
+    // events` RAISE partway through the batch.
+    let conn = rusqlite::Connection::open(&path).expect("raw open");
+    conn.execute_batch(
+        "CREATE TRIGGER test_reset_saboteur BEFORE DELETE ON events
+         BEGIN SELECT RAISE(ABORT, 'simulated mid-reset failure'); END;",
+    )
+    .expect("saboteur trigger");
+
+    let err = store.reset_all_data().expect_err("reset must fail");
+    assert!(
+        err.to_string().contains("simulated mid-reset failure"),
+        "unexpected error: {err}"
+    );
+
+    // Rolled back completely: challenge, events, and projections intact…
+    assert!(store.active_challenge().expect("query").is_some());
+    assert_eq!(pre_summary, store.summary(now).expect("post summary"));
+    assert_eq!(
+        pre_day13,
+        store
+            .day_state(fixture_date(13), now)
+            .expect("post day state")
+    );
+    // …and the append-only guard is back in force (the DROPs rolled back).
+    let update = conn.execute("UPDATE events SET kind = 'tampered'", []);
+    let err = update.expect_err("update must be rejected").to_string();
+    assert!(err.contains("append-only"), "unexpected error: {err}");
+
+    // With the saboteur removed, the very same store resets cleanly.
+    conn.execute_batch("DROP TRIGGER test_reset_saboteur")
+        .expect("drop saboteur");
+    store.reset_all_data().expect("reset");
+    assert!(store.active_challenge().expect("query").is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Cross-handle wipe race — the widget process holds its OWN connection to the
+// shared WAL DB, so the Mutex inside one DromeStore protects nothing across
+// handles. Every log path must be atomic with its active-challenge check
+// (one IMMEDIATE transaction): a write racing `reset_all_data` must fail
+// NoActiveChallenge, never orphan an event under the deleted challenge id
+// (which a later restore of the same challenge would silently adopt).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn stale_handle_log_after_reset_is_rejected_and_leaves_no_orphan() {
+    let (_dir, path, store) = demo_store();
+    // Second handle to the same file — the widget process.
+    let widget = DromeStore::open(path.clone()).expect("open widget handle");
+    // Warm the stale handle: it has seen the challenge (the widget's last
+    // read before the user hits "Delete everything").
+    assert!(widget.active_challenge().expect("query").is_some());
+
+    store.reset_all_data().expect("reset");
+
+    let err = widget
+        .log_water(500, at("2026-07-04", 10, 0), None)
+        .expect_err("a log through the stale handle must be rejected");
+    assert!(
+        matches!(err, DromeError::NoActiveChallenge),
+        "unexpected error: {err}"
+    );
+
+    let conn = rusqlite::Connection::open(&path).expect("raw open");
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+        .expect("count");
+    assert_eq!(count, 0, "a post-reset log must never orphan an event");
+}
+
+#[test]
+fn widget_logs_racing_the_reset_never_survive_the_wipe() {
+    // Interleaved version of the same promise: a second handle hammers
+    // log_water from another thread while the reset commits. Whatever the
+    // interleaving, the wiped store must end EMPTY — pre-fix, a log whose
+    // challenge read predated the reset could commit its INSERT after the
+    // wipe and leave a live event under the deleted challenge id.
+    let (_dir, path, store) = demo_store();
+    let widget = DromeStore::open(path.clone()).expect("open widget handle");
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_writer = stop.clone();
+    let writer = std::thread::spawn(move || {
+        let mut minute: i64 = 0;
+        while !stop_writer.load(Ordering::Relaxed) {
+            // Errors are expected once the wipe lands (NoActiveChallenge);
+            // the invariant checked below is what's IN the store.
+            let _ = widget.log_water(10, plus_min(at("2026-07-04", 10, 0), minute), None);
+            minute += 1;
+        }
+    });
+    std::thread::sleep(Duration::from_millis(25));
+    store.reset_all_data().expect("reset");
+    stop.store(true, Ordering::Relaxed);
+    writer.join().expect("writer thread");
+
+    assert!(store.active_challenge().expect("query").is_none());
+    let conn = rusqlite::Connection::open(&path).expect("raw open");
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+        .expect("count");
+    assert_eq!(
+        count, 0,
+        "an event outlived the wipe (orphaned by the race)"
+    );
 }

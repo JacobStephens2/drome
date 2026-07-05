@@ -3,7 +3,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
@@ -229,6 +229,12 @@ pub struct ChallengeSummary {
     /// Clamped to [1, length_days]; `today_out_of_range` carries the truth.
     pub today_day_index: u32,
     pub today_out_of_range: bool,
+    /// UNCLAMPED 1-based day number for today: below 1 before `start_date`,
+    /// above `length_days` once the challenge window is over (out-of-range
+    /// days still attribute and hold live events — docs/ARCHITECTURE.md).
+    /// This is the honest "days lived" figure destructive-flow copy must
+    /// use; `today_day_index` stays clamped for display ("Day 75 of 75").
+    pub today_raw_day_index: i64,
     pub today_date: String,
     pub total_workouts: u32,
     pub total_outdoor_workouts: u32,
@@ -365,7 +371,7 @@ impl DromeStore {
 
         let mut conn = self.lock()?;
         let id = Uuid::new_v4().to_string();
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute("UPDATE challenge SET active = 0 WHERE active = 1", [])?;
         tx.execute(
             "INSERT INTO challenge (id, created_at_epoch, created_tz_offset_secs, ruleset,
@@ -413,8 +419,13 @@ impl DromeStore {
             }
         }
         let mut conn = self.lock()?;
-        let challenge = require_active(&conn)?;
-        let tx = conn.transaction()?;
+        // IMMEDIATE transaction around the active-challenge read AND the
+        // writes: another process (the widget shares this DB) could commit a
+        // `reset_all_data` between a bare read and the inserts, orphaning
+        // rows under a deleted challenge id. Same pattern in every
+        // check-then-write path below.
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let challenge = require_active(&tx)?;
         tx.execute(
             "DELETE FROM container_presets WHERE challenge_id = ?1",
             params![challenge.id],
@@ -491,16 +502,20 @@ impl DromeStore {
             )));
         }
         now.wall_secs()?;
-        let conn = self.lock()?;
-        let challenge = require_active(&conn)?;
+        let mut conn = self.lock()?;
+        // Atomic check-then-insert (see update_presets): a goal event must
+        // never land under a challenge a concurrent reset just deleted.
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let challenge = require_active(&tx)?;
         insert_event(
-            &conn,
+            &tx,
             &challenge.id,
             now,
             None,
             events::KIND_GOAL_CHANGED,
             &json!({ "water_goal_ml": ml }),
         )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -737,25 +752,30 @@ impl DromeStore {
     pub fn close_day(&self, date: String, now: LocalInstant) -> Result<DayState, DromeError> {
         let parsed = time::parse_date(&date)?;
         now.wall_secs()?;
-        let conn = self.lock()?;
-        let challenge = require_active(&conn)?;
+        let mut conn = self.lock()?;
+        // Atomic check-then-insert (see update_presets).
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let challenge = require_active(&tx)?;
         insert_event(
-            &conn,
+            &tx,
             &challenge.id,
             now,
             None,
             events::KIND_DAY_CLOSED,
             &json!({ "date": date }),
         )?;
-        let loaded = load(&conn)?;
+        let loaded = load(&tx)?;
+        tx.commit()?;
         Ok(loaded.projection.day_state(parsed))
     }
 
     pub fn revoke_event(&self, event_uuid: String, now: LocalInstant) -> Result<(), DromeError> {
         now.wall_secs()?;
-        let conn = self.lock()?;
-        let challenge = require_active(&conn)?;
-        let kind: Option<String> = conn
+        let mut conn = self.lock()?;
+        // Atomic check-then-insert (see update_presets).
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let challenge = require_active(&tx)?;
+        let kind: Option<String> = tx
             .query_row(
                 "SELECT kind FROM events WHERE uuid = ?1 AND challenge_id = ?2",
                 params![event_uuid, challenge.id],
@@ -772,13 +792,14 @@ impl DromeStore {
             Some(_) => {}
         }
         insert_event(
-            &conn,
+            &tx,
             &challenge.id,
             now,
             None,
             events::KIND_REVOKED,
             &json!({ "event_uuid": event_uuid }),
         )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -816,7 +837,11 @@ impl DromeStore {
         let parsed = time::parse_date(&date)?;
         now.wall_secs()?;
         let mut conn = self.lock()?;
-        let loaded = load(&conn)?;
+        // One IMMEDIATE transaction spans the projection read, the target
+        // walk, and the revocation inserts (see update_presets): the events
+        // this call revokes must still exist when the inserts land.
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let loaded = load(&tx)?;
         let proj = &loaded.projection;
 
         // `loaded.events` is (logged_at_epoch, id) ascending; the reverse
@@ -867,8 +892,7 @@ impl DromeStore {
             )));
         }
 
-        // One transaction: the task flips off atomically, never half-peeled.
-        let tx = conn.transaction()?;
+        // Same transaction: the task flips off atomically, never half-peeled.
         let mut event_uuid = String::new();
         for target_uuid in &targets {
             event_uuid = insert_event(
@@ -880,9 +904,8 @@ impl DromeStore {
                 &json!({ "event_uuid": target_uuid }),
             )?;
         }
+        let post = load(&tx)?.projection;
         tx.commit()?;
-
-        let post = load(&conn)?.projection;
         Ok(LogResult {
             event_uuid,
             day_state: post.day_state(parsed),
@@ -903,8 +926,11 @@ impl DromeStore {
     ) -> Result<(), DromeError> {
         now.wall_secs()?;
         let mut conn = self.lock()?;
-        let challenge = require_active(&conn)?;
-        let known_extras: Vec<String> = load_extra_defs(&conn, &challenge.id)?
+        // Atomic check-then-insert (see update_presets): the challenge and
+        // extra defs validated here must still exist when the inserts land.
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let challenge = require_active(&tx)?;
+        let known_extras: Vec<String> = load_extra_defs(&tx, &challenge.id)?
             .into_iter()
             .map(|e| e.id)
             .collect();
@@ -916,7 +942,6 @@ impl DromeStore {
                 }
             }
         }
-        let tx = conn.transaction()?;
         for day in &days {
             let payload = json!({
                 "date": day.date,
@@ -1191,10 +1216,13 @@ impl DromeStore {
         Projection::build(&snap.challenge, &snap.event_rows())?;
 
         let mut conn = self.lock()?;
-        if load_active_challenge(&conn)?.is_some() {
+        // Atomic check-then-insert (see update_presets): the no-active /
+        // id-free preconditions must hold when the snapshot rows land.
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if load_active_challenge(&tx)?.is_some() {
             return Err(DromeError::ActiveChallengeExists);
         }
-        let id_taken: bool = conn.query_row(
+        let id_taken: bool = tx.query_row(
             "SELECT COUNT(*) > 0 FROM challenge WHERE id = ?1",
             params![snap.challenge.id],
             |row| row.get(0),
@@ -1207,7 +1235,6 @@ impl DromeStore {
         }
 
         let c = &snap.challenge;
-        let tx = conn.transaction()?;
         tx.execute(
             "INSERT INTO challenge (id, created_at_epoch, created_tz_offset_secs, ruleset,
                  start_date, length_days, day_cutoff_minutes, waking_start_minutes,
@@ -1262,6 +1289,42 @@ impl DromeStore {
         tx.commit()?;
         Ok(())
     }
+
+    /// Wipes EVERYTHING — challenge, events, container presets, extra defs —
+    /// returning the store to its never-used state (the Settings "Start
+    /// over" flow; the app layer owns photo files and its own flags).
+    ///
+    /// ONE transaction: drop the events append-only triggers, delete every
+    /// row, recreate the identical triggers (same DDL const the schema
+    /// uses), commit. A failure at ANY statement rolls the whole thing back,
+    /// so the store can never be left half-wiped or with the append-only
+    /// guard disarmed. VACUUM afterwards (it cannot run inside a
+    /// transaction) is best-effort: shrinking the file must not fail a
+    /// reset that already committed.
+    pub fn reset_all_data(&self) -> Result<(), DromeError> {
+        let mut conn = self.lock()?;
+        // IMMEDIATE like every other write path: take the write lock up
+        // front so no cross-process writer can slip between our BEGIN and
+        // the first DELETE.
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // IF EXISTS on the drops: if the guard was somehow already missing,
+        // the right outcome is still "wipe and re-arm", not an error.
+        // Deletion order respects the FK references to challenge(id).
+        // Clearing sqlite_sequence restarts event ids — a truly fresh log.
+        tx.execute_batch(
+            "DROP TRIGGER IF EXISTS events_append_only_update;
+             DROP TRIGGER IF EXISTS events_append_only_delete;
+             DELETE FROM events;
+             DELETE FROM container_presets;
+             DELETE FROM extra_defs;
+             DELETE FROM challenge;
+             DELETE FROM sqlite_sequence WHERE name = 'events';",
+        )?;
+        tx.execute_batch(db::APPEND_ONLY_TRIGGERS_SQL)?;
+        tx.commit()?;
+        let _ = conn.execute_batch("VACUUM");
+        Ok(())
+    }
 }
 
 impl DromeStore {
@@ -1283,8 +1346,17 @@ impl DromeStore {
         water_op: WaterOp,
     ) -> Result<LogResult, DromeError> {
         now.wall_secs()?;
-        let conn = self.lock()?;
-        let loaded = load(&conn)?;
+        let mut conn = self.lock()?;
+        // ONE IMMEDIATE transaction spans the precondition read (active
+        // challenge + pre projection) and the insert. The widget process
+        // shares this WAL DB on its own connection: without the write lock
+        // held across both steps, a widget tap whose read saw the challenge
+        // could queue its INSERT behind an in-flight `reset_all_data` and
+        // land AFTER the wipe — an orphaned event under a deleted challenge
+        // id that a later restore would silently adopt. With IMMEDIATE, the
+        // racing log instead waits, re-reads, and fails NoActiveChallenge.
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let loaded = load(&tx)?;
         let pre = &loaded.projection;
 
         let date = pre.attribute(now, effective_date.as_deref())?;
@@ -1315,7 +1387,7 @@ impl DromeStore {
         }
 
         let event_uuid = insert_event(
-            &conn,
+            &tx,
             &loaded.challenge.id,
             now,
             effective_date.as_deref(),
@@ -1323,13 +1395,14 @@ impl DromeStore {
             &payload,
         )?;
 
-        let post = load(&conn)?.projection;
+        let post = load(&tx)?.projection;
         let post_day = post.day_state(date);
         let day_became_complete = !pre_day.core_complete && post_day.core_complete;
         let week_extra_became_complete = match &week_extra_id {
             Some(id) => !pre_week_done && post.week_extra_done(id, week_idx)?,
             None => false,
         };
+        tx.commit()?;
 
         Ok(LogResult {
             event_uuid,
@@ -1393,6 +1466,7 @@ fn build_summary(loaded: &Loaded, now: LocalInstant) -> Result<ChallengeSummary,
         current_run: proj.current_run(today)?,
         today_day_index: clamp_index(raw_idx, loaded.challenge.length_days),
         today_out_of_range: raw_idx < 1 || raw_idx > i64::from(loaded.challenge.length_days),
+        today_raw_day_index: raw_idx,
         today_date: time::format_date(today),
         total_workouts,
         total_outdoor_workouts,

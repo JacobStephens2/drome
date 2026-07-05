@@ -377,6 +377,54 @@ final class AppModel {
         }
     }
 
+    // MARK: - Reset (destructive; reached ONLY through ResetSheet's two acts)
+
+    /// Wipes the app back to first launch: the core store (one transaction —
+    /// a failure is a complete no-op and surfaces via `lastErrorMessage`),
+    /// then every progress photo, the app's stored flags, and the widget.
+    /// The DB wipe goes FIRST: if it fails, nothing else is touched. After
+    /// `refresh()` the challenge is nil, so AppFlowView lands on onboarding —
+    /// the caller must dismiss any presented sheet BEFORE invoking this so
+    /// the full-screen swap doesn't strand one.
+    ///
+    /// Both failure messages are reset-specific, not the raw error: the user
+    /// just confirmed "Delete everything", so the one thing the copy must
+    /// answer is WHAT STATE THEIR DATA IS IN. A failed wipe = complete no-op
+    /// (the core guarantees one transaction); surviving photo files after a
+    /// committed wipe = the only partial state, and it is reported, never
+    /// swallowed (`PhotoStore.deleteAllFiles` verifies).
+    func resetApp() {
+        do {
+            try client.resetAllData()
+        } catch {
+            lastErrorMessage = "Couldn't reset. Nothing was deleted — your "
+                + "challenge, history, and photos are all still here. "
+                + "(\(exportErrorText(error)))"
+            return
+        }
+        let photosDeleted = PhotoStore.deleteAllFiles()
+        UserDefaults.standard.removeObject(forKey: "lastBackupAt")
+        UserDefaults.standard.removeObject(forKey: "hasDragPoured")
+        WidgetPaceCheck.clear()
+        // Drop any queued one-shot UI moments — nothing pre-reset may fire
+        // over onboarding.
+        pendingCompletionMoment = nil
+        pendingWeeklyMoment = nil
+        cancelPendingWater()
+        lastWaterEventUuid = nil
+        refresh()
+        if !photosDeleted {
+            // Set AFTER refresh() (whose no-challenge branch clears errors).
+            // RootView is gone once the challenge is nil, so AppFlowView
+            // carries the alert that surfaces this over onboarding.
+            lastErrorMessage = "Your challenge and history were erased, but "
+                + "some progress photos couldn't be deleted. They may still "
+                + "be in Drome's app storage on this phone; deleting the app "
+                + "removes them."
+        }
+        WidgetCenter.shared.reloadAllTimelines()
+    }
+
     // MARK: - Plumbing
 
     private func run(_ intent: () throws -> LogResult) {

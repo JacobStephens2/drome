@@ -293,7 +293,14 @@ struct ChallengeSummary: Sendable, Hashable {
     var ruleset: Ruleset
     var startDate: DayDate
     var lengthDays: Int
+    /// Clamped to [1, lengthDays] — the display index ("Day 75 of 75").
     var todayDayIndex: Int
+    /// UNCLAMPED 1-based day number for today: below 1 before the start
+    /// date, above lengthDays once the challenge window is over.
+    /// Out-of-range days still attribute and hold live events, so
+    /// destructive-flow copy (ResetSheet's "N days will be deleted") must
+    /// use this honest figure; `todayDayIndex` is for display only.
+    var todayRawDayIndex: Int
     var daysCompleteCount: Int
     /// Consecutive complete days ending at today-if-complete, else yesterday.
     var currentRun: Int

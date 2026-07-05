@@ -354,7 +354,10 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
             ruleset: challenge.ruleset,
             startDate: challenge.startDate,
             lengthDays: challenge.lengthDays,
-            todayDayIndex: todayIdx,
+            // Mirror the live core: the display index clamps to
+            // [1, lengthDays]; the raw index carries the honest value.
+            todayDayIndex: min(max(todayIdx, 1), challenge.lengthDays),
+            todayRawDayIndex: todayIdx,
             daysCompleteCount: completeCount,
             currentRun: run
         )
@@ -764,6 +767,22 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
         extras = restored.extras
         closedDates = Set(restored.closedDates)
         events.removeAll()
+        goalChanges.removeAll()
+    }
+
+    // MARK: - DromeCoreClient: reset
+
+    /// Mirrors the core's wipe: everything cleared, back to a NO-CHALLENGE
+    /// state — deliberately NOT re-seeding the demo fixture (a reset lands
+    /// on onboarding, like the real store). Previews that need the fixture
+    /// construct a fresh MockDromeCore instead.
+    func resetAllData() throws {
+        lock.lock(); defer { lock.unlock() }
+        challenge.active = false
+        presets.removeAll()
+        extras.removeAll()
+        events.removeAll()
+        closedDates.removeAll()
         goalChanges.removeAll()
     }
 

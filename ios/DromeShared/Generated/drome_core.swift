@@ -678,6 +678,21 @@ public protocol DromeStoreProtocol: AnyObject, Sendable {
     
     func logWorkout(durationMin: UInt32, outdoor: Bool, note: String?, startedAt: LocalInstant?, now: LocalInstant, effectiveDate: String?) throws  -> UniLogResult
     
+    /**
+     * Wipes EVERYTHING — challenge, events, container presets, extra defs —
+     * returning the store to its never-used state (the Settings "Start
+     * over" flow; the app layer owns photo files and its own flags).
+     *
+     * ONE transaction: drop the events append-only triggers, delete every
+     * row, recreate the identical triggers (same DDL const the schema
+     * uses), commit. A failure at ANY statement rolls the whole thing back,
+     * so the store can never be left half-wiped or with the append-only
+     * guard disarmed. VACUUM afterwards (it cannot run inside a
+     * transaction) is best-effort: shrinking the file must not fail a
+     * reset that already committed.
+     */
+    func resetAllData() throws 
+    
     func revokeEvent(eventUuid: String, now: LocalInstant) throws 
     
     /**
@@ -1053,6 +1068,27 @@ open func logWorkout(durationMin: UInt32, outdoor: Bool, note: String?, startedA
         FfiConverterOptionString.lower(effectiveDate),uniffiCallStatus
     )
 })
+}
+    
+    /**
+     * Wipes EVERYTHING — challenge, events, container presets, extra defs —
+     * returning the store to its never-used state (the Settings "Start
+     * over" flow; the app layer owns photo files and its own flags).
+     *
+     * ONE transaction: drop the events append-only triggers, delete every
+     * row, recreate the identical triggers (same DDL const the schema
+     * uses), commit. A failure at ANY statement rolls the whole thing back,
+     * so the store can never be left half-wiped or with the append-only
+     * guard disarmed. VACUUM afterwards (it cannot run inside a
+     * transaction) is best-effort: shrinking the file must not fail a
+     * reset that already committed.
+     */
+open func resetAllData()throws   {try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
+        uniffiCallStatus in
+    uniffi_drome_core_fn_method_dromestore_reset_all_data(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
 }
     
 open func revokeEvent(eventUuid: String, now: LocalInstant)throws   {try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
@@ -1588,6 +1624,14 @@ public struct UniChallengeSummary: Equatable, Hashable {
      */
     public var todayDayIndex: UInt32
     public var todayOutOfRange: Bool
+    /**
+     * UNCLAMPED 1-based day number for today: below 1 before `start_date`,
+     * above `length_days` once the challenge window is over (out-of-range
+     * days still attribute and hold live events — docs/ARCHITECTURE.md).
+     * This is the honest "days lived" figure destructive-flow copy must
+     * use; `today_day_index` stays clamped for display ("Day 75 of 75").
+     */
+    public var todayRawDayIndex: Int64
     public var todayDate: String
     public var totalWorkouts: UInt32
     public var totalOutdoorWorkouts: UInt32
@@ -1601,11 +1645,19 @@ public struct UniChallengeSummary: Equatable, Hashable {
     public init(daysCompleteCount: UInt32, currentRun: UInt32, 
         /**
          * Clamped to [1, length_days]; `today_out_of_range` carries the truth.
-         */todayDayIndex: UInt32, todayOutOfRange: Bool, todayDate: String, totalWorkouts: UInt32, totalOutdoorWorkouts: UInt32, totalPages: UInt64, totalWaterMl: Int64, startDate: String, lengthDays: UInt32) {
+         */todayDayIndex: UInt32, todayOutOfRange: Bool, 
+        /**
+         * UNCLAMPED 1-based day number for today: below 1 before `start_date`,
+         * above `length_days` once the challenge window is over (out-of-range
+         * days still attribute and hold live events — docs/ARCHITECTURE.md).
+         * This is the honest "days lived" figure destructive-flow copy must
+         * use; `today_day_index` stays clamped for display ("Day 75 of 75").
+         */todayRawDayIndex: Int64, todayDate: String, totalWorkouts: UInt32, totalOutdoorWorkouts: UInt32, totalPages: UInt64, totalWaterMl: Int64, startDate: String, lengthDays: UInt32) {
         self.daysCompleteCount = daysCompleteCount
         self.currentRun = currentRun
         self.todayDayIndex = todayDayIndex
         self.todayOutOfRange = todayOutOfRange
+        self.todayRawDayIndex = todayRawDayIndex
         self.todayDate = todayDate
         self.totalWorkouts = totalWorkouts
         self.totalOutdoorWorkouts = totalOutdoorWorkouts
@@ -1635,6 +1687,7 @@ public struct FfiConverterTypeUniChallengeSummary: FfiConverterRustBuffer {
                 currentRun: FfiConverterUInt32.read(from: &buf), 
                 todayDayIndex: FfiConverterUInt32.read(from: &buf), 
                 todayOutOfRange: FfiConverterBool.read(from: &buf), 
+                todayRawDayIndex: FfiConverterInt64.read(from: &buf), 
                 todayDate: FfiConverterString.read(from: &buf), 
                 totalWorkouts: FfiConverterUInt32.read(from: &buf), 
                 totalOutdoorWorkouts: FfiConverterUInt32.read(from: &buf), 
@@ -1650,6 +1703,7 @@ public struct FfiConverterTypeUniChallengeSummary: FfiConverterRustBuffer {
         FfiConverterUInt32.write(value.currentRun, into: &buf)
         FfiConverterUInt32.write(value.todayDayIndex, into: &buf)
         FfiConverterBool.write(value.todayOutOfRange, into: &buf)
+        FfiConverterInt64.write(value.todayRawDayIndex, into: &buf)
         FfiConverterString.write(value.todayDate, into: &buf)
         FfiConverterUInt32.write(value.totalWorkouts, into: &buf)
         FfiConverterUInt32.write(value.totalOutdoorWorkouts, into: &buf)
@@ -3621,6 +3675,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_drome_core_checksum_method_dromestore_log_workout() != 4364) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_drome_core_checksum_method_dromestore_reset_all_data() != 64623) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_drome_core_checksum_method_dromestore_revoke_event() != 16754) {

@@ -48,4 +48,28 @@ enum PhotoStore {
         guard let url = url(forRef: ref) else { return }
         try? FileManager.default.removeItem(at: url)
     }
+
+    /// Removes the entire photos directory — every progress photo on this
+    /// phone. Used ONLY by the app reset (`AppModel.resetApp()`). Unlike
+    /// `deleteFile` this is NOT silent best-effort: the reset flow promised
+    /// "every progress photo on this phone", so a survivor must be reported,
+    /// never swallowed. Returns true only when the directory is verifiably
+    /// gone (retrying the delete once); `directory()` recreates the folder
+    /// on next use.
+    @discardableResult
+    static func deleteAllFiles() -> Bool {
+        guard let directory = try? directory() else {
+            // Application Support itself is unreachable, so nothing can be
+            // verified deleted — report failure (honest beats optimistic in
+            // the one destructive flow).
+            return false
+        }
+        for _ in 0..<2 {
+            try? FileManager.default.removeItem(at: directory)
+            if !FileManager.default.fileExists(atPath: directory.path) {
+                return true
+            }
+        }
+        return false
+    }
 }

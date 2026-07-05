@@ -46,6 +46,14 @@ struct SettingsView: View {
 
     @State private var errorMessage: String?
 
+    // Reset flow. The sheet only ARMS the reset (through this binding); the
+    // wipe runs in onDismiss, after the sheet is fully down, so AppFlowView's
+    // full-screen swap to onboarding never strands a presented sheet. The
+    // sheet itself disarms on every appearance and on Cancel, so the latch
+    // can never make a cancel affordance execute the wipe.
+    @State private var resetSheetPresented = false
+    @State private var resetArmed = false
+
     init(client: any DromeCoreClient) {
         self.client = client
     }
@@ -61,6 +69,7 @@ struct SettingsView: View {
             dietSection
             dataSection
             aboutSection
+            startOverSection
         }
         .tint(Color.dromeClay)
         .scrollContentBackground(.hidden)
@@ -70,6 +79,9 @@ struct SettingsView: View {
         .onChange(of: presets) { pushPresets() }
         .onChange(of: wakingStartMinutes) { saveWakingWindow() }
         .onChange(of: wakingEndMinutes) { saveWakingWindow() }
+        .sheet(isPresented: $resetSheetPresented, onDismiss: performArmedReset) {
+            ResetSheet(client: client, armed: $resetArmed)
+        }
         .alert("Couldn't save", isPresented: errorPresented) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -297,6 +309,31 @@ struct SettingsView: View {
         .listRowBackground(rowBackground)
     }
 
+    /// Deliberately quiet: a plain secondary section at the very bottom, not
+    /// a screaming red block. The dromeMiss tint on the row is the only
+    /// signal — every real warning lives in ResetSheet's two-act flow.
+    private var startOverSection: some View {
+        Section {
+            Button {
+                resetSheetPresented = true
+            } label: {
+                Text("Reset Drome…")
+                    .foregroundStyle(Color.dromeMiss)
+            }
+            .frame(minHeight: DromeSpacing.tapTarget)
+            .accessibilityLabel("Reset Drome")
+            .accessibilityHint(
+                "Opens a confirmation to erase your challenge, logged history, "
+                    + "and progress photos from this phone."
+            )
+        } header: {
+            sectionHeader("Start over")
+        } footer: {
+            Text("Wipes this phone's challenge, history, and photos, and returns Drome to its first screen.")
+        }
+        .listRowBackground(rowBackground)
+    }
+
     // MARK: Styling helpers
 
     private var rowBackground: Color { Color.dromeInk.opacity(0.06) }
@@ -480,6 +517,15 @@ struct SettingsView: View {
         } catch {
             errorMessage = settingsErrorText(error)
         }
+    }
+
+    /// Runs the reset the dismissed ResetSheet armed (both confirmation acts
+    /// passed). By now the sheet is fully down: `resetApp()` empties the
+    /// model's challenge, and AppFlowView swaps to onboarding cleanly.
+    private func performArmedReset() {
+        guard resetArmed else { return }
+        resetArmed = false
+        appModel?.resetApp()
     }
 }
 

@@ -12,9 +12,12 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-// MARK: - Export document
+// MARK: - Export document (shared with ResetSheet's export-first ramp)
 
-private struct TextExportDocument: FileDocument {
+/// Plain-text FileDocument for the fileExporter flows. Internal on purpose:
+/// ResetSheet reuses this exact document + `dromeExportFilename` so its
+/// "Export a backup first" ramp is the SAME export path as this view.
+struct TextExportDocument: FileDocument {
     static let readableContentTypes: [UTType] = [.json, .commaSeparatedText, .plainText]
 
     var text: String
@@ -33,6 +36,15 @@ private struct TextExportDocument: FileDocument {
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
         FileWrapper(regularFileWithContents: Data(text.utf8))
     }
+}
+
+/// Day-stamped default filename ("drome-backup-2026-07-05"); fileExporter
+/// appends the content type's extension.
+func dromeExportFilename(prefix: String) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.dateFormat = "yyyy-MM-dd"
+    return "\(prefix)-\(formatter.string(from: Date()))"
 }
 
 // MARK: - ExportBackupView
@@ -280,13 +292,9 @@ struct ExportBackupView: View {
     /// fileExporter appends the extension for the content type, yielding
     /// drome-export-YYYY-MM-DD.json / .csv and drome-backup-YYYY-MM-DD.json.
     private var defaultFilename: String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd"
-        let stamp = formatter.string(from: Date())
         switch exportKind {
-        case .json, .csv: return "drome-export-\(stamp)"
-        case .backup: return "drome-backup-\(stamp)"
+        case .json, .csv: return dromeExportFilename(prefix: "drome-export")
+        case .backup: return dromeExportFilename(prefix: "drome-backup")
         }
     }
 
@@ -356,9 +364,9 @@ struct ExportBackupView: View {
     }
 }
 
-// MARK: - Errors
+// MARK: - Errors (internal: ResetSheet's export ramp reuses this mapping)
 
-private func exportErrorText(_ error: Error) -> String {
+func exportErrorText(_ error: Error) -> String {
     guard let dromeError = error as? DromeError else { return String(describing: error) }
     switch dromeError {
     case .noActiveChallenge: return "There's no active challenge on this phone."

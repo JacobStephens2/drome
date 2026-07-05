@@ -59,7 +59,13 @@ CREATE TABLE IF NOT EXISTS events (
 
 CREATE INDEX IF NOT EXISTS idx_events_challenge
     ON events (challenge_id, logged_at_epoch, id);
+";
 
+/// The append-only guard on `events`, enforced in the database itself.
+/// Kept as its own const because `DromeStore::reset_all_data` must drop and
+/// recreate these EXACT triggers inside its wipe transaction — this is the
+/// single source of truth for their DDL (both `open` and the reset run it).
+pub(crate) const APPEND_ONLY_TRIGGERS_SQL: &str = "
 CREATE TRIGGER IF NOT EXISTS events_append_only_update
 BEFORE UPDATE ON events
 BEGIN
@@ -81,5 +87,6 @@ pub fn open(db_path: &str) -> Result<Connection> {
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.execute_batch(SCHEMA_SQL)?;
+    conn.execute_batch(APPEND_ONLY_TRIGGERS_SQL)?;
     Ok(conn)
 }

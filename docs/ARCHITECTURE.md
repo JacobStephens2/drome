@@ -126,7 +126,10 @@ my sister's sheet), **never** gate `core_complete`, and get their own smaller we
 
 Missing a day never resets anything in flexible mode. Summary reports
 `days_complete_count`, `current_run` (consecutive complete days ending at today-if-
-complete else yesterday), `today_day_index`.
+complete else yesterday), `today_day_index` (clamped to [1, length_days] for display;
+`today_out_of_range` carries the truth), and `today_raw_day_index` (UNCLAMPED —
+out-of-range days still attribute events, so destructive-flow copy like the reset
+sheet's "N days will be deleted" must use this figure, never the clamped one).
 
 ## Water pacing & safety (all modes, not configurable off)
 
@@ -157,6 +160,11 @@ set_diet_description(desc) / set_waking_window(start_minutes, end_minutes)  // d
 // re-attribute past events (could flip completed days). Needs goal_changed-style
 // as-of-day semantics; deferred past Phase 1. UI shows the value read-only.
 import_json(snapshot: String) -> ()   // restore an export_json snapshot; only into a store with no active challenge
+reset_all_data() -> ()   // wipe EVERYTHING (events/challenge/presets/extra_defs) back to never-used, ONE transaction: append-only triggers dropped and recreated identically inside it (failure = complete no-op); VACUUM after commit is best-effort. Settings "Start over" only; the app layer owns photos/flags/widget cleanup
+// Every write path runs its precondition read (active challenge / target rows) and its
+// INSERTs in one BEGIN IMMEDIATE transaction: the widget process shares this WAL DB on
+// its own connection, so a write racing reset_all_data fails NoActiveChallenge instead
+// of orphaning an event under the deleted challenge id.
 log_water(ml, now, effective_date: Option<String>) -> LogResult
 log_water_adjustment(ml, now, effective_date) -> LogResult  // negative-only correction; rejected when |ml| exceeds the day's total
 log_no_junk_ok(now, effective_date) -> LogResult

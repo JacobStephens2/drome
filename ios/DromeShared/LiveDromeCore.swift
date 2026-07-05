@@ -280,6 +280,7 @@ final class LiveDromeCore: DromeCoreClient, @unchecked Sendable {
                 startDate: s.startDate,
                 lengthDays: Int(s.lengthDays),
                 todayDayIndex: Int(s.todayDayIndex),
+                todayRawDayIndex: Int(s.todayRawDayIndex),
                 daysCompleteCount: Int(s.daysCompleteCount),
                 currentRun: Int(s.currentRun)
             )
@@ -333,6 +334,14 @@ final class LiveDromeCore: DromeCoreClient, @unchecked Sendable {
     /// challenge (core-enforced); throws `DromeError.challengeAlreadyActive`.
     func importJson(_ snapshot: String) throws {
         try call { try store.importJson(snapshot: snapshot) }
+    }
+
+    // MARK: - DromeCoreClient: reset
+
+    /// Wipes the store back to never-used (one core transaction; the
+    /// append-only guard is dropped and recreated inside it).
+    func resetAllData() throws {
+        try call { try store.resetAllData() }
     }
 }
 

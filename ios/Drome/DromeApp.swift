@@ -65,6 +65,22 @@ private struct AppFlowView: View {
                 appModel.refresh()
                 WidgetCenter.shared.reloadAllTimelines()
             }
+            // RootView (and its shared error alert) is gone once the
+            // challenge is nil, but one error can still exist here:
+            // `resetApp()` wiped the store and then couldn't delete every
+            // progress photo. That message must not vanish unseen — surface
+            // it over onboarding.
+            .alert(
+                "Something went wrong",
+                isPresented: Binding(
+                    get: { appModel.lastErrorMessage != nil },
+                    set: { if !$0 { appModel.clearLastError() } }
+                )
+            ) {
+                Button("OK", role: .cancel) { appModel.clearLastError() }
+            } message: {
+                Text(appModel.lastErrorMessage ?? "")
+            }
         }
     }
 }

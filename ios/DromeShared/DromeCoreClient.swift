@@ -132,6 +132,15 @@ protocol DromeCoreClient: AnyObject, Sendable {
     /// Restores an `exportJson` snapshot. Only valid while no challenge is
     /// active in the store; throws `DromeError.challengeAlreadyActive`.
     func importJson(_ snapshot: String) throws
+
+    // MARK: Reset (destructive — the Settings "Start over" flow ONLY)
+
+    /// Wipes the entire store — challenge, events, presets, extra defs —
+    /// back to its never-used state, in one core transaction (a failure is
+    /// a complete no-op; the events append-only guard is recreated intact).
+    /// The app layer owns the rest of a reset: photo files, @AppStorage
+    /// flags, widget state. Call only from `AppModel.resetApp()`.
+    func resetAllData() throws
 }
 
 // MARK: - Convenience overloads (today-attributed logging)
