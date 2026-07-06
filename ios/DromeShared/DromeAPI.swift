@@ -135,6 +135,120 @@ struct Entitlement: Sendable, Equatable {
     var betaAllEntitled: Bool
 }
 
+// MARK: - Group DTOs (docs/PHASE2.md "Groups"; decode the server JSON EXACTLY)
+//
+// PRIVACY: these types carry ONLY what the server chose to expose — each
+// member's display name, day index, current run, and today's per-task
+// done/not booleans, plus a single done/not for this week's extra. There is
+// deliberately no field for a photo, a note, the diet text, a water amount, or
+// the weekly extra's name/id: the data simply isn't on the wire, so the UI
+// cannot render more than the contract allows.
+
+/// A group reference returned by create/join (`{id, name, invite_code}`).
+struct GroupRef: Decodable, Sendable, Equatable {
+    var id: String
+    var name: String
+    var inviteCode: String
+    enum CodingKeys: String, CodingKey {
+        case id, name
+        case inviteCode = "invite_code"
+    }
+}
+
+/// One row of `GET /v1/groups` — a group I belong to, with my per-group
+/// display name (nullable server-side) and the current member count.
+struct GroupSummary: Decodable, Sendable, Equatable, Identifiable {
+    var id: String
+    var name: String
+    var inviteCode: String
+    var myDisplayName: String?
+    var memberCount: Int
+    enum CodingKeys: String, CodingKey {
+        case id, name
+        case inviteCode = "invite_code"
+        case myDisplayName = "my_display_name"
+        case memberCount = "member_count"
+    }
+}
+
+/// The seven core-task done/not booleans for a member's "today" — field-for-
+/// field the server's `tasks` object. No amounts, ever.
+struct GroupMemberTasks: Decodable, Sendable, Equatable {
+    var water: Bool
+    var outdoorWorkout: Bool
+    var secondWorkout: Bool
+    var reading: Bool
+    var diet: Bool
+    var noJunk: Bool
+    var photo: Bool
+    enum CodingKeys: String, CodingKey {
+        case water
+        case outdoorWorkout = "outdoor_workout"
+        case secondWorkout = "second_workout"
+        case reading, diet
+        case noJunk = "no_junk"
+        case photo
+    }
+}
+
+/// A member's privacy-safe day-state, from `GET /v1/groups/:id` `members[]`.
+/// The day fields (`dayIndex`, `currentRun`, `tasks`, `weeklyExtraDone`) are
+/// present ONLY when `isActive`; an inactive member (no active challenge
+/// synced) omits them, so they decode to nil.
+///
+/// PRIVACY: the member identifier on the wire is `handle` — an OPAQUE, per-group
+/// value. The global account id is deliberately NOT exposed, so the same person
+/// carries a different handle in each group and cannot be correlated across
+/// them. `isSelf` (server-computed) marks "you" without needing that global id;
+/// nudges target `handle`.
+struct GroupMember: Decodable, Sendable, Equatable, Identifiable {
+    var handle: String
+    var displayName: String
+    var isSelf: Bool
+    var isActive: Bool
+    var dayIndex: Int?
+    var currentRun: Int?
+    var tasks: GroupMemberTasks?
+    var weeklyExtraDone: Bool?
+
+    var id: String { handle }
+
+    enum CodingKeys: String, CodingKey {
+        case handle = "member_handle"
+        case displayName = "display_name"
+        case isSelf = "is_self"
+        case isActive = "is_active"
+        case dayIndex = "day_index"
+        case currentRun = "current_run"
+        case tasks
+        case weeklyExtraDone = "weekly_extra_done"
+    }
+}
+
+/// Full group detail from `GET /v1/groups/:id`.
+struct GroupDetail: Decodable, Sendable, Equatable {
+    var id: String
+    var name: String
+    var inviteCode: String
+    var members: [GroupMember]
+    enum CodingKeys: String, CodingKey {
+        case id, name
+        case inviteCode = "invite_code"
+        case members
+    }
+}
+
+/// One pending in-app nudge from `GET /v1/nudges` — content-free by design:
+/// the sender's per-group display name and the group's name, nothing else.
+struct PendingNudge: Decodable, Sendable, Equatable {
+    var fromDisplayName: String
+    var groupName: String
+    enum CodingKeys: String, CodingKey {
+        case fromDisplayName = "from_display_name"
+        case groupName = "group_name"
+    }
+}
+
 // MARK: - Client
 
 /// Stateless w.r.t. credentials: authed calls take the access token explicitly,
@@ -227,7 +341,75 @@ final class DromeAPI {
         try ensureOK(data, http)
     }
 
+    // MARK: Groups (docs/PHASE2.md "Groups"; all authed + entitlement-gated)
+
+    /// `POST /v1/groups {name, display_name}` — create a group; the creator
+    /// auto-joins. Returns the new group's id/name/invite code.
+    func createGroup(name: String, displayName: String, accessToken: String) async throws -> GroupRef {
+        let body = try encoder.encode(CreateGroupBody(name: name, displayName: displayName))
+        let (data, http) = try await send(request("v1/groups", method: "POST", accessToken: accessToken, body: body))
+        try ensureOK(data, http)
+        return try decode(GroupRef.self, data)
+    }
+
+    /// `POST /v1/groups/join {invite_code, display_name}` — join by code
+    /// (case-insensitive, idempotent; re-join updates the display name). An
+    /// unknown code is a plain 404 — no "code exists but…" signal.
+    func joinGroup(code: String, displayName: String, accessToken: String) async throws -> GroupRef {
+        let body = try encoder.encode(JoinGroupBody(inviteCode: code, displayName: displayName))
+        let (data, http) = try await send(request("v1/groups/join", method: "POST", accessToken: accessToken, body: body))
+        try ensureOK(data, http)
+        return try decode(GroupRef.self, data)
+    }
+
+    /// `GET /v1/groups` — the groups I belong to.
+    func myGroups(accessToken: String) async throws -> [GroupSummary] {
+        let (data, http) = try await send(request("v1/groups", method: "GET", accessToken: accessToken, body: nil))
+        try ensureOK(data, http)
+        return try decode(GroupsListBody.self, data).groups
+    }
+
+    /// `GET /v1/groups/:id` — members' minimal day-state DTOs. The requester
+    /// must be a member, else the server returns 404 (group existence never
+    /// leaks), which surfaces here as `.client(status: 404, …)`.
+    func group(id: String, accessToken: String) async throws -> GroupDetail {
+        let (data, http) = try await send(request("v1/groups/\(pathSegment(id))", method: "GET", accessToken: accessToken, body: nil))
+        try ensureOK(data, http)
+        return try decode(GroupDetail.self, data)
+    }
+
+    /// `POST /v1/groups/:id/leave` — 204. Server-side this drops my nudges in
+    /// the group and deletes the group if I was the last member out.
+    func leaveGroup(id: String, accessToken: String) async throws {
+        let (data, http) = try await send(request("v1/groups/\(pathSegment(id))/leave", method: "POST", accessToken: accessToken, body: nil))
+        try ensureOK(data, http)
+    }
+
+    /// `POST /v1/groups/:id/nudge {to_member_handle}` — 204. The recipient is
+    /// named by their opaque per-group handle (from the member list), never the
+    /// global account id. Both must be members (else 404); a self-nudge is 400;
+    /// a repeat within the cooldown is 429.
+    func nudge(groupId: String, toMemberHandle: String, accessToken: String) async throws {
+        let body = try encoder.encode(NudgeBody(toMemberHandle: toMemberHandle))
+        let (data, http) = try await send(request("v1/groups/\(pathSegment(groupId))/nudge", method: "POST", accessToken: accessToken, body: body))
+        try ensureOK(data, http)
+    }
+
+    /// `GET /v1/nudges` — deliver pending in-app nudges once; the server marks
+    /// them seen in the same transaction. Safe to poll (empty after the first).
+    func pendingNudges(accessToken: String) async throws -> [PendingNudge] {
+        let (data, http) = try await send(request("v1/nudges", method: "GET", accessToken: accessToken, body: nil))
+        try ensureOK(data, http)
+        return try decode(NudgesBody.self, data).nudges
+    }
+
     // MARK: Plumbing
+
+    /// Percent-encodes a single path segment (group ids are hex today, but this
+    /// keeps the URL well-formed regardless of what the server ever returns).
+    private func pathSegment(_ segment: String) -> String {
+        segment.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? segment
+    }
 
     private func endpoint(_ path: String) -> URL {
         var base = baseURL.absoluteString
@@ -354,6 +536,41 @@ private struct EntitlementBody: Decodable {
 private struct APIErrorBody: Decodable {
     let error: String
     let message: String
+}
+
+// MARK: - Group request/response bodies (snake_case, explicit keys)
+
+private struct CreateGroupBody: Encodable {
+    let name: String
+    let displayName: String
+    enum CodingKeys: String, CodingKey {
+        case name
+        case displayName = "display_name"
+    }
+}
+
+private struct JoinGroupBody: Encodable {
+    let inviteCode: String
+    let displayName: String
+    enum CodingKeys: String, CodingKey {
+        case inviteCode = "invite_code"
+        case displayName = "display_name"
+    }
+}
+
+private struct NudgeBody: Encodable {
+    let toMemberHandle: String
+    enum CodingKeys: String, CodingKey {
+        case toMemberHandle = "to_member_handle"
+    }
+}
+
+private struct GroupsListBody: Decodable {
+    let groups: [GroupSummary]
+}
+
+private struct NudgesBody: Decodable {
+    let nudges: [PendingNudge]
 }
 
 /// One event on the wire. Bridges the camelCase Swift `WireEvent` to the

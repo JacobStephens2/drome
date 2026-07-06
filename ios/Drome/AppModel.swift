@@ -33,6 +33,15 @@ struct WeeklyMoment: Equatable {
     var extraName: String
 }
 
+/// A received in-app nudge, wrapped with a local id so the dismissible banner
+/// can identify it. The server already marked it seen when it delivered it
+/// (deliver-once), so dismissing only clears it from this in-memory list.
+struct ReceivedNudge: Identifiable, Equatable {
+    let id = UUID()
+    var fromDisplayName: String
+    var groupName: String
+}
+
 @MainActor
 @Observable
 final class AppModel {
@@ -129,6 +138,26 @@ final class AppModel {
     /// The account's beta entitlement snapshot, fetched after sign-in.
     private(set) var entitlement: Entitlement?
 
+    /// The signed-in account's opaque server id (not PII). Used only to mark
+    /// "you" in a group and to never offer a self-nudge. Nil when signed out.
+    private(set) var accountId: Int64?
+
+    // MARK: - Groups (Phase 2 — opt-in; NO group calls when signed out)
+
+    /// The groups I belong to (`GET /v1/groups`). Empty when signed out.
+    private(set) var myGroups: [GroupSummary] = []
+    /// Per-group member-state cache (`GET /v1/groups/:id`), keyed by group id.
+    /// GroupDetailView reads its group here after `loadGroupDetail`.
+    private(set) var groupDetails: [String: GroupDetail] = [:]
+    /// Undismissed received nudges, surfaced as a gentle banner in RootView.
+    private(set) var receivedNudges: [ReceivedNudge] = []
+    /// Last user-initiated group-action error (create/join/leave/nudge),
+    /// surfaced by the group screens' own alert. Background refreshes stay
+    /// silent — they never pop an alert over a screen the user is reading.
+    var groupError: String?
+
+    func clearGroupError() { groupError = nil }
+
     /// The sync driver, created on sign-in and torn down on sign-out. Views
     /// read status through the passthroughs below.
     private(set) var syncEngine: SyncEngine?
@@ -180,6 +209,7 @@ final class AppModel {
     func restoreAccountSession() {
         guard let session = keychain.load() else { return }
         accountLabel = session.label ?? "Signed in"
+        accountId = session.accountId
         signedIn = true
         // Back-fill the owner for a session signed in before this binding
         // existed, so its local data stays bound to this account.
@@ -189,6 +219,7 @@ final class AppModel {
         makeSyncEngine(accountId: session.accountId)
         syncEngine?.syncNow()
         Task { await fetchEntitlement() }
+        refreshGroupsAndNudges()
     }
 
     /// Opportunistic sync poke (debounced; no-op when signed out). Wired to
@@ -288,10 +319,12 @@ final class AppModel {
             ))
             setLocalDataOwner(auth.accountId)
             accountLabel = resolvedLabel
+            accountId = auth.accountId
             signedIn = true
             makeSyncEngine(accountId: auth.accountId)
             syncEngine?.syncNow()
             await fetchEntitlement()
+            refreshGroupsAndNudges()
         } catch {
             accountAlert = AccountAlert(title: "Couldn't sign in", message: accountErrorText(error))
         }
@@ -309,7 +342,14 @@ final class AppModel {
         syncEngine = nil
         signedIn = false
         accountLabel = nil
+        accountId = nil
         entitlement = nil
+        // Groups need an account: drop all group state so a signed-out screen
+        // (or the next account) never renders a stale group or nudge.
+        myGroups = []
+        groupDetails = [:]
+        receivedNudges = []
+        groupError = nil
         // The local-data owner is intentionally retained (sign-out keeps this
         // phone's data, which stays bound to its account).
         UserDefaults.standard.removeObject(forKey: Self.accountLabelKey) // purge any legacy PII
@@ -388,9 +428,12 @@ final class AppModel {
     }
 
     /// A pull changed local state — re-project the UI and catch the widget up.
+    /// Also an opportunistic moment to refresh groups and pull any pending
+    /// nudges (no-op when signed out).
     func refreshAfterSync() {
         refresh()
         WidgetCenter.shared.reloadAllTimelines()
+        refreshGroupsAndNudges()
     }
 
     /// A sync force-adopted the account's active challenge, swapping the board.
@@ -443,6 +486,170 @@ final class AppModel {
             return message.isEmpty ? "Something went wrong. Please try again." : message
         case .decoding, .unexpected:
             return "Something went wrong. Please try again."
+        }
+    }
+
+    // MARK: - Group intents (Phase 2 — all guard on `signedIn`)
+
+    /// Creates a group and refreshes the list. Returns the new group's ref
+    /// (id/name/invite code) on success, or nil after setting `groupError`.
+    func createGroup(name: String, displayName: String) async -> GroupRef? {
+        guard signedIn else { return nil }
+        do {
+            let ref = try await withAccessToken {
+                try await self.api.createGroup(name: name, displayName: displayName, accessToken: $0)
+            }
+            await refreshGroups()
+            return ref
+        } catch {
+            groupError = accountErrorText(error)
+            return nil
+        }
+    }
+
+    /// Joins a group by invite code and refreshes the list. Returns the group
+    /// ref on success; an unknown code surfaces as a 404 → `groupError`.
+    func joinGroup(code: String, displayName: String) async -> GroupRef? {
+        guard signedIn else { return nil }
+        do {
+            let ref = try await withAccessToken {
+                try await self.api.joinGroup(code: code, displayName: displayName, accessToken: $0)
+            }
+            await refreshGroups()
+            return ref
+        } catch {
+            groupError = accountErrorText(error)
+            return nil
+        }
+    }
+
+    /// Refreshes `myGroups` (`GET /v1/groups`). Silent on failure — this runs
+    /// opportunistically (sign-in, foreground, after-sync), so a transient
+    /// offline read must not pop an alert; it just keeps the prior list.
+    func refreshGroups() async {
+        guard signedIn else { return }
+        if let groups = try? await withAccessToken({ try await self.api.myGroups(accessToken: $0) }) {
+            myGroups = groups
+        }
+    }
+
+    /// Loads one group's member states into `groupDetails`. Returns whether the
+    /// load succeeded so GroupDetailView can show an honest retry state instead
+    /// of a blank screen. Silent (no alert) — it's a screen load, not an action.
+    @discardableResult
+    func loadGroupDetail(id: String) async -> Bool {
+        guard signedIn else { return false }
+        do {
+            let detail = try await withAccessToken { try await self.api.group(id: id, accessToken: $0) }
+            groupDetails[id] = detail
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Leaves a group, drops its cached detail, and refreshes the list. Returns
+    /// true so the caller can pop the detail screen.
+    @discardableResult
+    func leaveGroup(id: String) async -> Bool {
+        guard signedIn else { return false }
+        do {
+            try await withAccessToken { try await self.api.leaveGroup(id: id, accessToken: $0) }
+            groupDetails[id] = nil
+            await refreshGroups()
+            return true
+        } catch {
+            groupError = accountErrorText(error)
+            return false
+        }
+    }
+
+    /// Sends a nudge to another member, addressed by their opaque per-group
+    /// handle (never a global account id). Returns true on success; a repeat
+    /// within the server cooldown (429) or any other failure sets `groupError`.
+    @discardableResult
+    func nudge(groupId: String, toMemberHandle: String) async -> Bool {
+        guard signedIn else { return false }
+        do {
+            try await withAccessToken {
+                try await self.api.nudge(groupId: groupId, toMemberHandle: toMemberHandle, accessToken: $0)
+            }
+            return true
+        } catch {
+            groupError = accountErrorText(error)
+            return false
+        }
+    }
+
+    /// Pulls pending nudges (`GET /v1/nudges`), appending them to the banner
+    /// queue. Deliver-once server-side, so repeated polls return empty. Silent
+    /// on failure — a missed poll simply retries on the next foreground/sync.
+    func fetchNudges() async {
+        guard signedIn else { return }
+        guard let pending = try? await withAccessToken({ try await self.api.pendingNudges(accessToken: $0) }) else {
+            return
+        }
+        for n in pending {
+            receivedNudges.append(ReceivedNudge(fromDisplayName: n.fromDisplayName, groupName: n.groupName))
+        }
+    }
+
+    /// Dismisses a shown nudge. The server already marked it seen on delivery,
+    /// so this only clears it from the in-memory banner queue.
+    func dismissNudge(_ nudge: ReceivedNudge) {
+        receivedNudges.removeAll { $0.id == nudge.id }
+    }
+
+    /// Opportunistic group + nudge refresh (sign-in, foreground, after-sync).
+    /// No-op when signed out — the app never makes group calls without a session.
+    func refreshGroupsAndNudges() {
+        guard signedIn else { return }
+        Task {
+            await refreshGroups()
+            await fetchNudges()
+        }
+    }
+
+    /// Runs an authed API call, refreshing the session once on a 401 (mirrors
+    /// the SyncEngine's recovery). A rejected refresh propagates as
+    /// `.unauthorized` for the caller to map to a message; unlike the sync
+    /// path, a group action never force-signs-out — sync owns that escalation.
+    ///
+    /// Compare-and-refresh: a concurrent SyncEngine round-trip may have ALREADY
+    /// rotated both tokens (writing fresh ones to the Keychain) by the time this
+    /// call sees a 401 on its now-stale cached access token. So on a 401 we
+    /// re-read the Keychain first: if a newer access token is already there, we
+    /// retry with THAT before spending our (possibly stale) refresh token —
+    /// otherwise a rotation by sync would strand an in-flight group action with
+    /// a spurious "Something went wrong" even though valid tokens exist.
+    private func withAccessToken<T>(_ op: (String) async throws -> T) async throws -> T {
+        guard let session = keychain.load() else {
+            throw DromeAPIError.unauthorized(code: "no_session", message: "Signed out")
+        }
+        do {
+            return try await op(session.accessToken)
+        } catch DromeAPIError.unauthorized {
+            // A concurrent caller (sync) may have already rotated tokens. Prefer
+            // the freshest Keychain access token before attempting a refresh.
+            if let fresh = keychain.load(), fresh.accessToken != session.accessToken {
+                do {
+                    return try await op(fresh.accessToken)
+                } catch DromeAPIError.unauthorized {
+                    // Even the freshest access token is rejected — fall through
+                    // to a refresh using the freshest refresh token below.
+                }
+            }
+            // Refresh with the freshest refresh token available (a rotation may
+            // have replaced the one we started with).
+            let base = keychain.load() ?? session
+            let refreshed = try await api.refresh(refreshToken: base.refreshToken)
+            try? keychain.save(SessionTokens(
+                accountId: refreshed.accountId,
+                accessToken: refreshed.accessToken,
+                refreshToken: refreshed.refreshToken,
+                label: base.label
+            ))
+            return try await op(refreshed.accessToken)
         }
     }
 

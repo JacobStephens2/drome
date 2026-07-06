@@ -385,18 +385,56 @@ pub async fn delete_account(
     State(state): State<AppState>,
     Extension(account): Extension<Account>,
 ) -> Result<StatusCode, ApiError> {
-    let conn = state.db.lock().map_err(|_| ApiError::internal("db lock"))?;
-    // Child rows first (FKs reference account).
+    let mut conn = state.db.lock().map_err(|_| ApiError::internal("db lock"))?;
+    // ALL of it in ONE transaction: a mid-way failure must leave the account
+    // fully intact, never half-deleted-but-still-present (the user asked to be
+    // erased; a stripped-yet-surviving account row is both a broken deletion
+    // and a privacy failure). Without the tx, each autocommitted delete lands
+    // before a later FK failure, stranding exactly that state.
+    let tx = conn.transaction().map_err(ApiError::internal)?;
+    // Child rows first (all reference account(id)). Memberships go BEFORE the
+    // group cleanup below so group emptiness reflects this account's departure.
     for sql in [
         "DELETE FROM event WHERE account_id = ?1",
         "DELETE FROM config_slot WHERE account_id = ?1",
         "DELETE FROM session WHERE account_id = ?1",
+        "DELETE FROM nudge WHERE from_account = ?1 OR to_account = ?1",
         "DELETE FROM membership WHERE account_id = ?1",
         "DELETE FROM entitlement WHERE account_id = ?1",
-        "DELETE FROM account WHERE id = ?1",
     ] {
-        conn.execute(sql, params![account.id])
+        tx.execute(sql, params![account.id])
             .map_err(ApiError::internal)?;
     }
+    // Groups the account was the LAST member of are now empty: delete them (and
+    // any nudges that referenced them) so no orphan rows survive.
+    tx.execute(
+        "DELETE FROM nudge WHERE group_id NOT IN (SELECT DISTINCT group_id FROM membership)",
+        [],
+    )
+    .map_err(ApiError::internal)?;
+    tx.execute(
+        "DELETE FROM groups WHERE id NOT IN (SELECT DISTINCT group_id FROM membership)",
+        [],
+    )
+    .map_err(ApiError::internal)?;
+    // A group the account CREATED but that still has other members MUST survive
+    // — yet groups.created_by_account is `NOT NULL REFERENCES account(id)`, so
+    // that dangling creator reference would make `DELETE FROM account` fail the
+    // foreign-key check. Reassign the creator to a remaining member (every
+    // surviving group has one, since empty groups were just deleted) so no
+    // reference to the departing account is left before we delete it.
+    tx.execute(
+        "UPDATE groups
+            SET created_by_account = (
+                SELECT MIN(account_id) FROM membership WHERE membership.group_id = groups.id
+            )
+          WHERE created_by_account = ?1",
+        params![account.id],
+    )
+    .map_err(ApiError::internal)?;
+    // Now nothing references the account: delete it.
+    tx.execute("DELETE FROM account WHERE id = ?1", params![account.id])
+        .map_err(ApiError::internal)?;
+    tx.commit().map_err(ApiError::internal)?;
     Ok(StatusCode::NO_CONTENT)
 }

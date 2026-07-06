@@ -69,6 +69,7 @@ struct SettingsView: View {
             dietSection
             dataSection
             accountSection
+            groupsSection
             aboutSection
             startOverSection
         }
@@ -317,6 +318,39 @@ struct SettingsView: View {
             return "Sync your challenge across devices and join friend groups. Free during beta."
         }
         return appModel.accountLabel ?? "Signed in"
+    }
+
+    /// Friend groups (opt-in). Signed out, it invites sign-in; signed in, it
+    /// shows how many groups you're in. The screen itself handles both states.
+    private var groupsSection: some View {
+        Section {
+            NavigationLink {
+                GroupsView()
+            } label: {
+                VStack(alignment: .leading, spacing: DromeSpacing.xs) {
+                    Text("Groups")
+                    Text(groupsCaption)
+                        .font(.footnote)
+                        .foregroundStyle(Color.dromeInk.opacity(0.6))
+                }
+            }
+            .frame(minHeight: DromeSpacing.tapTarget)
+        } header: {
+            sectionHeader("Groups")
+        }
+        .listRowBackground(rowBackground)
+    }
+
+    private var groupsCaption: String {
+        guard appModel?.signedIn == true else {
+            return "Stay accountable with friends. Sign in to create or join a group."
+        }
+        let count = appModel?.myGroups.count ?? 0
+        switch count {
+        case 0: return "Create a group or join one by code."
+        case 1: return "You're in 1 group."
+        default: return "You're in \(count) groups."
+        }
     }
 
     private var aboutSection: some View {

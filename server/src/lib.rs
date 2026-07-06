@@ -197,10 +197,15 @@ pub fn build_router(state: AppState) -> Router {
     // Sync + groups: authed AND entitlement-gated.
     let gated = Router::new()
         .route("/v1/sync", post(sync::sync_handler))
-        .route("/v1/groups", post(groups::create_group))
+        .route(
+            "/v1/groups",
+            post(groups::create_group).get(groups::list_groups),
+        )
         .route("/v1/groups/join", post(groups::join_group))
         .route("/v1/groups/:id", get(groups::get_group))
+        .route("/v1/groups/:id/leave", post(groups::leave_group))
         .route("/v1/groups/:id/nudge", post(groups::nudge))
+        .route("/v1/nudges", get(groups::get_nudges))
         // route_layer order: the LAST layer added is OUTERMOST, so auth runs
         // first (inserting the account), then entitlement reads it.
         .route_layer(from_fn_with_state(

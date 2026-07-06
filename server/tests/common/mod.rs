@@ -7,7 +7,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
 use drome_server::jwks::{Jwk, JwtAppleVerifier, StaticJwksProvider};
-use drome_server::{build_router, db, AppState};
+use drome_server::{build_router, db, AppState, Clock};
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use serde::Serialize;
 use serde_json::Value;
@@ -138,6 +138,32 @@ pub fn test_server_opts(beta_all_entitled: bool, dev_auth: bool) -> TestServer {
     };
     let verifier = JwtAppleVerifier::new(Box::new(provider), AUDIENCE);
     let state = AppState::new(conn, Arc::new(verifier), beta_all_entitled).with_dev_auth(dev_auth);
+    let app = build_router(state.clone());
+    TestServer {
+        app,
+        state,
+        _dir: dir,
+    }
+}
+
+/// Like `test_server` but with the server clock pinned to `now_epoch`, so
+/// group day-state projection ("their today") is deterministic regardless of
+/// the wall clock. Session/auth math all read this same clock, so it stays
+/// internally consistent.
+pub fn test_server_with_clock(beta_all_entitled: bool, now_epoch: i64) -> TestServer {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir
+        .path()
+        .join("server.sqlite")
+        .to_string_lossy()
+        .into_owned();
+    let conn = db::open(&path).expect("open server db");
+    let provider = StaticJwksProvider {
+        keys: vec![test_jwk()],
+    };
+    let verifier = JwtAppleVerifier::new(Box::new(provider), AUDIENCE);
+    let clock: Clock = Arc::new(move || now_epoch);
+    let state = AppState::new(conn, Arc::new(verifier), beta_all_entitled).with_clock(clock);
     let app = build_router(state.clone());
     TestServer {
         app,

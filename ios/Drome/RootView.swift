@@ -70,6 +70,8 @@ struct RootView: View {
             applyDebugLaunchScreen()
             // Opportunistic sync on launch (no-op when signed out).
             appModel.pokeSync()
+            // Refresh groups and pull any pending nudges (no-op signed out).
+            appModel.refreshGroupsAndNudges()
         }
         // Widget logs and day rollovers happen while the app is backgrounded;
         // re-project on every return to foreground so the board is never stale.
@@ -80,6 +82,8 @@ struct RootView: View {
                 // Keep the Account "Plan" row from drifting from the server
                 // between launches (no-op when signed out).
                 appModel.refreshEntitlementSnapshot()
+                // Fresh groups + nudge check on every return to foreground.
+                appModel.refreshGroupsAndNudges()
             }
         }
         .sheet(item: $sheet) { presented in
@@ -137,6 +141,28 @@ struct RootView: View {
         // error lands here as an honest alert. Yields to a presented sheet,
         // whose content carries its own copy of the same alert.
         .modifier(IntentErrorAlert(isFrontmost: sheet == nil))
+        // A received nudge appears as a quiet, dismissible banner over the app
+        // (one at a time). Gentle by design — a wave, never a shaming poke.
+        .overlay(alignment: .top) { nudgeBanner }
+        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: appModel.receivedNudges)
+    }
+
+    // MARK: - Received-nudge banner (quiet, non-shaming; dismiss marks seen)
+
+    @ViewBuilder
+    private var nudgeBanner: some View {
+        // Never draw over a celebration moment. This banner is added LATER in the
+        // modifier chain than the weekly-moment overlay, so it wins z-order and
+        // would otherwise cover the full-screen weekly scrim (and the same
+        // after-sync fetch that populates nudges can fire while a moment is up).
+        // Suppress while any moment is pending — the moment comes first.
+        if appModel.pendingWeeklyMoment == nil,
+           appModel.pendingCompletionMoment == nil,
+           let nudge = appModel.receivedNudges.first {
+            NudgeBanner(nudge: nudge) { appModel.dismissNudge(nudge) }
+                .padding(.horizontal, DromeSpacing.m)
+                .transition(.move(edge: .top).combined(with: .opacity))
+        }
     }
 
     // MARK: - Today tab
@@ -270,6 +296,45 @@ private struct IntentErrorAlert: ViewModifier {
         } message: {
             Text(appModel.lastErrorMessage ?? "")
         }
+    }
+}
+
+// MARK: - Received-nudge banner
+
+/// A gentle, dismissible "someone nudged you" banner. Deliberately warm and
+/// non-shaming — it names the friend and the group, nothing about what you
+/// have or haven't done. Dismissing clears it (the server already marked it
+/// seen when it delivered it).
+private struct NudgeBanner: View {
+    let nudge: ReceivedNudge
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: DromeSpacing.s) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(nudge.fromDisplayName) nudged you 👋")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(Color.dromeInk)
+                Text("in \(nudge.groupName)")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(Color.dromeInk.opacity(0.6))
+            }
+            Spacer(minLength: 0)
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Color.dromeInk.opacity(0.6))
+                    .frame(width: DromeSpacing.tapTarget, height: DromeSpacing.tapTarget)
+            }
+            .accessibilityLabel("Dismiss nudge")
+        }
+        .padding(.leading, DromeSpacing.m)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color.dromeCamel.opacity(0.18))
+                .shadow(color: Color.black.opacity(0.12), radius: 8, y: 2)
+        )
+        .accessibilityElement(children: .combine)
     }
 }
 

@@ -8,7 +8,7 @@
 
 use axum::extract::State;
 use axum::{Extension, Json};
-use drome_core::sync::{lww_wins, validate_wire_event};
+use drome_core::sync::{lww_wins, validate_challenge_slot, validate_wire_event};
 use drome_core::{
     events, ConfigBlock, ConfigChallengeSlot, ConfigExtrasSlot, ConfigPresetsSlot, WireEvent,
 };
@@ -286,6 +286,14 @@ fn merge_config(
                 "challenge id must be a non-empty identifier",
             ));
         }
+        // Validate the FULL challenge config on ingest (start_date parses,
+        // length/cutoff/waking/goal in range), mirroring `validate_wire_event`
+        // for events. Without this a member's malformed config is stored
+        // verbatim and later faults the group-presence projection, 500-ing the
+        // WHOLE group view for everyone (docs/PHASE2.md group privacy). Applies
+        // to both the active and the archived-loser branch below. A DromeError
+        // maps to 400 via `From<DromeError>` (error.rs).
+        validate_challenge_slot(cs)?;
         let stamp = (cs.updated_at_epoch, cs.device_id.as_str());
         if c.active {
             match active_id.as_deref() {

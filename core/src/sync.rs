@@ -159,6 +159,26 @@ pub fn validate_wire_event(e: &WireEvent) -> Result<()> {
     export::validate_event_payload(&e.uuid, &e.kind, &payload)
 }
 
+/// Validates a synced challenge config slot against the SAME bounds
+/// `create_challenge`/import enforce (start_date parses; length/cutoff/waking/
+/// goal in range). The client already runs this on apply
+/// (`apply_challenge_slot_inner`); the SERVER runs it on sync ingest too, so a
+/// malformed challenge config can never be stored. This matters beyond storage
+/// hygiene: the group-presence projection reads the server's stored challenge
+/// config, and an unparseable `start_date` would fault `Projection::build`,
+/// which would otherwise 500 the whole group view.
+pub fn validate_challenge_slot(slot: &ConfigChallengeSlot) -> Result<()> {
+    let c = &slot.challenge;
+    crate::api::validate_challenge_config(
+        &c.start_date,
+        c.length_days,
+        c.day_cutoff_minutes,
+        c.waking_start_minutes,
+        c.waking_end_minutes,
+        c.initial_water_goal_ml,
+    )
+}
+
 fn validate_wire_id(id: &str, what: &str) -> Result<()> {
     if id.trim().is_empty() || id.len() > MAX_WIRE_ID_LEN {
         return Err(DromeError::InvalidArgument(format!(

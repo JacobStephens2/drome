@@ -9,6 +9,7 @@ pub mod db;
 pub mod error;
 pub mod events;
 pub mod export;
+pub mod group;
 pub mod projections;
 pub mod rules;
 pub mod sync;
@@ -25,6 +26,8 @@ pub use api::{
     DEFAULT_CHALLENGE_LENGTH_DAYS, JOB_EXTRA_ID, JOB_EXTRA_NAME,
 };
 pub use error::DromeError;
+pub use events::EventRow;
+pub use group::{project_group_presence, GroupPresence};
 pub use rules::RulesetKind;
 pub use sync::{
     ConfigBlock, ConfigChallengeSlot, ConfigExtrasSlot, ConfigPresetsSlot, PullResult, SyncOutcome,
