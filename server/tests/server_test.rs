@@ -1503,10 +1503,7 @@ async fn group_member_dto_exposes_only_safe_fields() {
     // coincidentally contain a forbidden digit-substring yet carries no
     // sensitive data by construction.
     let mut sanitized = dto.clone();
-    sanitized
-        .as_object_mut()
-        .unwrap()
-        .remove("member_handle");
+    sanitized.as_object_mut().unwrap().remove("member_handle");
     let serialized = sanitized.to_string();
     for forbidden in [
         "SENTINELDIET_carnivore_only",
@@ -1583,7 +1580,10 @@ async fn two_members_see_each_other_third_is_404() {
     assert!(names.contains(&"Alice") && names.contains(&"Bob"));
     // Exactly one member is flagged is_self for the caller (Alice); the handles
     // are distinct opaque strings and no global account id is present.
-    let self_count = members.iter().filter(|m| m["is_self"] == json!(true)).count();
+    let self_count = members
+        .iter()
+        .filter(|m| m["is_self"] == json!(true))
+        .count();
     assert_eq!(self_count, 1, "exactly the caller is is_self");
     for m in members {
         assert!(
@@ -1975,14 +1975,18 @@ async fn delete_account_succeeds_for_group_creator() {
         assert_eq!(alice_rows, 0, "the creator's account is fully deleted");
         // The surviving group's creator was reassigned to a LIVE member.
         let created_by: i64 = conn
-            .query_row("SELECT created_by_account FROM groups WHERE id = ?1", [&gid], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT created_by_account FROM groups WHERE id = ?1",
+                [&gid],
+                |r| r.get(0),
+            )
             .unwrap();
         let account_exists: i64 = conn
-            .query_row("SELECT COUNT(*) FROM account WHERE id = ?1", [created_by], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM account WHERE id = ?1",
+                [created_by],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(
             account_exists, 1,
@@ -1999,7 +2003,11 @@ async fn delete_account_succeeds_for_group_creator() {
         Value::Null,
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "surviving group still readable: {body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "surviving group still readable: {body}"
+    );
     assert_eq!(
         body["members"].as_array().unwrap().len(),
         1,
@@ -2017,7 +2025,9 @@ async fn delete_account_succeeds_for_group_creator() {
     );
     let conn = srv.state.db.lock().unwrap();
     let group_rows: i64 = conn
-        .query_row("SELECT COUNT(*) FROM groups WHERE id = ?1", [&gid], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM groups WHERE id = ?1", [&gid], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(group_rows, 0, "last member's delete removes the group");
 }
