@@ -6,7 +6,7 @@
 # debian-slim runtime (ships curl so the HEALTHCHECK can hit /healthz).
 
 # ---- Stage 1: build ----
-FROM rust:1.85-bookworm AS build
+FROM rust:1.96-bookworm AS build
 
 # musl target + a musl C toolchain (rusqlite `bundled` compiles SQLite from C,
 # and ring — via ureq's rustls — needs a C compiler too).
