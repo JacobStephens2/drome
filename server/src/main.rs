@@ -15,6 +15,12 @@ async fn main() {
     let beta_all_entitled = std::env::var("BETA_ALL_ENTITLED")
         .map(|v| v != "false" && v != "0")
         .unwrap_or(true);
+    // Local-dev auth affordance: OFF unless DROME_DEV_AUTH is exactly "1", so a
+    // default (production) run can never mint synthetic sessions
+    // (docs/PHASE2.md "Local dev auth (never production)").
+    let dev_auth = std::env::var("DROME_DEV_AUTH")
+        .map(|v| v == "1")
+        .unwrap_or(false);
 
     let conn = match db::open(&db_path) {
         Ok(conn) => conn,
@@ -24,7 +30,15 @@ async fn main() {
         }
     };
 
-    let state = AppState::new(conn, Arc::new(JwtAppleVerifier::apple()), beta_all_entitled);
+    let state = AppState::new(conn, Arc::new(JwtAppleVerifier::apple()), beta_all_entitled)
+        .with_dev_auth(dev_auth);
+    if dev_auth {
+        eprintln!(
+            "WARNING: DROME_DEV_AUTH=1 — POST /v1/auth/dev is ENABLED. It mints real \
+             sessions for synthetic accounts WITHOUT Sign in with Apple. This is a \
+             LOCAL-DEV affordance only; NEVER run with this set in production."
+        );
+    }
     let app = build_router(state);
 
     let listener = match tokio::net::TcpListener::bind(&bind).await {

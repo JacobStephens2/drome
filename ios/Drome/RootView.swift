@@ -68,11 +68,19 @@ struct RootView: View {
         .task {
             appModel.refresh()
             applyDebugLaunchScreen()
+            // Opportunistic sync on launch (no-op when signed out).
+            appModel.pokeSync()
         }
         // Widget logs and day rollovers happen while the app is backgrounded;
         // re-project on every return to foreground so the board is never stale.
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { appModel.refresh() }
+            if phase == .active {
+                appModel.refresh()
+                appModel.pokeSync()
+                // Keep the Account "Plan" row from drifting from the server
+                // between launches (no-op when signed out).
+                appModel.refreshEntitlementSnapshot()
+            }
         }
         .sheet(item: $sheet) { presented in
             sheetContent(presented)
@@ -113,6 +121,17 @@ struct RootView: View {
             // ml stays the core's canonical unit).
             let limitOz = Int(WaterUnits.flOz(fromMl: warning.limitMl).rounded())
             Text("That would put you past about \(limitOz) oz within an hour. Kidneys process roughly 27–34 oz an hour — it counts just the same in a while.")
+        }
+        // A one-active-challenge conflict silently swapped the board to the
+        // account's existing challenge; explain it here on the primary surface
+        // (the Account-screen banner alone is easy to miss).
+        .alert(
+            "Your challenge changed",
+            isPresented: $appModel.boardConflictNotice
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Your account already had an active challenge, so this phone adopted it. Nothing was lost — the challenge that was on this phone is archived, with its days kept.")
         }
         // Failed writes must never look like successful taps: any intent
         // error lands here as an honest alert. Yields to a presented sheet,

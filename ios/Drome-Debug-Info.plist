@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  DEBUG-only Info.plist base, merged with the generated Info.plist
+	  (GENERATE_INFOPLIST_FILE stays on). Referenced by INFOPLIST_FILE ONLY in
+	  the Debug build configuration, so the simulator can reach the local dev
+	  server over http://localhost:8080. Release does not reference this file,
+	  so it keeps App Transport Security's HTTPS-only default (docs/PHASE2.md:
+	  drome.day is HTTPS behind Caddy).
+	-->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+</dict>
+</plist>

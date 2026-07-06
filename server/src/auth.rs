@@ -55,6 +55,16 @@ pub struct RefreshRequest {
     pub refresh_token: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct DevAuthRequest {
+    /// An arbitrary label naming the synthetic account to mint a session for.
+    /// The account's `apple_sub` is `"dev:" + account_key`, so it can never
+    /// collide with a real Sign-in-with-Apple `sub` (Apple subs are opaque and
+    /// never carry that prefix), and two distinct keys are two isolated
+    /// accounts.
+    pub account_key: String,
+}
+
 // --- token helpers ---------------------------------------------------------
 
 /// A fresh 256-bit opaque token, hex-encoded.
@@ -183,6 +193,46 @@ pub async fn refresh(
         refresh_token,
         expires_at_epoch: expires_at,
     }))
+}
+
+/// `POST /v1/auth/dev` — **LOCAL DEV ONLY**, mounted only when `DROME_DEV_AUTH=1`
+/// (unreachable 404 otherwise; see `build_router`). Mints a normal session for a
+/// synthetic account keyed by `account_key` so the iOS client can be exercised
+/// end-to-end against a locally-run server WITHOUT a real Sign-in-with-Apple
+/// token (Apple tokens can't be minted headlessly). The account is upserted with
+/// `apple_sub = "dev:" + account_key`; from there every route treats the session
+/// identically to an Apple one because it reuses the exact `issue_session` path.
+/// NEVER enable this in production (docs/PHASE2.md "Local dev auth").
+pub async fn dev_auth(
+    State(state): State<AppState>,
+    Json(req): Json<DevAuthRequest>,
+) -> Result<Json<AuthResponse>, ApiError> {
+    let account_key = req.account_key.trim();
+    if account_key.is_empty() {
+        return Err(ApiError::bad_request("account_key must be non-empty"));
+    }
+    let apple_sub = format!("dev:{account_key}");
+    let now = state.now_epoch();
+
+    let conn = state.db.lock().map_err(|_| ApiError::internal("db lock"))?;
+    // Upsert by apple_sub (idempotent: re-authing the same key reuses its
+    // account, like the Apple path). No email for a synthetic account.
+    conn.execute(
+        "INSERT INTO account (apple_sub, email, created_at_epoch) VALUES (?1, ?2, ?3)
+         ON CONFLICT(apple_sub) DO NOTHING",
+        params![apple_sub, None::<String>, now],
+    )
+    .map_err(ApiError::internal)?;
+    let account_id: i64 = conn
+        .query_row(
+            "SELECT id FROM account WHERE apple_sub = ?1",
+            params![apple_sub],
+            |r| r.get(0),
+        )
+        .map_err(ApiError::internal)?;
+
+    let resp = issue_session(&conn, account_id, now)?;
+    Ok(Json(resp))
 }
 
 /// Inserts a fresh session for `account_id` and returns its tokens.

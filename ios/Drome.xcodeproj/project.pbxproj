@@ -371,6 +371,7 @@
 				DEVELOPMENT_TEAM = LHY8W725A8;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Drome-Debug-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Drome;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;

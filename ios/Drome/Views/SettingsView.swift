@@ -68,6 +68,7 @@ struct SettingsView: View {
             readingSection
             dietSection
             dataSection
+            accountSection
             aboutSection
             startOverSection
         }
@@ -288,6 +289,34 @@ struct SettingsView: View {
             sectionHeader("Data")
         }
         .listRowBackground(rowBackground)
+    }
+
+    /// Opt-in account & sync (Phase 2). Signed out, it's a quiet invitation;
+    /// signed in, it shows who you are and links to the full account screen.
+    private var accountSection: some View {
+        Section {
+            NavigationLink {
+                AccountView()
+            } label: {
+                VStack(alignment: .leading, spacing: DromeSpacing.xs) {
+                    Text(appModel?.signedIn == true ? "Account & sync" : "Sign in to sync")
+                    Text(accountCaption)
+                        .font(.footnote)
+                        .foregroundStyle(Color.dromeInk.opacity(0.6))
+                }
+            }
+            .frame(minHeight: DromeSpacing.tapTarget)
+        } header: {
+            sectionHeader("Account")
+        }
+        .listRowBackground(rowBackground)
+    }
+
+    private var accountCaption: String {
+        guard let appModel, appModel.signedIn else {
+            return "Sync your challenge across devices and join friend groups. Free during beta."
+        }
+        return appModel.accountLabel ?? "Signed in"
     }
 
     private var aboutSection: some View {

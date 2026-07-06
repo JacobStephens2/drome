@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use common::{
-    json_request, json_request_xff, sign_token, sign_token_with_nonce, test_server, valid_token,
-    AUDIENCE, ISSUER,
+    json_request, json_request_xff, sign_token, sign_token_with_nonce, test_server,
+    test_server_opts, valid_token, AUDIENCE, ISSUER,
 };
 use drome_core::{
     BackfilledDay, DromeStore, LocalInstant, NewChallenge, RulesetKind, WireEvent, JOB_EXTRA_ID,
@@ -328,6 +328,159 @@ async fn apple_auth_upserts_one_account_per_sub() {
     assert_eq!(
         count, 1,
         "repeated sign-in must not create duplicate accounts"
+    );
+}
+
+// --- local-dev auth (DROME_DEV_AUTH) ---------------------------------------
+
+#[tokio::test]
+async fn dev_auth_is_unreachable_and_mints_nothing_by_default() {
+    // Default (production) configuration: DROME_DEV_AUTH unset → the route is
+    // not even mounted, so it 404s and no synthetic account can be created.
+    let srv = test_server(true);
+
+    let (status, _b) = json_request(
+        &srv.app,
+        "POST",
+        "/v1/auth/dev",
+        None,
+        json!({ "account_key": "alice" }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "dev auth must be unreachable without DROME_DEV_AUTH=1"
+    );
+
+    // The rejected call created nothing.
+    let accounts: i64 = {
+        let conn = srv.state.db.lock().unwrap();
+        conn.query_row("SELECT COUNT(*) FROM account", [], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!(accounts, 0, "no dev account may be creatable by default");
+}
+
+#[tokio::test]
+async fn dev_auth_mints_a_session_that_authenticates_sync() {
+    // With DROME_DEV_AUTH enabled, /v1/auth/dev mints a normal session (same
+    // shape as /v1/auth/apple) that authorizes the rest of the API.
+    let srv = test_server_opts(true, true);
+
+    let (status, body) = json_request(
+        &srv.app,
+        "POST",
+        "/v1/auth/dev",
+        None,
+        json!({ "account_key": "alice" }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "dev auth must mint a session: {body}"
+    );
+    let token = body["access_token"]
+        .as_str()
+        .expect("access token")
+        .to_owned();
+    assert!(body["refresh_token"].as_str().is_some());
+    assert!(body["account_id"].as_i64().is_some());
+
+    // The synthetic account is keyed by "dev:" + account_key.
+    {
+        let conn = srv.state.db.lock().unwrap();
+        let sub: String = conn
+            .query_row(
+                "SELECT apple_sub FROM account WHERE id = ?1",
+                [body["account_id"].as_i64().unwrap()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(sub, "dev:alice");
+    }
+
+    // The token drives a real /v1/sync round-trip: a dev session is treated
+    // identically to an Apple one.
+    let client = new_client();
+    client
+        .store
+        .create_challenge(challenge_cfg("2026-06-21", at("2026-07-04", 9, 0)))
+        .expect("create");
+    log_mixed_day(&client.store);
+    sync(&srv.app, &token, &client.store).await;
+
+    let events: i64 = {
+        let conn = srv.state.db.lock().unwrap();
+        conn.query_row("SELECT COUNT(*) FROM event", [], |r| r.get(0))
+            .unwrap()
+    };
+    assert!(
+        events > 0,
+        "dev session must be able to push events via sync"
+    );
+}
+
+#[tokio::test]
+async fn dev_auth_two_keys_are_isolated_accounts() {
+    let srv = test_server_opts(true, true);
+
+    let alice = json_request(
+        &srv.app,
+        "POST",
+        "/v1/auth/dev",
+        None,
+        json!({ "account_key": "alice" }),
+    )
+    .await
+    .1;
+    let bob = json_request(
+        &srv.app,
+        "POST",
+        "/v1/auth/dev",
+        None,
+        json!({ "account_key": "bob" }),
+    )
+    .await
+    .1;
+
+    let alice_id = alice["account_id"].as_i64().expect("alice id");
+    let bob_id = bob["account_id"].as_i64().expect("bob id");
+    assert_ne!(alice_id, bob_id, "distinct keys are distinct accounts");
+    assert_eq!(
+        {
+            let conn = srv.state.db.lock().unwrap();
+            conn.query_row("SELECT COUNT(*) FROM account", [], |r| r.get::<_, i64>(0))
+                .unwrap()
+        },
+        2,
+        "exactly two synthetic accounts exist"
+    );
+
+    // Isolation is real, not just distinct ids: alice pushes a challenge; bob,
+    // a separate account, pulls nothing of hers.
+    let alice_token = alice["access_token"].as_str().unwrap();
+    let bob_token = bob["access_token"].as_str().unwrap();
+
+    let a = new_client();
+    a.store
+        .create_challenge(challenge_cfg("2026-06-21", at("2026-07-04", 9, 0)))
+        .expect("create");
+    log_mixed_day(&a.store);
+    sync(&srv.app, alice_token, &a.store).await;
+
+    let b = new_client();
+    let resp = sync(&srv.app, bob_token, &b.store).await;
+    let pulled: Vec<WireEvent> =
+        serde_json::from_value(resp["events"].clone()).expect("bob pulled");
+    assert!(
+        pulled.is_empty(),
+        "bob's account must not see alice's events"
+    );
+    assert!(
+        b.store.active_challenge().unwrap().is_none(),
+        "bob has no challenge of his own"
     );
 }
 
@@ -733,6 +886,51 @@ async fn archived_loser_events_never_propagate() {
             .store
             .day_state("2026-07-04".into(), now)
             .expect("winner day")
+    );
+}
+
+#[tokio::test]
+async fn heavy_first_sync_drains_across_capped_pulls() {
+    // A device that has never synced pulls the account's whole history. The
+    // server caps each pull (PULL_LIMIT) and flags `more`, so a >cap history is
+    // drained over several round-trips instead of one giant batch — the client
+    // re-triggers while `more` is set. Convergence must still be exact.
+    let srv = test_server(true);
+    let token = authenticate(&srv.app, "sub-heavy").await;
+
+    let a = new_client();
+    a.store
+        .create_challenge(challenge_cfg("2026-06-21", at("2026-07-04", 9, 0)))
+        .expect("create");
+    // Comfortably over the 500-event pull cap so the first pull is capped.
+    for _ in 0..550 {
+        a.store
+            .log_water(100, at("2026-07-04", 8, 0), None)
+            .expect("water");
+    }
+    sync(&srv.app, &token, &a.store).await;
+
+    // Device B drains: each capped round-trip sets `more`; loop until caught up.
+    let b = new_client();
+    let mut rounds = 0;
+    loop {
+        let resp = sync(&srv.app, &token, &b.store).await;
+        rounds += 1;
+        assert!(rounds < 10, "drain must terminate");
+        if !resp["more"].as_bool().unwrap_or(false) {
+            break;
+        }
+    }
+    assert!(
+        rounds >= 2,
+        "a >cap history must take multiple capped pulls to drain"
+    );
+
+    let now = at("2026-07-04", 22, 0);
+    assert_eq!(
+        a.store.day_state("2026-07-04".into(), now).expect("a day"),
+        b.store.day_state("2026-07-04".into(), now).expect("b day"),
+        "B must converge to A after draining every capped pull"
     );
 }
 

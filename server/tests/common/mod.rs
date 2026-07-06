@@ -120,6 +120,12 @@ pub struct TestServer {
 }
 
 pub fn test_server(beta_all_entitled: bool) -> TestServer {
+    test_server_opts(beta_all_entitled, false)
+}
+
+/// Like `test_server` but with the local-dev auth affordance
+/// (`POST /v1/auth/dev`) toggleable, mirroring `DROME_DEV_AUTH=1` in `main`.
+pub fn test_server_opts(beta_all_entitled: bool, dev_auth: bool) -> TestServer {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir
         .path()
@@ -131,7 +137,7 @@ pub fn test_server(beta_all_entitled: bool) -> TestServer {
         keys: vec![test_jwk()],
     };
     let verifier = JwtAppleVerifier::new(Box::new(provider), AUDIENCE);
-    let state = AppState::new(conn, Arc::new(verifier), beta_all_entitled);
+    let state = AppState::new(conn, Arc::new(verifier), beta_all_entitled).with_dev_auth(dev_auth);
     let app = build_router(state.clone());
     TestServer {
         app,

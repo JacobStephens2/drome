@@ -35,7 +35,10 @@ Build & contracts:
   is only consulted when cwd is `server/` and is kept in sync with the root config on
   purpose — if you edit one, edit both, or freshly built server binaries get SIGKILLed.
   Server dev loop: `cargo run -p drome-server` (listens on `0.0.0.0:8080`; envs `DROME_DB`,
-  `DROME_BIND`, `BETA_ALL_ENTITLED`). No Docker on this machine; CI builds the amd64 image.
+  `DROME_BIND`, `BETA_ALL_ENTITLED`, and `DROME_DEV_AUTH=1` for local e2e — enables
+  `POST /v1/auth/dev { account_key }` to mint a session without Sign in with Apple; NEVER
+  set in production, where the route is unmounted/404). No Docker on this machine; CI builds
+  the amd64 image.
 - Core: `cd core && cargo test`. Bindings + sim static lib: `core/build-ios-lib.sh`.
   App: `xcodebuild -project ios/Drome.xcodeproj -scheme Drome -destination 'platform=iOS
   Simulator,name=Chart35iPhone' build` (use a private -derivedDataPath when building in

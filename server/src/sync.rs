@@ -21,6 +21,13 @@ use crate::AppState;
 
 const MAX_WIRE_ID_LEN: usize = 64;
 
+/// Cap on events returned per pull. A heavy first sign-in (or a post-reset
+/// re-pull) could otherwise ship an account's ENTIRE history in one response,
+/// which the client applies in a single core transaction on the main actor —
+/// an unbounded batch janks the UI. The client re-triggers a round-trip while
+/// `more` is set, draining the backlog across round-trips (mirroring push).
+const PULL_LIMIT: i64 = 500;
+
 #[derive(Debug, Deserialize)]
 pub struct SyncRequest {
     /// The pushing device's stable id (event provenance + pull self-echo
@@ -45,6 +52,9 @@ pub struct SyncResponse {
     pub events: Vec<WireEvent>,
     /// The client's new pull cursor (never less than what it sent).
     pub new_last_server_seq: i64,
+    /// True when the pull was capped at `PULL_LIMIT` and events remain past
+    /// `new_last_server_seq`; the client re-syncs to drain them.
+    pub more: bool,
     /// The account's canonical config after the LWW merge (the active
     /// challenge's slots).
     pub config: ConfigBlock,
@@ -135,15 +145,14 @@ pub async fn sync_handler(
     // config is not pullable (docs/PHASE2.md: only the winner's config is
     // canonical). Filtering pull by the active challenge id keeps the shared
     // history to exactly the one active challenge.
-    let events = pull_events(
+    let pulled = pull_events(
         &tx,
         account.id,
         req.last_server_seq,
         &req.device_id,
         active_id.as_deref(),
+        PULL_LIMIT,
     )?;
-    // The cursor jumps to the account's current max seq (past the client's
-    // own just-pushed events, which are excluded above but already local).
     let max_seq: i64 = tx
         .query_row(
             "SELECT COALESCE(MAX(server_seq), 0) FROM event WHERE account_id = ?1",
@@ -151,7 +160,19 @@ pub async fn sync_handler(
             |r| r.get(0),
         )
         .map_err(ApiError::internal)?;
-    let new_last_server_seq = req.last_server_seq.max(max_seq);
+    // When the pull filled the cap, more events may remain: advance the cursor
+    // ONLY to the last event actually returned (never to `max_seq`, which would
+    // silently skip the un-returned tail) and tell the client to drain the rest
+    // in another round-trip. Otherwise the client has caught up, so the cursor
+    // jumps past its own just-pushed events (excluded above, already local) to
+    // the account's max seq.
+    let capped = pulled.len() as i64 >= PULL_LIMIT;
+    let last_pulled_seq = pulled.last().map(|(seq, _)| *seq);
+    let events: Vec<WireEvent> = pulled.into_iter().map(|(_, e)| e).collect();
+    let (new_last_server_seq, more) = match last_pulled_seq {
+        Some(last) if capped && last < max_seq => (last, true),
+        _ => (req.last_server_seq.max(max_seq), false),
+    };
 
     // --- 4. Return the merged winning config ------------------------------
     let config = load_config_block(&tx, account.id, active_id.as_deref())?;
@@ -162,6 +183,7 @@ pub async fn sync_handler(
         acked_uuids: acked,
         events,
         new_last_server_seq,
+        more,
         config,
         active_challenge_conflict: conflict,
     }))
@@ -191,13 +213,17 @@ fn wire_payload(kind: &str, payload_json: &str) -> String {
     }
 }
 
+/// Returns up to `limit` newer events from OTHER devices under the active
+/// challenge, each paired with its `server_seq` (so the caller can advance the
+/// cursor exactly to the last event returned when the batch is capped).
 fn pull_events(
     tx: &Transaction,
     account_id: i64,
     after_seq: i64,
     exclude_device: &str,
     active_id: Option<&str>,
-) -> Result<Vec<WireEvent>, ApiError> {
+    limit: i64,
+) -> Result<Vec<(i64, WireEvent)>, ApiError> {
     // No active challenge => nothing canonical to hand out. (Events only exist
     // once a challenge has been synced, and any event not under the active
     // challenge belongs to an archived loser and must not propagate.)
@@ -206,28 +232,32 @@ fn pull_events(
     };
     let mut stmt = tx
         .prepare(
-            "SELECT uuid, challenge_id, logged_at_epoch, tz_offset_secs, effective_date,
-                    kind, payload, schema_version
+            "SELECT server_seq, uuid, challenge_id, logged_at_epoch, tz_offset_secs,
+                    effective_date, kind, payload, schema_version
              FROM event
              WHERE account_id = ?1 AND server_seq > ?2 AND device_id != ?3
                AND challenge_id = ?4
-             ORDER BY server_seq",
+             ORDER BY server_seq
+             LIMIT ?5",
         )
         .map_err(ApiError::internal)?;
     let rows = stmt
         .query_map(
-            params![account_id, after_seq, exclude_device, active],
+            params![account_id, after_seq, exclude_device, active, limit],
             |row| {
-                Ok(WireEvent {
-                    uuid: row.get(0)?,
-                    challenge_id: row.get(1)?,
-                    logged_at_epoch: row.get(2)?,
-                    tz_offset_secs: row.get(3)?,
-                    effective_date: row.get(4)?,
-                    kind: row.get(5)?,
-                    payload_json: row.get(6)?,
-                    schema_version: row.get(7)?,
-                })
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    WireEvent {
+                        uuid: row.get(1)?,
+                        challenge_id: row.get(2)?,
+                        logged_at_epoch: row.get(3)?,
+                        tz_offset_secs: row.get(4)?,
+                        effective_date: row.get(5)?,
+                        kind: row.get(6)?,
+                        payload_json: row.get(7)?,
+                        schema_version: row.get(8)?,
+                    },
+                ))
             },
         )
         .map_err(ApiError::internal)?;

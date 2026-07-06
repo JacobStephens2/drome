@@ -109,6 +109,16 @@ projections never sync, they recompute.
   credential. No passwords, ever.
 - Deleting an account (App Store requirement): `DELETE /v1/account` wipes account rows,
   events, memberships server-side. Local data untouched.
+- **Local dev auth (never production)**: real Apple identity tokens can't be minted
+  headlessly, so to exercise the iOS client end-to-end against a locally-run server there
+  is `POST /v1/auth/dev { account_key }`. It upserts a synthetic account
+  (`apple_sub = "dev:" + account_key`) and issues the SAME opaque bearer + rotating
+  refresh session as `/v1/auth/apple` (it reuses the identical `issue_session` path), so
+  every downstream route treats a dev session identically; two distinct `account_key`s are
+  two isolated accounts. It is gated behind env `DROME_DEV_AUTH=1`: when unset (the default,
+  i.e. production) the route is **not mounted at all** — it 404s and no synthetic account is
+  creatable — so it cannot be reached in a default configuration. `main` logs a loud startup
+  warning whenever it is enabled. Never set `DROME_DEV_AUTH` in production.
 
 ## Groups
 

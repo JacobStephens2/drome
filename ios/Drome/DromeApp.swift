@@ -27,6 +27,9 @@ struct DromeApp: App {
             #endif
             let model = AppModel(core: client)
             model.refresh()
+            // Restore a persisted account session (opt-in; no-op when signed
+            // out) so sync resumes across launches without re-authenticating.
+            model.restoreAccountSession()
             _appModel = State(initialValue: model)
             storeOpenError = nil
         } catch {

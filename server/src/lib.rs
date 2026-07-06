@@ -55,6 +55,11 @@ pub struct AppState {
     pub db: Arc<Mutex<Connection>>,
     pub verifier: Arc<dyn AppleVerifier>,
     pub beta_all_entitled: bool,
+    /// Local-dev auth affordance (`POST /v1/auth/dev`). OFF by default so a
+    /// default (production) configuration can never mint synthetic sessions;
+    /// `main` only flips it on when `DROME_DEV_AUTH=1`. When false the route is
+    /// not even mounted (docs/PHASE2.md "Local dev auth (never production)").
+    dev_auth: bool,
     clock: Clock,
     buckets: Arc<Mutex<HashMap<String, TokenBucket>>>,
     /// Separate namespace so anonymous-auth throttling never interacts with the
@@ -72,6 +77,7 @@ impl AppState {
             db: Arc::new(Mutex::new(conn)),
             verifier,
             beta_all_entitled,
+            dev_auth: false,
             clock: Arc::new(system_now),
             buckets: Arc::new(Mutex::new(HashMap::new())),
             auth_ip_buckets: Arc::new(Mutex::new(HashMap::new())),
@@ -81,6 +87,16 @@ impl AppState {
     /// Overrides the clock (tests only).
     pub fn with_clock(mut self, clock: Clock) -> Self {
         self.clock = clock;
+        self
+    }
+
+    /// Enables the local-dev auth affordance (`POST /v1/auth/dev`). OFF by
+    /// default; `main` turns it on ONLY when `DROME_DEV_AUTH=1`, and logs a loud
+    /// startup warning. Never enable it in production — it mints real sessions
+    /// for synthetic accounts with no Sign-in-with-Apple proof (docs/PHASE2.md
+    /// "Local dev auth (never production)").
+    pub fn with_dev_auth(mut self, enabled: bool) -> Self {
+        self.dev_auth = enabled;
         self
     }
 
@@ -175,6 +191,9 @@ fn system_now() -> i64 {
 /// Builds the full `/v1` router (docs/PHASE2.md "Endpoints v1"). Auth and
 /// entitlement are real middleware; group handlers are 501 stubs this stage.
 pub fn build_router(state: AppState) -> Router {
+    // Local-dev auth is opt-in; read it before `state` is moved into layers.
+    let dev_auth_enabled = state.dev_auth;
+
     // Sync + groups: authed AND entitlement-gated.
     let gated = Router::new()
         .route("/v1/sync", post(sync::sync_handler))
@@ -199,13 +218,19 @@ pub fn build_router(state: AppState) -> Router {
 
     // Anonymous token-minting endpoints: per-IP rate limited (they do real RSA
     // / DB work with no bearer token to key the per-token limiter on).
-    let public_auth = Router::new()
+    let mut public_auth = Router::new()
         .route("/v1/auth/apple", post(auth::apple_auth))
-        .route("/v1/auth/refresh", post(auth::refresh))
-        .route_layer(from_fn_with_state(
-            state.clone(),
-            auth::public_auth_rate_limit,
-        ));
+        .route("/v1/auth/refresh", post(auth::refresh));
+    // `/v1/auth/dev` is mounted ONLY when DROME_DEV_AUTH=1. In a default
+    // (production) configuration the route simply does not exist, so it is
+    // unreachable (404) — not merely guarded inside the handler.
+    if dev_auth_enabled {
+        public_auth = public_auth.route("/v1/auth/dev", post(auth::dev_auth));
+    }
+    let public_auth = public_auth.route_layer(from_fn_with_state(
+        state.clone(),
+        auth::public_auth_rate_limit,
+    ));
 
     // /healthz is the uptime + deploy probe: never throttled, but it DOES touch
     // the DB so it reports real reachability.

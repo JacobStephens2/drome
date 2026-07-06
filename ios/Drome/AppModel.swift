@@ -45,8 +45,21 @@ final class AppModel {
     /// DromeApp; the default keeps previews on the in-memory mock.
     let client: DromeCoreClient
 
-    init(core: DromeCoreClient = MockDromeCore()) {
+    // MARK: - Account & sync collaborators (Phase 2)
+
+    /// The server JSON client and the Keychain-backed session store. Injected
+    /// so tests/previews can swap them; defaults are production.
+    let api: DromeAPI
+    let keychain: KeychainSessionStore
+
+    init(
+        core: DromeCoreClient = MockDromeCore(),
+        api: DromeAPI = DromeAPI(),
+        keychain: KeychainSessionStore = KeychainSessionStore()
+    ) {
         self.client = core
+        self.api = api
+        self.keychain = keychain
     }
 
     // MARK: - Cached projections
@@ -83,6 +96,354 @@ final class AppModel {
 
     func clearLastError() {
         lastErrorMessage = nil
+    }
+
+    /// Account/auth failures (sign-in, delete) surface HERE, not through the
+    /// log-write "That didn't save" alert — its title asserts a log write
+    /// failed, which is wrong for an auth/network problem. AccountView presents
+    /// this with a fitting title.
+    struct AccountAlert: Equatable {
+        var title: String
+        var message: String
+    }
+    private(set) var accountAlert: AccountAlert?
+
+    func clearAccountAlert() {
+        accountAlert = nil
+    }
+
+    /// One-shot: a sync adopted the account's active challenge and swapped this
+    /// phone's day board. RootView surfaces it once (on the primary surface) so
+    /// the board swap is never unexplained — the Account-screen banner alone is
+    /// easy to miss. Cleared when the user dismisses the notice.
+    var boardConflictNotice = false
+
+    // MARK: - Account & sync (Phase 2 — opt-in; the app is fully usable signed out)
+
+    /// Whether an account session exists (accounts are required only for sync
+    /// and groups; all local features work signed out).
+    private(set) var signedIn = false
+    /// A non-sensitive display label for the signed-in account (email/name when
+    /// Apple offered one at first sign-in, else a generic label). NOT a token.
+    private(set) var accountLabel: String?
+    /// The account's beta entitlement snapshot, fetched after sign-in.
+    private(set) var entitlement: Entitlement?
+
+    /// The sync driver, created on sign-in and torn down on sign-out. Views
+    /// read status through the passthroughs below.
+    private(set) var syncEngine: SyncEngine?
+
+    /// The raw Sign-in-with-Apple nonce, stashed between the request (we hand
+    /// Apple its SHA-256) and the completion (we send the raw to the server for
+    /// replay binding). Never persisted.
+    private var pendingAppleRawNonce: String?
+
+    /// Legacy UserDefaults key: the display label (which could be a real email)
+    /// used to be persisted here in cleartext. It now lives in the this-device
+    /// Keychain item; this key is only purged on sign-out to remove any legacy
+    /// value written by an earlier build.
+    private static let accountLabelKey = "DromeAccountLabel"
+
+    /// Which account owns the local data on this phone. Sign-out KEEPS all local
+    /// data (challenge/events/photos), so on the next sign-in this binds that
+    /// data to its account: signing into a DIFFERENT account must not upload one
+    /// person's private challenge into another's account (see performSignIn).
+    /// It's an opaque server account id, not PII. Cleared only when the local
+    /// data is wiped (Start over) or its account is deleted.
+    private static let localDataOwnerKey = "DromeLocalDataOwnerAccountId"
+
+    private var localDataOwnerAccountId: Int64? {
+        (UserDefaults.standard.object(forKey: Self.localDataOwnerKey) as? NSNumber)?.int64Value
+    }
+
+    private func setLocalDataOwner(_ accountId: Int64?) {
+        if let accountId {
+            UserDefaults.standard.set(NSNumber(value: accountId), forKey: Self.localDataOwnerKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.localDataOwnerKey)
+        }
+    }
+
+    /// True when this phone holds an active challenge locally — the data a
+    /// cross-account sign-in would otherwise upload to the wrong account.
+    private func hasLocalChallengeData() -> Bool {
+        ((try? client.activeChallenge()) ?? nil) != nil
+    }
+
+    /// Sync status surface (from the SyncEngine; quiet when signed out).
+    var syncStatus: SyncStatus { syncEngine?.status ?? .idle }
+    var lastSyncedAt: Date? { syncEngine?.lastSyncedAt }
+    var pendingConflict: Bool { syncEngine?.pendingConflict ?? false }
+
+    /// Restores a session persisted in the Keychain (called at launch). No-op
+    /// when signed out. Kicks an initial sync and refreshes entitlement.
+    func restoreAccountSession() {
+        guard let session = keychain.load() else { return }
+        accountLabel = session.label ?? "Signed in"
+        signedIn = true
+        // Back-fill the owner for a session signed in before this binding
+        // existed, so its local data stays bound to this account.
+        if localDataOwnerAccountId == nil {
+            setLocalDataOwner(session.accountId)
+        }
+        makeSyncEngine(accountId: session.accountId)
+        syncEngine?.syncNow()
+        Task { await fetchEntitlement() }
+    }
+
+    /// Opportunistic sync poke (debounced; no-op when signed out). Wired to
+    /// foreground and to every mutating intent below.
+    func pokeSync() {
+        syncEngine?.triggerSync()
+    }
+
+    // MARK: Sign in with Apple (UI-driven; AccountView owns the AS types)
+
+    /// Generates a fresh replay nonce, stashes the raw value, and returns the
+    /// SHA-256 the AccountView hands to Apple as `request.nonce`.
+    func appleSignInRequestNonce() -> String {
+        let nonce = AppleNonce.generate()
+        pendingAppleRawNonce = nonce.raw
+        return nonce.hashedForApple
+    }
+
+    /// Completes Sign in with Apple: the AccountView passes the identity token
+    /// (and a display label when Apple offered one); we bind it to the stashed
+    /// raw nonce server-side.
+    func completeAppleSignIn(identityToken: String, label: String?) {
+        guard let raw = pendingAppleRawNonce else {
+            accountAlert = AccountAlert(
+                title: "Couldn't sign in",
+                message: "Sign in didn't complete. Please try again."
+            )
+            return
+        }
+        pendingAppleRawNonce = nil
+        Task { await performSignIn(.apple(identityToken: identityToken, rawNonce: raw), label: label) }
+    }
+
+    /// Sign-in-with-Apple failed or was abandoned before an exchange.
+    func appleSignInFailed(_ message: String?) {
+        pendingAppleRawNonce = nil
+        if let message {
+            accountAlert = AccountAlert(title: "Couldn't sign in", message: message)
+        }
+    }
+
+    #if DEBUG
+    /// Local dev sign-in (server must run with `DROME_DEV_AUTH=1`). Debug only.
+    func signInDev(key: String) {
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            accountAlert = AccountAlert(title: "Couldn't sign in", message: "Enter a dev account key.")
+            return
+        }
+        Task { await performSignIn(.dev(key: trimmed), label: "Dev: \(trimmed)") }
+    }
+    #endif
+
+    private enum SignInMethod {
+        case apple(identityToken: String, rawNonce: String)
+        #if DEBUG
+        case dev(key: String)
+        #endif
+    }
+
+    private func performSignIn(_ method: SignInMethod, label: String?) async {
+        do {
+            let auth: AuthResponse
+            switch method {
+            case .apple(let token, let nonce):
+                auth = try await api.authApple(identityToken: token, rawNonce: nonce)
+            #if DEBUG
+            case .dev(let key):
+                auth = try await api.authDev(accountKey: key)
+            #endif
+            }
+            // Cross-account guard: this phone keeps its local data across
+            // sign-out, so attaching it to a DIFFERENT account would upload one
+            // person's private challenge/events into another's account on the
+            // first sync. If local data exists and is owned by another account,
+            // refuse — the user must sign into the owning account, or Start
+            // over to use a new one. (Nothing has been persisted or synced yet.)
+            if hasLocalChallengeData(),
+               let owner = localDataOwnerAccountId,
+               owner != auth.accountId {
+                accountAlert = AccountAlert(
+                    title: "Can't sign in here",
+                    message: "This phone already has challenge data linked to a "
+                        + "different account. Sign in with that account, or use "
+                        + "Start over in Settings to begin fresh on this one."
+                )
+                return
+            }
+            let resolvedLabel = label ?? "Signed in"
+            // The display label lives in the this-device Keychain item, never
+            // in cleartext UserDefaults (it can be a real email).
+            try keychain.save(SessionTokens(
+                accountId: auth.accountId,
+                accessToken: auth.accessToken,
+                refreshToken: auth.refreshToken,
+                label: resolvedLabel
+            ))
+            setLocalDataOwner(auth.accountId)
+            accountLabel = resolvedLabel
+            signedIn = true
+            makeSyncEngine(accountId: auth.accountId)
+            syncEngine?.syncNow()
+            await fetchEntitlement()
+        } catch {
+            accountAlert = AccountAlert(title: "Couldn't sign in", message: accountErrorText(error))
+        }
+    }
+
+    // MARK: Sign out / delete account
+
+    /// Signs out locally: clears the Keychain session and account state, tears
+    /// down the sync engine. ALL local data (challenge, events, photos) stays.
+    func signOut() {
+        // Kill the engine FIRST so a lingering in-flight round-trip can never
+        // start new work under a subsequently signed-in account's token.
+        syncEngine?.invalidate()
+        keychain.clear()
+        syncEngine = nil
+        signedIn = false
+        accountLabel = nil
+        entitlement = nil
+        // The local-data owner is intentionally retained (sign-out keeps this
+        // phone's data, which stays bound to its account).
+        UserDefaults.standard.removeObject(forKey: Self.accountLabelKey) // purge any legacy PII
+    }
+
+    /// Deletes the account server-side (App Store requirement) then signs out
+    /// locally. Confirm at the call site. Local data is untouched.
+    func deleteAccount() {
+        guard let session = keychain.load() else {
+            finishAccountDeletion()
+            return
+        }
+        Task {
+            do {
+                try await api.deleteAccount(accessToken: session.accessToken)
+                finishAccountDeletion()
+            } catch DromeAPIError.unauthorized {
+                // Access and refresh share one 30-day expiry, so a 401 here
+                // means the session is at/near expiry. Refresh once and retry
+                // (mirroring the sync path) rather than stranding the user on a
+                // dead session with no way to delete or re-authenticate.
+                await deleteAccountAfterRefresh(session)
+            } catch {
+                accountAlert = AccountAlert(
+                    title: "Couldn't delete account",
+                    message: accountErrorText(error)
+                )
+            }
+        }
+    }
+
+    private func deleteAccountAfterRefresh(_ session: SessionTokens) async {
+        do {
+            let refreshed = try await api.refresh(refreshToken: session.refreshToken)
+            try? keychain.save(SessionTokens(
+                accountId: refreshed.accountId,
+                accessToken: refreshed.accessToken,
+                refreshToken: refreshed.refreshToken,
+                label: session.label
+            ))
+            try await api.deleteAccount(accessToken: refreshed.accessToken)
+            finishAccountDeletion()
+        } catch DromeAPIError.unauthorized {
+            // Refresh also rejected: the session is truly dead and the account
+            // was NOT deleted. Reconcile to signed-out (keeping the owner, since
+            // the account still exists) so the user can sign in again to delete.
+            signOut()
+            accountAlert = AccountAlert(
+                title: "Signed out",
+                message: "Your session expired, so the account wasn't deleted. "
+                    + "You've been signed out — sign in again to delete it."
+            )
+        } catch {
+            accountAlert = AccountAlert(
+                title: "Couldn't delete account",
+                message: accountErrorText(error)
+            )
+        }
+    }
+
+    /// Completes an account deletion: signs out and releases the local-data
+    /// owner binding. The server account is gone, so the local data is now
+    /// unowned and may be adopted by the next sign-in (including a fresh
+    /// re-auth of the same Apple ID, which mints a new account id).
+    private func finishAccountDeletion() {
+        signOut()
+        setLocalDataOwner(nil)
+    }
+
+    // MARK: SyncEngine callbacks
+
+    /// The engine forced a sign-out (refresh rejected). Local data untouched.
+    func handleForcedSignOut(reason: String?) {
+        signOut()
+        if let reason { lastErrorMessage = reason }
+    }
+
+    /// A pull changed local state — re-project the UI and catch the widget up.
+    func refreshAfterSync() {
+        refresh()
+        WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    /// A sync force-adopted the account's active challenge, swapping the board.
+    /// Raise the one-shot notice RootView surfaces on the primary surface.
+    func noteConflictAdopted() {
+        boardConflictNotice = true
+    }
+
+    /// The engine hit a 402 (entitlement lapsed). Keep the cached snapshot
+    /// honest with the paused sync status instead of showing a stale
+    /// launch-time value in the Account "Plan" row.
+    func markEntitlementLapsed() {
+        entitlement = Entitlement(entitled: false, betaAllEntitled: false)
+    }
+
+    /// Re-reads the entitlement snapshot opportunistically (foreground while
+    /// signed in), so the Plan row can't drift from the real server state
+    /// between launches. No-op when signed out.
+    func refreshEntitlementSnapshot() {
+        guard signedIn else { return }
+        Task { await fetchEntitlement() }
+    }
+
+    private func makeSyncEngine(accountId: Int64) {
+        syncEngine = SyncEngine(
+            client: client,
+            api: api,
+            keychain: keychain,
+            context: String(accountId),
+            appModel: self
+        )
+    }
+
+    private func fetchEntitlement() async {
+        guard let session = keychain.load() else { return }
+        // Non-fatal: a failed read just leaves the snapshot nil (beta grants all).
+        entitlement = try? await api.entitlement(accessToken: session.accessToken)
+    }
+
+    private func accountErrorText(_ error: Error) -> String {
+        guard let apiError = error as? DromeAPIError else { return "\(error)" }
+        switch apiError {
+        case .offline:
+            return "Couldn't reach the server. Check your connection and try again."
+        case .unauthorized:
+            return "That sign-in didn't go through. Please try again."
+        case .notEntitled(let message):
+            return message.isEmpty ? "Sync isn't available on this account right now." : message
+        case .client(_, _, let message), .server(_, _, let message):
+            return message.isEmpty ? "Something went wrong. Please try again." : message
+        case .decoding, .unexpected:
+            return "Something went wrong. Please try again."
+        }
     }
 
     private var pendingWaterMl: Int64?
@@ -316,6 +677,7 @@ final class AppModel {
             _ = try client.closeDay(date: date)
             refresh()
             WidgetCenter.shared.reloadAllTimelines()
+            pokeSync()
         } catch {
             lastErrorMessage = "\(error)"
         }
@@ -330,6 +692,7 @@ final class AppModel {
             if lastWaterEventUuid == eventUuid { lastWaterEventUuid = nil }
             refresh()
             WidgetCenter.shared.reloadAllTimelines()
+            pokeSync()
         } catch {
             lastErrorMessage = "\(error)"
         }
@@ -372,6 +735,7 @@ final class AppModel {
             try client.backfillDays(days)
             refresh()
             WidgetCenter.shared.reloadAllTimelines()
+            pokeSync()
         } catch {
             lastErrorMessage = "\(error)"
         }
@@ -405,6 +769,14 @@ final class AppModel {
         let photosDeleted = PhotoStore.deleteAllFiles()
         UserDefaults.standard.removeObject(forKey: "lastBackupAt")
         UserDefaults.standard.removeObject(forKey: "hasDragPoured")
+        // Signed OUT: the wipe is permanent locally, so the fresh store is
+        // unowned and any account may adopt it. Signed IN, do NOT release the
+        // binding — a signed-in "Start over" re-mints the device id and the
+        // next sync re-pulls this account's own history (reset-recovery), so
+        // that recovered data is still owned by the signed-in account.
+        if !signedIn {
+            setLocalDataOwner(nil)
+        }
         WidgetPaceCheck.clear()
         // Drop any queued one-shot UI moments — nothing pre-reset may fire
         // over onboarding.
@@ -423,6 +795,9 @@ final class AppModel {
                 + "removes them."
         }
         WidgetCenter.shared.reloadAllTimelines()
+        // A signed-in reset re-mints the device id in the core; the next sync
+        // starts at cursor 0 and pulls the account's full history back down.
+        pokeSync()
     }
 
     // MARK: - Plumbing
@@ -446,6 +821,8 @@ final class AppModel {
             )
         }
         WidgetCenter.shared.reloadAllTimelines()
+        // Opportunistic sync after any log/revoke-task (no-op when signed out).
+        pokeSync()
     }
 
     // MARK: - Date plumbing (calendar-date arithmetic only; attribution stays in core)
