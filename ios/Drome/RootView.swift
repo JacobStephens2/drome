@@ -68,22 +68,26 @@ struct RootView: View {
         .task {
             appModel.refresh()
             applyDebugLaunchScreen()
-            // Opportunistic sync on launch (no-op when signed out).
-            appModel.pokeSync()
-            // Refresh groups and pull any pending nudges (no-op signed out).
-            appModel.refreshGroupsAndNudges()
+            if FeatureFlags.serverFeatures {
+                // Opportunistic sync on launch (no-op when signed out).
+                appModel.pokeSync()
+                // Refresh groups and pull any pending nudges (no-op signed out).
+                appModel.refreshGroupsAndNudges()
+            }
         }
         // Widget logs and day rollovers happen while the app is backgrounded;
         // re-project on every return to foreground so the board is never stale.
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 appModel.refresh()
-                appModel.pokeSync()
-                // Keep the Account "Plan" row from drifting from the server
-                // between launches (no-op when signed out).
-                appModel.refreshEntitlementSnapshot()
-                // Fresh groups + nudge check on every return to foreground.
-                appModel.refreshGroupsAndNudges()
+                if FeatureFlags.serverFeatures {
+                    appModel.pokeSync()
+                    // Keep the Account "Plan" row from drifting from the server
+                    // between launches (no-op when signed out).
+                    appModel.refreshEntitlementSnapshot()
+                    // Fresh groups + nudge check on every return to foreground.
+                    appModel.refreshGroupsAndNudges()
+                }
             }
         }
         .sheet(item: $sheet) { presented in

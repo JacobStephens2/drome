@@ -29,7 +29,10 @@ struct DromeApp: App {
             model.refresh()
             // Restore a persisted account session (opt-in; no-op when signed
             // out) so sync resumes across launches without re-authenticating.
-            model.restoreAccountSession()
+            // Gated: server features stay dark in Release until drome-server is live.
+            if FeatureFlags.serverFeatures {
+                model.restoreAccountSession()
+            }
             _appModel = State(initialValue: model)
             storeOpenError = nil
         } catch {

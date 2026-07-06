@@ -68,8 +68,10 @@ struct SettingsView: View {
             readingSection
             dietSection
             dataSection
-            accountSection
-            groupsSection
+            if FeatureFlags.serverFeatures {
+                accountSection
+                groupsSection
+            }
             aboutSection
             startOverSection
         }
