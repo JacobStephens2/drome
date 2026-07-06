@@ -11,6 +11,7 @@ pub mod events;
 pub mod export;
 pub mod projections;
 pub mod rules;
+pub mod sync;
 pub mod time;
 pub mod water;
 
@@ -25,5 +26,9 @@ pub use api::{
 };
 pub use error::DromeError;
 pub use rules::RulesetKind;
+pub use sync::{
+    ConfigBlock, ConfigChallengeSlot, ConfigExtrasSlot, ConfigPresetsSlot, PullResult, SyncOutcome,
+    WireEvent, SLOT_CHALLENGE, SLOT_EXTRAS, SLOT_PRESETS,
+};
 pub use time::LocalInstant;
 pub use water::{ChugCheck, WaterState};

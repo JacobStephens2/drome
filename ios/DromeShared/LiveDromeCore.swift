@@ -130,7 +130,10 @@ final class LiveDromeCore: DromeCoreClient, @unchecked Sendable {
     }
 
     func updatePresets(_ presets: [ContainerPreset]) throws {
-        try call { try store.updatePresets(presets: presets.map(Self.uniPreset)) }
+        // Presets are a config-LWW slot in Phase 2; the facade stamps `now`
+        // internally (the core is clock-free), so the app-facing signature is
+        // unchanged.
+        try call { try store.updatePresets(presets: presets.map(Self.uniPreset), now: Self.nowInstant()) }
     }
 
     func extraDefs() throws -> [ExtraDef] {
@@ -138,11 +141,11 @@ final class LiveDromeCore: DromeCoreClient, @unchecked Sendable {
     }
 
     func setExtraEnabled(id: String, enabled: Bool) throws {
-        try call { try store.setExtraEnabled(extraId: id, enabled: enabled) }
+        try call { try store.setExtraEnabled(extraId: id, enabled: enabled, now: Self.nowInstant()) }
     }
 
     func setCurrentBook(_ title: String) throws {
-        try call { try store.setCurrentBook(title: title) }
+        try call { try store.setCurrentBook(title: title, now: Self.nowInstant()) }
     }
 
     func setWaterGoal(ml: Int64) throws {
@@ -150,11 +153,15 @@ final class LiveDromeCore: DromeCoreClient, @unchecked Sendable {
     }
 
     func setDietDescription(_ desc: String) throws {
-        try call { try store.setDietDescription(desc: desc) }
+        try call { try store.setDietDescription(desc: desc, now: Self.nowInstant()) }
     }
 
     func setWakingWindow(startMinutes: UInt16, endMinutes: UInt16) throws {
-        try call { try store.setWakingWindow(startMinutes: startMinutes, endMinutes: endMinutes) }
+        try call {
+            try store.setWakingWindow(
+                startMinutes: startMinutes, endMinutes: endMinutes, now: Self.nowInstant()
+            )
+        }
     }
 
     // MARK: - DromeCoreClient: logging
@@ -343,6 +350,83 @@ final class LiveDromeCore: DromeCoreClient, @unchecked Sendable {
     func resetAllData() throws {
         try call { try store.resetAllData() }
     }
+
+    // MARK: - DromeCoreClient: sync (Phase 2)
+
+    func deviceId() throws -> String {
+        try call { try store.deviceId() }
+    }
+
+    func currentResetEpoch() throws -> Int64 {
+        try call { try store.currentResetEpoch() }
+    }
+
+    func pendingEvents(context: String, limit: UInt32) throws -> [WireEvent] {
+        try call { try store.pendingEvents(context: context, limit: limit).map(Self.wireEvent) }
+    }
+
+    @discardableResult
+    func ackPushed(context: String, uuids: [String], expectedResetEpoch: Int64) throws
+        -> SyncOutcome
+    {
+        try call {
+            try store.ackPushed(context: context, uuids: uuids, expectedResetEpoch: expectedResetEpoch)
+        }
+    }
+
+    @discardableResult
+    func applyRemoteEvents(_ events: [WireEvent]) throws -> UInt32 {
+        try call { try store.applyRemoteEvents(events: events.map(Self.uniWireEvent)) }
+    }
+
+    func exportConfigState() throws -> String {
+        try call { try store.exportConfigState() }
+    }
+
+    @discardableResult
+    func applyRemoteConfig(_ blockJson: String, expectedResetEpoch: Int64) throws -> SyncOutcome {
+        try call {
+            try store.applyRemoteConfig(blockJson: blockJson, expectedResetEpoch: expectedResetEpoch)
+        }
+    }
+
+    func adoptActiveChallenge(blockJson: String, winnerChallengeId: String) throws {
+        try call {
+            try store.adoptActiveChallenge(blockJson: blockJson, winnerChallengeId: winnerChallengeId)
+        }
+    }
+
+    func lastServerSeq(context: String) throws -> Int64 {
+        try call { try store.lastServerSeq(context: context) }
+    }
+
+    @discardableResult
+    func setLastServerSeq(context: String, seq: Int64, expectedResetEpoch: Int64) throws
+        -> SyncOutcome
+    {
+        try call {
+            try store.setLastServerSeq(
+                context: context, seq: seq, expectedResetEpoch: expectedResetEpoch
+            )
+        }
+    }
+
+    @discardableResult
+    func applyPullBatch(
+        context: String,
+        events: [WireEvent],
+        newLastServerSeq: Int64,
+        expectedResetEpoch: Int64
+    ) throws -> PullResult {
+        try call {
+            try store.applyPullBatch(
+                context: context,
+                events: events.map(Self.uniWireEvent),
+                newLastServerSeq: newLastServerSeq,
+                expectedResetEpoch: expectedResetEpoch
+            )
+        }
+    }
 }
 
 // MARK: - Generated <-> Models mapping
@@ -409,6 +493,32 @@ private extension LiveDromeCore {
             noJunk: d.noJunk,
             photo: d.photo,
             extraIds: d.extraIds
+        )
+    }
+
+    static func wireEvent(_ e: UniWireEvent) -> WireEvent {
+        WireEvent(
+            uuid: e.uuid,
+            challengeId: e.challengeId,
+            loggedAtEpoch: e.loggedAtEpoch,
+            tzOffsetSecs: e.tzOffsetSecs,
+            effectiveDate: e.effectiveDate,
+            kind: e.kind,
+            payloadJson: e.payloadJson,
+            schemaVersion: e.schemaVersion
+        )
+    }
+
+    static func uniWireEvent(_ e: WireEvent) -> UniWireEvent {
+        UniWireEvent(
+            uuid: e.uuid,
+            challengeId: e.challengeId,
+            loggedAtEpoch: e.loggedAtEpoch,
+            tzOffsetSecs: e.tzOffsetSecs,
+            effectiveDate: e.effectiveDate,
+            kind: e.kind,
+            payloadJson: e.payloadJson,
+            schemaVersion: e.schemaVersion
         )
     }
 

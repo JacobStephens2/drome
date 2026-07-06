@@ -1,0 +1,7 @@
+# Route ALL workspace build artifacts into core/target/ (relative to this repo
+# root). Santa Lockdown allowlists binary execution ONLY from
+# core/target/(debug|release)/, so this keeps every cargo-built test/bench/bin
+# runnable — for both the core and server crates. Do NOT change this to an
+# out-of-repo path or freshly built binaries will be SIGKILLed. See CLAUDE.md.
+[build]
+target-dir = "core/target"

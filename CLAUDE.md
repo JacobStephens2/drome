@@ -26,6 +26,16 @@ Build & contracts:
   executed from a non-allowlisted path. This covers crate build scripts for any
   `--target` (incl. device `aarch64-apple-ios`), since those always run from
   `core/target/{debug,release}/build/`.
+- **Phase 2 workspace + server (`docs/PHASE2.md` is binding for `server/`):** the repo is
+  now a Cargo workspace (`core` + `server`/`drome-server`). Root `.cargo/config.toml` pins
+  `target-dir = core/target` for the WHOLE workspace so every freshly built binary — the
+  server's test/bin artifacts included — executes from the Santa-allowlisted path. Plain
+  `cargo test`/`clippy` in `core/` and `server/` both work (verified: a server test runs
+  from `core/target/debug/deps/`). `server/.cargo/config.toml` (`target-dir = ../core/target`)
+  is only consulted when cwd is `server/` and is kept in sync with the root config on
+  purpose — if you edit one, edit both, or freshly built server binaries get SIGKILLed.
+  Server dev loop: `cargo run -p drome-server` (listens on `0.0.0.0:8080`; envs `DROME_DB`,
+  `DROME_BIND`, `BETA_ALL_ENTITLED`). No Docker on this machine; CI builds the amd64 image.
 - Core: `cd core && cargo test`. Bindings + sim static lib: `core/build-ios-lib.sh`.
   App: `xcodebuild -project ios/Drome.xcodeproj -scheme Drome -destination 'platform=iOS
   Simulator,name=Chart35iPhone' build` (use a private -derivedDataPath when building in

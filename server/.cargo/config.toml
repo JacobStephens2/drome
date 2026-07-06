@@ -1,0 +1,13 @@
+# Santa Lockdown on this machine allowlists binary execution ONLY from this
+# repo's core/target/(debug|release)/ (see CLAUDE.md). Route every drome-server
+# build artifact — test binaries, build scripts, the server binary itself —
+# into that shared target dir so `cargo test`/`run` executables are allowed to
+# execute. Do NOT remove this or builds will be SIGKILLed at test time.
+#
+# MIRRORS the workspace-root ../.cargo/config.toml (target-dir = "core/target").
+# The root config already covers the whole workspace; THIS file only takes
+# effect when cwd is server/. Keep the two pointing at the SAME shared dir — if
+# you change one, change the other, or a server binary built from cwd=server/
+# will land outside the Santa allowlist and be SIGKILLed.
+[build]
+target-dir = "../core/target"

@@ -784,6 +784,11 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
         events.removeAll()
         closedDates.removeAll()
         goalChanges.removeAll()
+        // Mirror the core's sync/reset epoch invariant: bump the reset
+        // generation and zero the pull cursor, so any in-flight round-trip's
+        // tail writes (carrying the pre-reset epoch) are recognized as stale.
+        mockResetEpoch += 1
+        mockLastServerSeq = 0
     }
 
     func exportCsv() throws -> String {
@@ -803,5 +808,75 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
             ].joined(separator: ","))
         }
         return rows.joined(separator: "\n")
+    }
+
+    // MARK: - DromeCoreClient: sync (Phase 2)
+    //
+    // Stubs only. Sync is not a preview/UI surface; the real engine runs
+    // against LiveDromeCore. These keep MockDromeCore conforming and behave
+    // as a store that never has anything to sync (empty push, no-op pull).
+
+    private let mockDeviceId = "mock-device"
+    private var mockLastServerSeq: Int64 = 0
+    private var mockResetEpoch: Int64 = 0
+
+    func deviceId() throws -> String { mockDeviceId }
+
+    func currentResetEpoch() throws -> Int64 {
+        lock.lock(); defer { lock.unlock() }
+        return mockResetEpoch
+    }
+
+    func pendingEvents(context: String, limit: UInt32) throws -> [WireEvent] { [] }
+
+    @discardableResult
+    func ackPushed(context: String, uuids: [String], expectedResetEpoch: Int64) throws
+        -> SyncOutcome
+    {
+        lock.lock(); defer { lock.unlock() }
+        return expectedResetEpoch == mockResetEpoch ? .applied : .staleReset
+    }
+
+    @discardableResult
+    func applyRemoteEvents(_ events: [WireEvent]) throws -> UInt32 { 0 }
+
+    func exportConfigState() throws -> String { "{}" }
+
+    @discardableResult
+    func applyRemoteConfig(_ blockJson: String, expectedResetEpoch: Int64) throws -> SyncOutcome {
+        lock.lock(); defer { lock.unlock() }
+        return expectedResetEpoch == mockResetEpoch ? .applied : .staleReset
+    }
+
+    func adoptActiveChallenge(blockJson: String, winnerChallengeId: String) throws {}
+
+    func lastServerSeq(context: String) throws -> Int64 {
+        lock.lock(); defer { lock.unlock() }
+        return mockLastServerSeq
+    }
+
+    @discardableResult
+    func setLastServerSeq(context: String, seq: Int64, expectedResetEpoch: Int64) throws
+        -> SyncOutcome
+    {
+        lock.lock(); defer { lock.unlock() }
+        guard expectedResetEpoch == mockResetEpoch else { return .staleReset }
+        mockLastServerSeq = seq
+        return .applied
+    }
+
+    @discardableResult
+    func applyPullBatch(
+        context: String,
+        events: [WireEvent],
+        newLastServerSeq: Int64,
+        expectedResetEpoch: Int64
+    ) throws -> PullResult {
+        lock.lock(); defer { lock.unlock() }
+        guard expectedResetEpoch == mockResetEpoch else {
+            return PullResult(outcome: .staleReset, inserted: 0)
+        }
+        mockLastServerSeq = newLastServerSeq
+        return PullResult(outcome: .applied, inserted: 0)
     }
 }

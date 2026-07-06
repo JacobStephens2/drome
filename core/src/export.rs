@@ -85,49 +85,52 @@ pub fn parse_snapshot(json: &str) -> Result<Snapshot> {
 /// smuggle in values the app could never have written — e.g. a `goal_changed`
 /// of 0 silently auto-completes water for every later day.
 fn validate_payload_bounds(e: &SnapshotEvent) -> Result<()> {
-    match e.kind.as_str() {
+    validate_event_payload(&e.uuid, &e.kind, &e.payload)
+}
+
+/// Payload-bounds validation for a single event, shared by the import path
+/// (`validate_payload_bounds`) and the Phase 2 sync ingest
+/// (`sync::validate_wire_event`) so a synced event can never smuggle in a
+/// value the local log APIs would reject. `id` names the event in errors.
+pub fn validate_event_payload(id: &str, kind: &str, payload: &serde_json::Value) -> Result<()> {
+    match kind {
         events::KIND_WATER_ADD => {
-            let p: WaterAddPayload = serde_json::from_value(e.payload.clone())?;
+            let p: WaterAddPayload = serde_json::from_value(payload.clone())?;
             if !(1..=MAX_WATER_LOG_ML).contains(&p.ml) {
                 return Err(DromeError::InvalidArgument(format!(
-                    "snapshot event {}: water ml must be in 1..={MAX_WATER_LOG_ML}",
-                    e.uuid
+                    "event {id}: water ml must be in 1..={MAX_WATER_LOG_ML}"
                 )));
             }
         }
         events::KIND_WATER_ADJUST => {
-            let p: WaterAdjustPayload = serde_json::from_value(e.payload.clone())?;
+            let p: WaterAdjustPayload = serde_json::from_value(payload.clone())?;
             if !(-MAX_WATER_LOG_ML..=-1).contains(&p.ml) {
                 return Err(DromeError::InvalidArgument(format!(
-                    "snapshot event {}: water adjustment ml must be in -{MAX_WATER_LOG_ML}..=-1",
-                    e.uuid
+                    "event {id}: water adjustment ml must be in -{MAX_WATER_LOG_ML}..=-1"
                 )));
             }
         }
         events::KIND_GOAL_CHANGED => {
-            let p: GoalChangedPayload = serde_json::from_value(e.payload.clone())?;
+            let p: GoalChangedPayload = serde_json::from_value(payload.clone())?;
             if !(1..=MAX_WATER_GOAL_ML).contains(&p.water_goal_ml) {
                 return Err(DromeError::InvalidArgument(format!(
-                    "snapshot event {}: water goal ml must be in 1..={MAX_WATER_GOAL_ML}",
-                    e.uuid
+                    "event {id}: water goal ml must be in 1..={MAX_WATER_GOAL_ML}"
                 )));
             }
         }
         events::KIND_WORKOUT => {
-            let p: WorkoutPayload = serde_json::from_value(e.payload.clone())?;
+            let p: WorkoutPayload = serde_json::from_value(payload.clone())?;
             if p.duration_min == 0 || p.duration_min > MAX_WORKOUT_DURATION_MIN {
                 return Err(DromeError::InvalidArgument(format!(
-                    "snapshot event {}: workout duration_min must be in 1..={MAX_WORKOUT_DURATION_MIN}",
-                    e.uuid
+                    "event {id}: workout duration_min must be in 1..={MAX_WORKOUT_DURATION_MIN}"
                 )));
             }
         }
         events::KIND_READING => {
-            let p: ReadingPayload = serde_json::from_value(e.payload.clone())?;
+            let p: ReadingPayload = serde_json::from_value(payload.clone())?;
             if p.pages == 0 || p.pages > MAX_READING_PAGES {
                 return Err(DromeError::InvalidArgument(format!(
-                    "snapshot event {}: pages must be in 1..={MAX_READING_PAGES}",
-                    e.uuid
+                    "event {id}: pages must be in 1..={MAX_READING_PAGES}"
                 )));
             }
         }
@@ -138,10 +141,9 @@ fn validate_payload_bounds(e: &SnapshotEvent) -> Result<()> {
             // cannot catch a malformed ref, but `revoke_task(_, Photo, _)`
             // parses it later; without this arm a hand-edited snapshot
             // could make the photo toggle-off fail with a raw storage error.
-            serde_json::from_value::<PhotoDonePayload>(e.payload.clone()).map_err(|err| {
+            serde_json::from_value::<PhotoDonePayload>(payload.clone()).map_err(|err| {
                 DromeError::InvalidArgument(format!(
-                    "snapshot event {}: malformed photo_done payload: {err}",
-                    e.uuid
+                    "event {id}: malformed photo_done payload: {err}"
                 ))
             })?;
         }

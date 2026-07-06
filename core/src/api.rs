@@ -14,7 +14,7 @@ use crate::projections::Projection;
 use crate::rules::RulesetKind;
 use crate::time::{self, LocalInstant};
 use crate::water::{self, ChugCheck, WaterState};
-use crate::{db, export};
+use crate::{db, export, sync};
 
 pub const DEFAULT_CHALLENGE_LENGTH_DAYS: u32 = 75;
 /// The single Phase 1 extra preset (docs/ARCHITECTURE.md, "Event schema").
@@ -38,7 +38,7 @@ pub enum Cadence {
 }
 
 impl Cadence {
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Cadence::Daily => "daily",
             Cadence::Weekly => "weekly",
@@ -405,7 +405,14 @@ impl DromeStore {
         })
     }
 
-    pub fn update_presets(&self, presets: Vec<ContainerPreset>) -> Result<(), DromeError> {
+    /// `now` stamps the presets config-LWW slot (docs/PHASE2.md): presets are
+    /// config, not events, and sync last-writer-wins on this timestamp.
+    pub fn update_presets(
+        &self,
+        presets: Vec<ContainerPreset>,
+        now: LocalInstant,
+    ) -> Result<(), DromeError> {
+        now.wall_secs()?;
         for p in &presets {
             if p.id.trim().is_empty() || p.name.trim().is_empty() {
                 return Err(DromeError::InvalidArgument(
@@ -437,6 +444,7 @@ impl DromeStore {
                 params![p.id, challenge.id, p.name, p.ml, p.sort_order],
             )?;
         }
+        sync::touch_config_slot(&tx, sync::SLOT_PRESETS, now)?;
         tx.commit()?;
         Ok(())
     }
@@ -460,16 +468,26 @@ impl DromeStore {
             .map_err(DromeError::from)
     }
 
-    pub fn set_extra_enabled(&self, extra_id: String, enabled: bool) -> Result<(), DromeError> {
-        let conn = self.lock()?;
-        let challenge = require_active(&conn)?;
-        let changed = conn.execute(
+    /// `now` stamps the extras config-LWW slot (docs/PHASE2.md).
+    pub fn set_extra_enabled(
+        &self,
+        extra_id: String,
+        enabled: bool,
+        now: LocalInstant,
+    ) -> Result<(), DromeError> {
+        now.wall_secs()?;
+        let mut conn = self.lock()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let challenge = require_active(&tx)?;
+        let changed = tx.execute(
             "UPDATE extra_defs SET enabled = ?1 WHERE challenge_id = ?2 AND id = ?3",
             params![enabled, challenge.id, extra_id],
         )?;
         if changed == 0 {
             return Err(DromeError::UnknownExtra(extra_id));
         }
+        sync::touch_config_slot(&tx, sync::SLOT_EXTRAS, now)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -479,18 +497,24 @@ impl DromeStore {
         load_extra_defs(&conn, &challenge.id)
     }
 
-    pub fn set_current_book(&self, title: String) -> Result<(), DromeError> {
-        let conn = self.lock()?;
-        let challenge = require_active(&conn)?;
+    /// `now` stamps the challenge config-LWW slot (the book lives on the
+    /// challenge row — docs/PHASE2.md).
+    pub fn set_current_book(&self, title: String, now: LocalInstant) -> Result<(), DromeError> {
+        now.wall_secs()?;
+        let mut conn = self.lock()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let challenge = require_active(&tx)?;
         let book = if title.trim().is_empty() {
             None
         } else {
             Some(title)
         };
-        conn.execute(
+        tx.execute(
             "UPDATE challenge SET current_book = ?1 WHERE id = ?2",
             params![book, challenge.id],
         )?;
+        sync::touch_config_slot(&tx, sync::SLOT_CHALLENGE, now)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -519,25 +543,30 @@ impl DromeStore {
         Ok(())
     }
 
-    /// Display-only config; safe to edit mid-challenge.
-    pub fn set_diet_description(&self, desc: String) -> Result<(), DromeError> {
+    /// Display-only config; safe to edit mid-challenge. `now` stamps the
+    /// challenge config-LWW slot (docs/PHASE2.md).
+    pub fn set_diet_description(&self, desc: String, now: LocalInstant) -> Result<(), DromeError> {
+        now.wall_secs()?;
         let trimmed = desc.trim();
         if trimmed.chars().count() > 500 {
             return Err(DromeError::InvalidArgument(
                 "diet description is capped at 500 characters".into(),
             ));
         }
-        let conn = self.lock()?;
-        let challenge = require_active(&conn)?;
+        let mut conn = self.lock()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let challenge = require_active(&tx)?;
         let value = if trimmed.is_empty() {
             None
         } else {
             Some(trimmed.to_owned())
         };
-        conn.execute(
+        tx.execute(
             "UPDATE challenge SET diet_description = ?1 WHERE id = ?2",
             params![value, challenge.id],
         )?;
+        sync::touch_config_slot(&tx, sync::SLOT_CHALLENGE, now)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -548,6 +577,7 @@ impl DromeStore {
         &self,
         start_minutes: u16,
         end_minutes: u16,
+        now: LocalInstant,
     ) -> Result<(), DromeError> {
         // Same bounds as create_challenge/import (validate_challenge_config):
         // end == 1440 (midnight) is a valid window end for the pacing math.
@@ -556,13 +586,17 @@ impl DromeStore {
                 "waking window must satisfy 0 <= start < end <= 1440".into(),
             ));
         }
-        let conn = self.lock()?;
-        let challenge = require_active(&conn)?;
-        conn.execute(
+        now.wall_secs()?;
+        let mut conn = self.lock()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let challenge = require_active(&tx)?;
+        tx.execute(
             "UPDATE challenge SET waking_start_minutes = ?1, waking_end_minutes = ?2
              WHERE id = ?3",
             params![start_minutes, end_minutes, challenge.id],
         )?;
+        sync::touch_config_slot(&tx, sync::SLOT_CHALLENGE, now)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -1318,12 +1352,244 @@ impl DromeStore {
              DELETE FROM container_presets;
              DELETE FROM extra_defs;
              DELETE FROM challenge;
-             DELETE FROM sqlite_sequence WHERE name = 'events';",
+             DELETE FROM sqlite_sequence WHERE name = 'events';
+             -- Phase 2 sync state is tied to the wiped account/challenge
+             -- context; clear it too. The device id (sync_device) is ALSO
+             -- wiped and re-minted on next use: the server's pull excludes a
+             -- device's OWN pushed events (device_id != self), so keeping the
+             -- id after wiping the local log would make a re-synced reset
+             -- device unable to recover its own history (empty log + same id
+             -- => the server never returns it). A fresh id re-pulls everything
+             -- (uuid dedup keeps it idempotent), exactly like a reinstall.
+             DELETE FROM sync_state;
+             DELETE FROM remote_events;
+             DELETE FROM config_meta;
+             DELETE FROM sync_device;",
         )?;
+        // Bump the reset generation in the SAME transaction as the wipe (the
+        // sync_epoch row is deliberately NOT among the DELETEs above — it must
+        // outlive the wipe). Any sync round-trip that captured the old epoch
+        // now finds its tail writes stale: set_last_server_seq /
+        // apply_pull_batch / ack_pushed / apply_remote_config become no-ops,
+        // so a stale round-trip can never resurrect the pre-reset pull cursor
+        // and strand the account's server-held history (docs/PHASE2.md).
+        sync::bump_reset_epoch(&tx)?;
         tx.execute_batch(db::APPEND_ONLY_TRIGGERS_SQL)?;
         tx.commit()?;
         let _ = conn.execute_batch("VACUUM");
         Ok(())
+    }
+
+    // === Phase 2 sync surface (docs/PHASE2.md "Sync protocol") ============
+    //
+    // All watermark state is keyed by `context` — an opaque per-account
+    // identifier (the server account id) so a device that signs into two
+    // accounts keeps independent push/pull cursors. Sync is idempotent event
+    // exchange; the projections never sync and recompute on every read.
+
+    /// This store's stable device id (the config-LWW tiebreak; also sent with
+    /// sync requests so the server can label event provenance). Minted once
+    /// and persisted on first use.
+    pub fn device_id(&self) -> Result<String, DromeError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let id = sync::ensure_device_id(&tx)?;
+        tx.commit()?;
+        Ok(id)
+    }
+
+    /// Local events past `context`'s `synced_through` watermark, oldest first,
+    /// capped at `limit`, serialized for the wire. Remote-origin events are
+    /// never returned (they came FROM the server); `photo_done` payloads have
+    /// `photo_ref` stripped at this boundary (the local rows keep theirs).
+    pub fn pending_events(
+        &self,
+        context: String,
+        limit: u32,
+    ) -> Result<Vec<sync::WireEvent>, DromeError> {
+        let conn = self.lock()?;
+        sync::pending_events(&conn, &context, limit)
+    }
+
+    /// Advances `context`'s push watermark past every acked uuid this store
+    /// holds (the new `synced_through` is the max of their local rowids, never
+    /// moving backwards). Unknown uuids are ignored.
+    ///
+    /// `expected_reset_epoch` is the reset generation the round-trip captured
+    /// at its start (from `current_reset_epoch`). If a `reset_all_data` ran
+    /// since, this is a stale in-flight write: it NO-OPs and returns
+    /// `StaleReset` (not an error), so a re-minted post-reset store's
+    /// watermark is never dragged forward by a round-trip the reset invalidated
+    /// (docs/PHASE2.md, sync/reset epoch invariant).
+    pub fn ack_pushed(
+        &self,
+        context: String,
+        uuids: Vec<String>,
+        expected_reset_epoch: i64,
+    ) -> Result<sync::SyncOutcome, DromeError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if sync::reset_gate(&tx, expected_reset_epoch)? == sync::SyncOutcome::StaleReset {
+            return Ok(sync::SyncOutcome::StaleReset);
+        }
+        sync::ack_pushed(&tx, &context, &uuids)?;
+        tx.commit()?;
+        Ok(sync::SyncOutcome::Applied)
+    }
+
+    /// Idempotent upsert of pulled events: uuids already present (including
+    /// revoked ones) are skipped, so replays and self-echoes are no-ops.
+    /// Inserted rows are marked remote-origin so `pending_events` never pushes
+    /// them back. The whole batch validates first and applies atomically.
+    /// Returns the number of events actually inserted.
+    pub fn apply_remote_events(&self, events: Vec<sync::WireEvent>) -> Result<u32, DromeError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let inserted = sync::apply_remote_events(&tx, &events)?;
+        tx.commit()?;
+        Ok(inserted)
+    }
+
+    /// This store's current config block (challenge settings, presets, extras)
+    /// with per-slot LWW stamps, as JSON — the `config` half of a sync
+    /// round-trip. Empty (`{}`) when no challenge is active.
+    pub fn export_config_state(&self) -> Result<String, DromeError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let block = sync::export_config_block(&tx)?;
+        tx.commit()?;
+        serde_json::to_string(&block).map_err(DromeError::from)
+    }
+
+    /// Merges a remote config block (JSON from `export_config_state`) per-slot
+    /// last-writer-wins on `(updated_at, device_id)`. A winning slot replaces
+    /// the local config wholesale and adopts the remote stamp so the merge
+    /// converges. Slots for a challenge this store has not seen are skipped
+    /// (they land on a later sync, after the challenge arrives).
+    ///
+    /// `expected_reset_epoch` is the reset generation captured at the round-
+    /// trip's start. A stale block (a `reset_all_data` ran since) NO-OPs and
+    /// returns `StaleReset` rather than re-materializing the wiped challenge
+    /// config on a store the user just started over (docs/PHASE2.md).
+    pub fn apply_remote_config(
+        &self,
+        block_json: String,
+        expected_reset_epoch: i64,
+    ) -> Result<sync::SyncOutcome, DromeError> {
+        let block: sync::ConfigBlock = serde_json::from_str(&block_json)?;
+        let mut conn = self.lock()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if sync::reset_gate(&tx, expected_reset_epoch)? == sync::SyncOutcome::StaleReset {
+            return Ok(sync::SyncOutcome::StaleReset);
+        }
+        sync::apply_remote_config_block(&tx, &block)?;
+        tx.commit()?;
+        Ok(sync::SyncOutcome::Applied)
+    }
+
+    /// Adopt the server-declared winner of a one-active-challenge conflict.
+    /// Call this INSTEAD of `apply_remote_config` when a sync response carries
+    /// `active_challenge_conflict`: `block_json` is that response's `config`
+    /// (the winner's slots) and `winner_challenge_id` its
+    /// `winner_challenge_id`. Unlike the LWW merge, this force-adopts the
+    /// winner's challenge/presets/extras even when the loser's local challenge
+    /// stamp is newer, and archives the loser locally — without it a loser
+    /// whose challenge was created later keeps its own active challenge forever
+    /// (a permanent split-brain the server cannot resolve). Idempotent.
+    pub fn adopt_active_challenge(
+        &self,
+        block_json: String,
+        winner_challenge_id: String,
+    ) -> Result<(), DromeError> {
+        let block: sync::ConfigBlock = serde_json::from_str(&block_json)?;
+        let mut conn = self.lock()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        sync::adopt_active_challenge(&tx, &block, &winner_challenge_id)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// This store's current reset generation (docs/PHASE2.md, sync/reset epoch
+    /// invariant). The SyncEngine reads this ONCE at the start of a sync
+    /// round-trip and passes it back into every cursor-or-state-mutating tail
+    /// write (`ack_pushed`, `apply_remote_config`, `set_last_server_seq`,
+    /// `apply_pull_batch`); a `reset_all_data` between the capture and the tail
+    /// bumps the epoch, so those writes NO-OP (return `StaleReset`) instead of
+    /// resurrecting pre-reset sync state. A never-reset store reads 0.
+    pub fn current_reset_epoch(&self) -> Result<i64, DromeError> {
+        let conn = self.lock()?;
+        sync::current_reset_epoch(&conn)
+    }
+
+    /// `context`'s pull cursor (the highest `server_seq` this store has
+    /// applied). 0 when the context has never pulled.
+    pub fn last_server_seq(&self, context: String) -> Result<i64, DromeError> {
+        let conn = self.lock()?;
+        sync::get_last_server_seq(&conn, &context)
+    }
+
+    /// Advances `context`'s pull cursor after applying a pull batch.
+    ///
+    /// `expected_reset_epoch` is the reset generation captured at the round-
+    /// trip's start; a stale advance (a `reset_all_data` ran since) NO-OPs and
+    /// returns `StaleReset`. This is the exact write the data-loss race turned
+    /// on: without the gate, a stale round-trip re-created `sync_state` with a
+    /// pre-reset `last_server_seq`, so later clean pulls (`server_seq > cursor`)
+    /// skipped the account's own re-pullable history forever (docs/PHASE2.md).
+    pub fn set_last_server_seq(
+        &self,
+        context: String,
+        seq: i64,
+        expected_reset_epoch: i64,
+    ) -> Result<sync::SyncOutcome, DromeError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if sync::reset_gate(&tx, expected_reset_epoch)? == sync::SyncOutcome::StaleReset {
+            return Ok(sync::SyncOutcome::StaleReset);
+        }
+        sync::set_last_server_seq(&tx, &context, seq)?;
+        tx.commit()?;
+        Ok(sync::SyncOutcome::Applied)
+    }
+
+    /// Applies a pulled batch AND advances `context`'s pull cursor in ONE
+    /// transaction, returning the number of events inserted. Prefer this over
+    /// separate `apply_remote_events` + `set_last_server_seq` calls: it makes
+    /// crash-safety a property of the CORE, not of client call ordering. If the
+    /// cursor were advanced in its own transaction, a crash between the two
+    /// calls could leave the cursor PAST events that were never durably applied
+    /// — the next pull would start after them and silently drop them. Bundling
+    /// both writes means the cursor can never outrun the applied events.
+    ///
+    /// `expected_reset_epoch` is the reset generation captured at the round-
+    /// trip's start. When a `reset_all_data` ran since, the WHOLE batch is
+    /// dropped — neither the events nor the cursor advance land — and the call
+    /// returns `{ StaleReset, inserted: 0 }`. This is the invariant that closes
+    /// the reset/sync data-loss race: a re-minted post-reset store re-pulls its
+    /// history from `server_seq > 0` on the next clean sync, and no stale tail
+    /// can silently push the cursor past it (docs/PHASE2.md).
+    pub fn apply_pull_batch(
+        &self,
+        context: String,
+        events: Vec<sync::WireEvent>,
+        new_last_server_seq: i64,
+        expected_reset_epoch: i64,
+    ) -> Result<sync::PullResult, DromeError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if sync::reset_gate(&tx, expected_reset_epoch)? == sync::SyncOutcome::StaleReset {
+            return Ok(sync::PullResult {
+                outcome: sync::SyncOutcome::StaleReset,
+                inserted: 0,
+            });
+        }
+        let inserted = sync::apply_remote_events(&tx, &events)?;
+        sync::set_last_server_seq(&tx, &context, new_last_server_seq)?;
+        tx.commit()?;
+        Ok(sync::PullResult {
+            outcome: sync::SyncOutcome::Applied,
+            inserted,
+        })
     }
 }
 
@@ -1424,7 +1690,7 @@ fn clamp_u32(raw: i64, min: u32) -> u32 {
     raw.clamp(i64::from(min), i64::from(u32::MAX)) as u32
 }
 
-fn validate_challenge_config(
+pub(crate) fn validate_challenge_config(
     start_date: &str,
     length_days: u32,
     day_cutoff_minutes: u32,
@@ -1492,7 +1758,7 @@ fn require_active(conn: &Connection) -> Result<Challenge, DromeError> {
     load_active_challenge(conn)?.ok_or(DromeError::NoActiveChallenge)
 }
 
-fn load_active_challenge(conn: &Connection) -> Result<Option<Challenge>, DromeError> {
+pub(crate) fn load_active_challenge(conn: &Connection) -> Result<Option<Challenge>, DromeError> {
     let mut stmt = conn.prepare(
         "SELECT id, created_at_epoch, created_tz_offset_secs, ruleset, start_date, length_days,
                 day_cutoff_minutes, waking_start_minutes, waking_end_minutes,
@@ -1557,7 +1823,10 @@ fn load_active_challenge(conn: &Connection) -> Result<Option<Challenge>, DromeEr
     }))
 }
 
-fn load_extra_defs(conn: &Connection, challenge_id: &str) -> Result<Vec<ExtraDef>, DromeError> {
+pub(crate) fn load_extra_defs(
+    conn: &Connection,
+    challenge_id: &str,
+) -> Result<Vec<ExtraDef>, DromeError> {
     let mut stmt = conn.prepare(
         "SELECT id, name, cadence, enabled FROM extra_defs
          WHERE challenge_id = ?1 ORDER BY id",
@@ -1585,7 +1854,10 @@ fn load_extra_defs(conn: &Connection, challenge_id: &str) -> Result<Vec<ExtraDef
     Ok(defs)
 }
 
-fn load_presets(conn: &Connection, challenge_id: &str) -> Result<Vec<ContainerPreset>, DromeError> {
+pub(crate) fn load_presets(
+    conn: &Connection,
+    challenge_id: &str,
+) -> Result<Vec<ContainerPreset>, DromeError> {
     let mut stmt = conn.prepare(
         "SELECT id, name, ml, sort_order FROM container_presets
          WHERE challenge_id = ?1 ORDER BY sort_order, id",

@@ -617,7 +617,77 @@ fileprivate struct FfiConverterString: FfiConverter {
 
 public protocol DromeStoreProtocol: AnyObject, Sendable {
     
+    /**
+     * Advances `context`'s push watermark past every acked uuid this store
+     * holds (the new `synced_through` is the max of their local rowids, never
+     * moving backwards). Unknown uuids are ignored.
+     *
+     * `expected_reset_epoch` is the reset generation the round-trip captured
+     * at its start (from `current_reset_epoch`). If a `reset_all_data` ran
+     * since, this is a stale in-flight write: it NO-OPs and returns
+     * `StaleReset` (not an error), so a re-minted post-reset store's
+     * watermark is never dragged forward by a round-trip the reset invalidated
+     * (docs/PHASE2.md, sync/reset epoch invariant).
+     */
+    func ackPushed(context: String, uuids: [String], expectedResetEpoch: Int64) throws  -> SyncOutcome
+    
     func activeChallenge() throws  -> UniChallenge?
+    
+    /**
+     * Adopt the server-declared winner of a one-active-challenge conflict.
+     * Call this INSTEAD of `apply_remote_config` when a sync response carries
+     * `active_challenge_conflict`: `block_json` is that response's `config`
+     * (the winner's slots) and `winner_challenge_id` its
+     * `winner_challenge_id`. Unlike the LWW merge, this force-adopts the
+     * winner's challenge/presets/extras even when the loser's local challenge
+     * stamp is newer, and archives the loser locally — without it a loser
+     * whose challenge was created later keeps its own active challenge forever
+     * (a permanent split-brain the server cannot resolve). Idempotent.
+     */
+    func adoptActiveChallenge(blockJson: String, winnerChallengeId: String) throws 
+    
+    /**
+     * Applies a pulled batch AND advances `context`'s pull cursor in ONE
+     * transaction, returning the number of events inserted. Prefer this over
+     * separate `apply_remote_events` + `set_last_server_seq` calls: it makes
+     * crash-safety a property of the CORE, not of client call ordering. If the
+     * cursor were advanced in its own transaction, a crash between the two
+     * calls could leave the cursor PAST events that were never durably applied
+     * — the next pull would start after them and silently drop them. Bundling
+     * both writes means the cursor can never outrun the applied events.
+     *
+     * `expected_reset_epoch` is the reset generation captured at the round-
+     * trip's start. When a `reset_all_data` ran since, the WHOLE batch is
+     * dropped — neither the events nor the cursor advance land — and the call
+     * returns `{ StaleReset, inserted: 0 }`. This is the invariant that closes
+     * the reset/sync data-loss race: a re-minted post-reset store re-pulls its
+     * history from `server_seq > 0` on the next clean sync, and no stale tail
+     * can silently push the cursor past it (docs/PHASE2.md).
+     */
+    func applyPullBatch(context: String, events: [UniWireEvent], newLastServerSeq: Int64, expectedResetEpoch: Int64) throws  -> PullResult
+    
+    /**
+     * Merges a remote config block (JSON from `export_config_state`) per-slot
+     * last-writer-wins on `(updated_at, device_id)`. A winning slot replaces
+     * the local config wholesale and adopts the remote stamp so the merge
+     * converges. Slots for a challenge this store has not seen are skipped
+     * (they land on a later sync, after the challenge arrives).
+     *
+     * `expected_reset_epoch` is the reset generation captured at the round-
+     * trip's start. A stale block (a `reset_all_data` ran since) NO-OPs and
+     * returns `StaleReset` rather than re-materializing the wiped challenge
+     * config on a store the user just started over (docs/PHASE2.md).
+     */
+    func applyRemoteConfig(blockJson: String, expectedResetEpoch: Int64) throws  -> SyncOutcome
+    
+    /**
+     * Idempotent upsert of pulled events: uuids already present (including
+     * revoked ones) are skipped, so replays and self-echoes are no-ops.
+     * Inserted rows are marked remote-origin so `pending_events` never pushes
+     * them back. The whole batch validates first and applies atomically.
+     * Returns the number of events actually inserted.
+     */
+    func applyRemoteEvents(events: [UniWireEvent]) throws  -> UInt32
     
     /**
      * Inserts one `day_backfilled` event per day, all in a single transaction.
@@ -634,7 +704,32 @@ public protocol DromeStoreProtocol: AnyObject, Sendable {
     
     func createChallenge(cfg: UniNewChallenge) throws  -> UniChallenge
     
+    /**
+     * This store's current reset generation (docs/PHASE2.md, sync/reset epoch
+     * invariant). The SyncEngine reads this ONCE at the start of a sync
+     * round-trip and passes it back into every cursor-or-state-mutating tail
+     * write (`ack_pushed`, `apply_remote_config`, `set_last_server_seq`,
+     * `apply_pull_batch`); a `reset_all_data` between the capture and the tail
+     * bumps the epoch, so those writes NO-OP (return `StaleReset`) instead of
+     * resurrecting pre-reset sync state. A never-reset store reads 0.
+     */
+    func currentResetEpoch() throws  -> Int64
+    
     func dayState(date: String, now: LocalInstant) throws  -> UniDayState
+    
+    /**
+     * This store's stable device id (the config-LWW tiebreak; also sent with
+     * sync requests so the server can label event provenance). Minted once
+     * and persisted on first use.
+     */
+    func deviceId() throws  -> String
+    
+    /**
+     * This store's current config block (challenge settings, presets, extras)
+     * with per-slot LWW stamps, as JSON — the `config` half of a sync
+     * round-trip. Empty (`{}`) when no challenge is active.
+     */
+    func exportConfigState() throws  -> String
     
     func exportCsv(now: LocalInstant) throws  -> String
     
@@ -649,6 +744,12 @@ public protocol DromeStoreProtocol: AnyObject, Sendable {
      * log, never read from the snapshot.
      */
     func importJson(snapshot: String) throws 
+    
+    /**
+     * `context`'s pull cursor (the highest `server_seq` this store has
+     * applied). 0 when the context has never pulled.
+     */
+    func lastServerSeq(context: String) throws  -> Int64
     
     func logDietOk(now: LocalInstant, effectiveDate: String?) throws  -> UniLogResult
     
@@ -677,6 +778,14 @@ public protocol DromeStoreProtocol: AnyObject, Sendable {
     func logWaterAdjustment(ml: Int64, now: LocalInstant, effectiveDate: String?) throws  -> UniLogResult
     
     func logWorkout(durationMin: UInt32, outdoor: Bool, note: String?, startedAt: LocalInstant?, now: LocalInstant, effectiveDate: String?) throws  -> UniLogResult
+    
+    /**
+     * Local events past `context`'s `synced_through` watermark, oldest first,
+     * capped at `limit`, serialized for the wire. Remote-origin events are
+     * never returned (they came FROM the server); `photo_done` payloads have
+     * `photo_ref` stripped at this boundary (the local rows keep theirs).
+     */
+    func pendingEvents(context: String, limit: UInt32) throws  -> [UniWireEvent]
     
     /**
      * Wipes EVERYTHING — challenge, events, container presets, extra defs —
@@ -724,21 +833,41 @@ public protocol DromeStoreProtocol: AnyObject, Sendable {
      */
     func revokeTask(date: String, kind: UniRevocableTask, now: LocalInstant) throws  -> UniLogResult
     
-    func setCurrentBook(title: String) throws 
+    /**
+     * `now` stamps the challenge config-LWW slot (the book lives on the
+     * challenge row — docs/PHASE2.md).
+     */
+    func setCurrentBook(title: String, now: LocalInstant) throws 
     
     /**
-     * Display-only config; safe to edit mid-challenge.
+     * Display-only config; safe to edit mid-challenge. `now` stamps the
+     * challenge config-LWW slot (docs/PHASE2.md).
      */
-    func setDietDescription(desc: String) throws 
+    func setDietDescription(desc: String, now: LocalInstant) throws 
     
-    func setExtraEnabled(extraId: String, enabled: Bool) throws 
+    /**
+     * `now` stamps the extras config-LWW slot (docs/PHASE2.md).
+     */
+    func setExtraEnabled(extraId: String, enabled: Bool, now: LocalInstant) throws 
+    
+    /**
+     * Advances `context`'s pull cursor after applying a pull batch.
+     *
+     * `expected_reset_epoch` is the reset generation captured at the round-
+     * trip's start; a stale advance (a `reset_all_data` ran since) NO-OPs and
+     * returns `StaleReset`. This is the exact write the data-loss race turned
+     * on: without the gate, a stale round-trip re-created `sync_state` with a
+     * pre-reset `last_server_seq`, so later clean pulls (`server_seq > cursor`)
+     * skipped the account's own re-pullable history forever (docs/PHASE2.md).
+     */
+    func setLastServerSeq(context: String, seq: Int64, expectedResetEpoch: Int64) throws  -> SyncOutcome
     
     /**
      * The waking window only drives WaterState pacing and the
      * discourage_catch_up display — never day attribution or completion — so
      * editing it mid-challenge is a plain config update, not an event.
      */
-    func setWakingWindow(startMinutes: UInt16, endMinutes: UInt16) throws 
+    func setWakingWindow(startMinutes: UInt16, endMinutes: UInt16, now: LocalInstant) throws 
     
     /**
      * Goal changes are events: past days keep the goal they were lived under.
@@ -751,7 +880,11 @@ public protocol DromeStoreProtocol: AnyObject, Sendable {
     
     func today(now: LocalInstant) throws  -> UniTodayState
     
-    func updatePresets(presets: [UniContainerPreset]) throws 
+    /**
+     * `now` stamps the presets config-LWW slot (docs/PHASE2.md): presets are
+     * config, not events, and sync last-writer-wins on this timestamp.
+     */
+    func updatePresets(presets: [UniContainerPreset], now: LocalInstant) throws 
     
     /**
      * Every non-revoked `water_add` / `water_adjust` event attributed to
@@ -830,11 +963,127 @@ public static func `open`(dbPath: String)throws  -> DromeStore  {
     
 
     
+    /**
+     * Advances `context`'s push watermark past every acked uuid this store
+     * holds (the new `synced_through` is the max of their local rowids, never
+     * moving backwards). Unknown uuids are ignored.
+     *
+     * `expected_reset_epoch` is the reset generation the round-trip captured
+     * at its start (from `current_reset_epoch`). If a `reset_all_data` ran
+     * since, this is a stale in-flight write: it NO-OPs and returns
+     * `StaleReset` (not an error), so a re-minted post-reset store's
+     * watermark is never dragged forward by a round-trip the reset invalidated
+     * (docs/PHASE2.md, sync/reset epoch invariant).
+     */
+open func ackPushed(context: String, uuids: [String], expectedResetEpoch: Int64)throws  -> SyncOutcome  {
+    return try  FfiConverterTypeSyncOutcome_lift(try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
+        uniffiCallStatus in
+    uniffi_drome_core_fn_method_dromestore_ack_pushed(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(context),
+        FfiConverterSequenceString.lower(uuids),
+        FfiConverterInt64.lower(expectedResetEpoch),uniffiCallStatus
+    )
+})
+}
+    
 open func activeChallenge()throws  -> UniChallenge?  {
     return try  FfiConverterOptionTypeUniChallenge.lift(try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
         uniffiCallStatus in
     uniffi_drome_core_fn_method_dromestore_active_challenge(
             self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Adopt the server-declared winner of a one-active-challenge conflict.
+     * Call this INSTEAD of `apply_remote_config` when a sync response carries
+     * `active_challenge_conflict`: `block_json` is that response's `config`
+     * (the winner's slots) and `winner_challenge_id` its
+     * `winner_challenge_id`. Unlike the LWW merge, this force-adopts the
+     * winner's challenge/presets/extras even when the loser's local challenge
+     * stamp is newer, and archives the loser locally — without it a loser
+     * whose challenge was created later keeps its own active challenge forever
+     * (a permanent split-brain the server cannot resolve). Idempotent.
+     */
+open func adoptActiveChallenge(blockJson: String, winnerChallengeId: String)throws   {try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
+        uniffiCallStatus in
+    uniffi_drome_core_fn_method_dromestore_adopt_active_challenge(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(blockJson),
+        FfiConverterString.lower(winnerChallengeId),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Applies a pulled batch AND advances `context`'s pull cursor in ONE
+     * transaction, returning the number of events inserted. Prefer this over
+     * separate `apply_remote_events` + `set_last_server_seq` calls: it makes
+     * crash-safety a property of the CORE, not of client call ordering. If the
+     * cursor were advanced in its own transaction, a crash between the two
+     * calls could leave the cursor PAST events that were never durably applied
+     * — the next pull would start after them and silently drop them. Bundling
+     * both writes means the cursor can never outrun the applied events.
+     *
+     * `expected_reset_epoch` is the reset generation captured at the round-
+     * trip's start. When a `reset_all_data` ran since, the WHOLE batch is
+     * dropped — neither the events nor the cursor advance land — and the call
+     * returns `{ StaleReset, inserted: 0 }`. This is the invariant that closes
+     * the reset/sync data-loss race: a re-minted post-reset store re-pulls its
+     * history from `server_seq > 0` on the next clean sync, and no stale tail
+     * can silently push the cursor past it (docs/PHASE2.md).
+     */
+open func applyPullBatch(context: String, events: [UniWireEvent], newLastServerSeq: Int64, expectedResetEpoch: Int64)throws  -> PullResult  {
+    return try  FfiConverterTypePullResult_lift(try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
+        uniffiCallStatus in
+    uniffi_drome_core_fn_method_dromestore_apply_pull_batch(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(context),
+        FfiConverterSequenceTypeUniWireEvent.lower(events),
+        FfiConverterInt64.lower(newLastServerSeq),
+        FfiConverterInt64.lower(expectedResetEpoch),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Merges a remote config block (JSON from `export_config_state`) per-slot
+     * last-writer-wins on `(updated_at, device_id)`. A winning slot replaces
+     * the local config wholesale and adopts the remote stamp so the merge
+     * converges. Slots for a challenge this store has not seen are skipped
+     * (they land on a later sync, after the challenge arrives).
+     *
+     * `expected_reset_epoch` is the reset generation captured at the round-
+     * trip's start. A stale block (a `reset_all_data` ran since) NO-OPs and
+     * returns `StaleReset` rather than re-materializing the wiped challenge
+     * config on a store the user just started over (docs/PHASE2.md).
+     */
+open func applyRemoteConfig(blockJson: String, expectedResetEpoch: Int64)throws  -> SyncOutcome  {
+    return try  FfiConverterTypeSyncOutcome_lift(try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
+        uniffiCallStatus in
+    uniffi_drome_core_fn_method_dromestore_apply_remote_config(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(blockJson),
+        FfiConverterInt64.lower(expectedResetEpoch),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Idempotent upsert of pulled events: uuids already present (including
+     * revoked ones) are skipped, so replays and self-echoes are no-ops.
+     * Inserted rows are marked remote-origin so `pending_events` never pushes
+     * them back. The whole batch validates first and applies atomically.
+     * Returns the number of events actually inserted.
+     */
+open func applyRemoteEvents(events: [UniWireEvent])throws  -> UInt32  {
+    return try  FfiConverterUInt32.lift(try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
+        uniffiCallStatus in
+    uniffi_drome_core_fn_method_dromestore_apply_remote_events(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceTypeUniWireEvent.lower(events),uniffiCallStatus
     )
 })
 }
@@ -905,6 +1154,24 @@ open func createChallenge(cfg: UniNewChallenge)throws  -> UniChallenge  {
 })
 }
     
+    /**
+     * This store's current reset generation (docs/PHASE2.md, sync/reset epoch
+     * invariant). The SyncEngine reads this ONCE at the start of a sync
+     * round-trip and passes it back into every cursor-or-state-mutating tail
+     * write (`ack_pushed`, `apply_remote_config`, `set_last_server_seq`,
+     * `apply_pull_batch`); a `reset_all_data` between the capture and the tail
+     * bumps the epoch, so those writes NO-OP (return `StaleReset`) instead of
+     * resurrecting pre-reset sync state. A never-reset store reads 0.
+     */
+open func currentResetEpoch()throws  -> Int64  {
+    return try  FfiConverterInt64.lift(try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
+        uniffiCallStatus in
+    uniffi_drome_core_fn_method_dromestore_current_reset_epoch(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
 open func dayState(date: String, now: LocalInstant)throws  -> UniDayState  {
     return try  FfiConverterTypeUniDayState_lift(try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
         uniffiCallStatus in
@@ -912,6 +1179,34 @@ open func dayState(date: String, now: LocalInstant)throws  -> UniDayState  {
             self.uniffiCloneHandle(),
         FfiConverterString.lower(date),
         FfiConverterTypeLocalInstant_lower(now),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * This store's stable device id (the config-LWW tiebreak; also sent with
+     * sync requests so the server can label event provenance). Minted once
+     * and persisted on first use.
+     */
+open func deviceId()throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
+        uniffiCallStatus in
+    uniffi_drome_core_fn_method_dromestore_device_id(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * This store's current config block (challenge settings, presets, extras)
+     * with per-slot LWW stamps, as JSON — the `config` half of a sync
+     * round-trip. Empty (`{}`) when no challenge is active.
+     */
+open func exportConfigState()throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
+        uniffiCallStatus in
+    uniffi_drome_core_fn_method_dromestore_export_config_state(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -958,6 +1253,20 @@ open func importJson(snapshot: String)throws   {try rustCallWithError(FfiConvert
         FfiConverterString.lower(snapshot),uniffiCallStatus
     )
 }
+}
+    
+    /**
+     * `context`'s pull cursor (the highest `server_seq` this store has
+     * applied). 0 when the context has never pulled.
+     */
+open func lastServerSeq(context: String)throws  -> Int64  {
+    return try  FfiConverterInt64.lift(try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
+        uniffiCallStatus in
+    uniffi_drome_core_fn_method_dromestore_last_server_seq(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(context),uniffiCallStatus
+    )
+})
 }
     
 open func logDietOk(now: LocalInstant, effectiveDate: String?)throws  -> UniLogResult  {
@@ -1071,6 +1380,23 @@ open func logWorkout(durationMin: UInt32, outdoor: Bool, note: String?, startedA
 }
     
     /**
+     * Local events past `context`'s `synced_through` watermark, oldest first,
+     * capped at `limit`, serialized for the wire. Remote-origin events are
+     * never returned (they came FROM the server); `photo_done` payloads have
+     * `photo_ref` stripped at this boundary (the local rows keep theirs).
+     */
+open func pendingEvents(context: String, limit: UInt32)throws  -> [UniWireEvent]  {
+    return try  FfiConverterSequenceTypeUniWireEvent.lift(try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
+        uniffiCallStatus in
+    uniffi_drome_core_fn_method_dromestore_pending_events(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(context),
+        FfiConverterUInt32.lower(limit),uniffiCallStatus
+    )
+})
+}
+    
+    /**
      * Wipes EVERYTHING — challenge, events, container presets, extra defs —
      * returning the store to its never-used state (the Settings "Start
      * over" flow; the app layer owns photo files and its own flags).
@@ -1140,35 +1466,68 @@ open func revokeTask(date: String, kind: UniRevocableTask, now: LocalInstant)thr
 })
 }
     
-open func setCurrentBook(title: String)throws   {try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
+    /**
+     * `now` stamps the challenge config-LWW slot (the book lives on the
+     * challenge row — docs/PHASE2.md).
+     */
+open func setCurrentBook(title: String, now: LocalInstant)throws   {try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
         uniffiCallStatus in
     uniffi_drome_core_fn_method_dromestore_set_current_book(
             self.uniffiCloneHandle(),
-        FfiConverterString.lower(title),uniffiCallStatus
+        FfiConverterString.lower(title),
+        FfiConverterTypeLocalInstant_lower(now),uniffiCallStatus
     )
 }
 }
     
     /**
-     * Display-only config; safe to edit mid-challenge.
+     * Display-only config; safe to edit mid-challenge. `now` stamps the
+     * challenge config-LWW slot (docs/PHASE2.md).
      */
-open func setDietDescription(desc: String)throws   {try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
+open func setDietDescription(desc: String, now: LocalInstant)throws   {try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
         uniffiCallStatus in
     uniffi_drome_core_fn_method_dromestore_set_diet_description(
             self.uniffiCloneHandle(),
-        FfiConverterString.lower(desc),uniffiCallStatus
+        FfiConverterString.lower(desc),
+        FfiConverterTypeLocalInstant_lower(now),uniffiCallStatus
     )
 }
 }
     
-open func setExtraEnabled(extraId: String, enabled: Bool)throws   {try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
+    /**
+     * `now` stamps the extras config-LWW slot (docs/PHASE2.md).
+     */
+open func setExtraEnabled(extraId: String, enabled: Bool, now: LocalInstant)throws   {try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
         uniffiCallStatus in
     uniffi_drome_core_fn_method_dromestore_set_extra_enabled(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(extraId),
-        FfiConverterBool.lower(enabled),uniffiCallStatus
+        FfiConverterBool.lower(enabled),
+        FfiConverterTypeLocalInstant_lower(now),uniffiCallStatus
     )
 }
+}
+    
+    /**
+     * Advances `context`'s pull cursor after applying a pull batch.
+     *
+     * `expected_reset_epoch` is the reset generation captured at the round-
+     * trip's start; a stale advance (a `reset_all_data` ran since) NO-OPs and
+     * returns `StaleReset`. This is the exact write the data-loss race turned
+     * on: without the gate, a stale round-trip re-created `sync_state` with a
+     * pre-reset `last_server_seq`, so later clean pulls (`server_seq > cursor`)
+     * skipped the account's own re-pullable history forever (docs/PHASE2.md).
+     */
+open func setLastServerSeq(context: String, seq: Int64, expectedResetEpoch: Int64)throws  -> SyncOutcome  {
+    return try  FfiConverterTypeSyncOutcome_lift(try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
+        uniffiCallStatus in
+    uniffi_drome_core_fn_method_dromestore_set_last_server_seq(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(context),
+        FfiConverterInt64.lower(seq),
+        FfiConverterInt64.lower(expectedResetEpoch),uniffiCallStatus
+    )
+})
 }
     
     /**
@@ -1176,12 +1535,13 @@ open func setExtraEnabled(extraId: String, enabled: Bool)throws   {try rustCallW
      * discourage_catch_up display — never day attribution or completion — so
      * editing it mid-challenge is a plain config update, not an event.
      */
-open func setWakingWindow(startMinutes: UInt16, endMinutes: UInt16)throws   {try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
+open func setWakingWindow(startMinutes: UInt16, endMinutes: UInt16, now: LocalInstant)throws   {try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
         uniffiCallStatus in
     uniffi_drome_core_fn_method_dromestore_set_waking_window(
             self.uniffiCloneHandle(),
         FfiConverterUInt16.lower(startMinutes),
-        FfiConverterUInt16.lower(endMinutes),uniffiCallStatus
+        FfiConverterUInt16.lower(endMinutes),
+        FfiConverterTypeLocalInstant_lower(now),uniffiCallStatus
     )
 }
 }
@@ -1230,11 +1590,16 @@ open func today(now: LocalInstant)throws  -> UniTodayState  {
 })
 }
     
-open func updatePresets(presets: [UniContainerPreset])throws   {try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
+    /**
+     * `now` stamps the presets config-LWW slot (docs/PHASE2.md): presets are
+     * config, not events, and sync last-writer-wins on this timestamp.
+     */
+open func updatePresets(presets: [UniContainerPreset], now: LocalInstant)throws   {try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
         uniffiCallStatus in
     uniffi_drome_core_fn_method_dromestore_update_presets(
             self.uniffiCloneHandle(),
-        FfiConverterSequenceTypeUniContainerPreset.lower(presets),uniffiCallStatus
+        FfiConverterSequenceTypeUniContainerPreset.lower(presets),
+        FfiConverterTypeLocalInstant_lower(now),uniffiCallStatus
     )
 }
 }
@@ -1373,6 +1738,65 @@ public func FfiConverterTypeLocalInstant_lift(_ buf: RustBuffer) throws -> Local
 #endif
 public func FfiConverterTypeLocalInstant_lower(_ value: LocalInstant) -> RustBuffer {
     return FfiConverterTypeLocalInstant.lower(value)
+}
+
+
+/**
+ * The result of `apply_pull_batch`: whether the batch applied and, when it
+ * did, how many events were newly inserted (0 on `StaleReset`, and also 0
+ * when every pulled event was already present by uuid).
+ */
+public struct PullResult: Equatable, Hashable {
+    public var outcome: SyncOutcome
+    public var inserted: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(outcome: SyncOutcome, inserted: UInt32) {
+        self.outcome = outcome
+        self.inserted = inserted
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension PullResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePullResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PullResult {
+        return
+            try PullResult(
+                outcome: FfiConverterTypeSyncOutcome.read(from: &buf), 
+                inserted: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PullResult, into buf: inout [UInt8]) {
+        FfiConverterTypeSyncOutcome.write(value.outcome, into: &buf)
+        FfiConverterUInt32.write(value.inserted, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePullResult_lift(_ buf: RustBuffer) throws -> PullResult {
+    return try FfiConverterTypePullResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePullResult_lower(_ value: PullResult) -> RustBuffer {
+    return FfiConverterTypePullResult.lower(value)
 }
 
 
@@ -2831,6 +3255,90 @@ public func FfiConverterTypeUniWeekExtraState_lower(_ value: UniWeekExtraState) 
 }
 
 
+/**
+ * One event serialized for the wire — exactly the client event row minus
+ * the local rowid. `payload_json` is the payload as JSON text (UniFFI has
+ * no JSON value type). `photo_done` payloads cross the wire with
+ * `photo_ref` already stripped (refs are meaningless off-device).
+ */
+public struct UniWireEvent: Equatable, Hashable {
+    public var uuid: String
+    public var challengeId: String
+    public var loggedAtEpoch: Int64
+    public var tzOffsetSecs: Int32
+    public var effectiveDate: String?
+    public var kind: String
+    public var payloadJson: String
+    public var schemaVersion: Int64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(uuid: String, challengeId: String, loggedAtEpoch: Int64, tzOffsetSecs: Int32, effectiveDate: String?, kind: String, payloadJson: String, schemaVersion: Int64) {
+        self.uuid = uuid
+        self.challengeId = challengeId
+        self.loggedAtEpoch = loggedAtEpoch
+        self.tzOffsetSecs = tzOffsetSecs
+        self.effectiveDate = effectiveDate
+        self.kind = kind
+        self.payloadJson = payloadJson
+        self.schemaVersion = schemaVersion
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension UniWireEvent: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeUniWireEvent: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UniWireEvent {
+        return
+            try UniWireEvent(
+                uuid: FfiConverterString.read(from: &buf), 
+                challengeId: FfiConverterString.read(from: &buf), 
+                loggedAtEpoch: FfiConverterInt64.read(from: &buf), 
+                tzOffsetSecs: FfiConverterInt32.read(from: &buf), 
+                effectiveDate: FfiConverterOptionString.read(from: &buf), 
+                kind: FfiConverterString.read(from: &buf), 
+                payloadJson: FfiConverterString.read(from: &buf), 
+                schemaVersion: FfiConverterInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: UniWireEvent, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.uuid, into: &buf)
+        FfiConverterString.write(value.challengeId, into: &buf)
+        FfiConverterInt64.write(value.loggedAtEpoch, into: &buf)
+        FfiConverterInt32.write(value.tzOffsetSecs, into: &buf)
+        FfiConverterOptionString.write(value.effectiveDate, into: &buf)
+        FfiConverterString.write(value.kind, into: &buf)
+        FfiConverterString.write(value.payloadJson, into: &buf)
+        FfiConverterInt64.write(value.schemaVersion, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUniWireEvent_lift(_ buf: RustBuffer) throws -> UniWireEvent {
+    return try FfiConverterTypeUniWireEvent.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUniWireEvent_lower(_ value: UniWireEvent) -> RustBuffer {
+    return FfiConverterTypeUniWireEvent.lower(value)
+}
+
+
 public struct UniWorkoutEntry: Equatable, Hashable {
     public var eventUuid: String
     public var durationMin: UInt32
@@ -3025,6 +3533,86 @@ public func FfiConverterTypeRulesetKind_lift(_ buf: RustBuffer) throws -> Rulese
 #endif
 public func FfiConverterTypeRulesetKind_lower(_ value: RulesetKind) -> RustBuffer {
     return FfiConverterTypeRulesetKind.lower(value)
+}
+
+
+
+/**
+ * Whether a cursor-or-state-mutating sync write took effect, or was dropped
+ * because a `reset_all_data` ran since the round-trip captured its reset
+ * epoch (docs/PHASE2.md, sync/reset epoch invariant). A `StaleReset` is NOT
+ * an error — it is the honest signal that this in-flight round-trip was
+ * invalidated by a local "Start over"; the caller discards its results and
+ * starts a fresh sync, which begins at cursor 0 and recovers full history.
+ */
+
+public enum SyncOutcome: Equatable, Hashable {
+    
+    /**
+     * Epochs matched: the write applied normally.
+     */
+    case applied
+    /**
+     * A reset invalidated this round-trip; the write was a no-op.
+     */
+    case staleReset
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension SyncOutcome: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSyncOutcome: FfiConverterRustBuffer {
+    typealias SwiftType = SyncOutcome
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SyncOutcome {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .applied
+        
+        case 2: return .staleReset
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: SyncOutcome, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .applied:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .staleReset:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSyncOutcome_lift(_ buf: RustBuffer) throws -> SyncOutcome {
+    return try FfiConverterTypeSyncOutcome.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSyncOutcome_lower(_ value: SyncOutcome) -> RustBuffer {
+    return FfiConverterTypeSyncOutcome.lower(value)
 }
 
 
@@ -3580,6 +4168,31 @@ fileprivate struct FfiConverterSequenceTypeUniWeekExtraState: FfiConverterRustBu
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeUniWireEvent: FfiConverterRustBuffer {
+    typealias SwiftType = [UniWireEvent]
+
+    public static func write(_ value: [UniWireEvent], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeUniWireEvent.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [UniWireEvent] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [UniWireEvent]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeUniWireEvent.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeUniWorkoutEntry: FfiConverterRustBuffer {
     typealias SwiftType = [UniWorkoutEntry]
 
@@ -3617,7 +4230,22 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
+    if (uniffi_drome_core_checksum_method_dromestore_ack_pushed() != 15558) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_drome_core_checksum_method_dromestore_active_challenge() != 23275) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_drome_core_checksum_method_dromestore_adopt_active_challenge() != 1966) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_drome_core_checksum_method_dromestore_apply_pull_batch() != 5823) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_drome_core_checksum_method_dromestore_apply_remote_config() != 56301) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_drome_core_checksum_method_dromestore_apply_remote_events() != 27145) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_drome_core_checksum_method_dromestore_backfill_days() != 23733) {
@@ -3638,7 +4266,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_drome_core_checksum_method_dromestore_create_challenge() != 15512) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_drome_core_checksum_method_dromestore_current_reset_epoch() != 13420) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_drome_core_checksum_method_dromestore_day_state() != 35962) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_drome_core_checksum_method_dromestore_device_id() != 62242) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_drome_core_checksum_method_dromestore_export_config_state() != 57581) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_drome_core_checksum_method_dromestore_export_csv() != 51127) {
@@ -3651,6 +4288,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_drome_core_checksum_method_dromestore_import_json() != 11569) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_drome_core_checksum_method_dromestore_last_server_seq() != 30956) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_drome_core_checksum_method_dromestore_log_diet_ok() != 4118) {
@@ -3677,6 +4317,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_drome_core_checksum_method_dromestore_log_workout() != 4364) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_drome_core_checksum_method_dromestore_pending_events() != 40141) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_drome_core_checksum_method_dromestore_reset_all_data() != 64623) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -3686,16 +4329,19 @@ private let initializationResult: InitializationResult = {
     if (uniffi_drome_core_checksum_method_dromestore_revoke_task() != 21754) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_drome_core_checksum_method_dromestore_set_current_book() != 43319) {
+    if (uniffi_drome_core_checksum_method_dromestore_set_current_book() != 64213) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_drome_core_checksum_method_dromestore_set_diet_description() != 64999) {
+    if (uniffi_drome_core_checksum_method_dromestore_set_diet_description() != 18226) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_drome_core_checksum_method_dromestore_set_extra_enabled() != 14815) {
+    if (uniffi_drome_core_checksum_method_dromestore_set_extra_enabled() != 34287) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_drome_core_checksum_method_dromestore_set_waking_window() != 55677) {
+    if (uniffi_drome_core_checksum_method_dromestore_set_last_server_seq() != 43219) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_drome_core_checksum_method_dromestore_set_waking_window() != 59741) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_drome_core_checksum_method_dromestore_set_water_goal() != 47066) {
@@ -3710,7 +4356,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_drome_core_checksum_method_dromestore_today() != 37166) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_drome_core_checksum_method_dromestore_update_presets() != 43732) {
+    if (uniffi_drome_core_checksum_method_dromestore_update_presets() != 47217) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_drome_core_checksum_method_dromestore_water_log() != 5565) {

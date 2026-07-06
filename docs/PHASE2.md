@@ -33,8 +33,36 @@ projections never sync, they recompute.
 - **Push**: client sends events it hasn't had acked (client tracks a local
   `synced_through` watermark over its own event table). Server upserts **dedup by
   uuid** (replays are no-ops), assigns server_seq, acks with the uuids + new seqs.
-- **Pull**: client sends its `last_server_seq`; server returns all newer events (any
-  device), client applies idempotently (skip uuids it already has), advances cursor.
+- **Pull**: client sends its `last_server_seq`; server returns newer events from
+  *other* devices, **scoped to the account's one active challenge** (archived-loser
+  events never propagate — see below), and the client applies them idempotently
+  (skip uuids it already has) AND advances the cursor **in one core transaction**
+  (`apply_pull_batch`), so a crash can never advance the cursor past events that
+  were not durably applied. A device that ran a local "Start over"
+  (`reset_all_data`) re-mints its device id, so on its next sync the server no
+  longer treats that account's server-held events as this device's self-echoes and
+  returns them — the reset device recovers its full history (uuid dedup keeps the
+  re-pull idempotent, so a steady-state sync neither loops nor duplicates).
+- **Reset epoch (sync/reset atomicity — a core-enforced invariant)**: a local
+  "Start over" and an in-flight sync round-trip must not corrupt each other. The
+  store keeps a monotonic `reset_epoch` in a single-row `sync_epoch` table that is
+  the ONE piece of sync state `reset_all_data` does not wipe — it *increments* it,
+  in the same transaction as the wipe. The SyncEngine reads the epoch ONCE at the
+  start of a round-trip (`current_reset_epoch`) and threads it back into every
+  cursor-or-state-**mutating** tail write — `ack_pushed`, `apply_remote_config`,
+  `set_last_server_seq`, and `apply_pull_batch`. Each of those becomes a NO-OP,
+  returning a typed `StaleReset` signal (NOT an error that breaks the flow), when
+  the captured epoch no longer equals the store's current epoch. So a
+  `reset_all_data` that lands between a round-trip's start and its tail invalidates
+  that entire tail: a stale round-trip can never re-create `sync_state` with a
+  pre-reset `last_server_seq`. Without this, a stale tail (`apply_pull_batch(ctx,
+  [], N)`) would drag the pull cursor back to `N` after the reset zeroed it, so
+  every later clean pull (`server_seq > N`) would skip the account's own
+  re-pullable history forever — silent, permanent data loss a re-sync cannot fix.
+  The happy path is unchanged (a round-trip with no interleaved reset has matching
+  epochs and applies normally); a post-reset clean sync starts fresh at cursor 0
+  and recovers full history. The epoch is purely client-side — the server neither
+  sees nor needs it.
 - Water totals, task states, runs: correct by construction — events merge additively,
   order-independent up to per-day recompute; per-event `logged_at`/`effective_date`
   travel with the event so attribution is identical on every device.
@@ -43,8 +71,17 @@ projections never sync, they recompute.
   round-trip as a `config` block. Goal changes remain events (as-of-day semantics).
 - **One active challenge per account** (server-enforced): the first synced active
   challenge wins; a device pushing a *different* active challenge gets it stored
-  archived (`sync_conflict` label) and pulls the winner. The client surfaces this
-  honestly ("This phone's challenge was archived — your account already has one").
+  archived (`sync_conflict` label) and the sync response carries
+  `active_challenge_conflict { archived_challenge_id, winner_challenge_id }`. The
+  loser MUST adopt the winner via `adopt_active_challenge(winner_config, winner_id)`,
+  which force-archives its local challenge and adopts the winner **regardless of the
+  config LWW stamp** — plain `apply_remote_config` cannot, because a loser whose
+  challenge was created later has a newer stamp and would silently keep its own
+  forever (permanent split-brain). Loser events stay owned by the archived (loser)
+  challenge id: projections read only the *active* challenge's events, so they are
+  never mixed into the winner's day/summary, and the server's active-challenge-scoped
+  pull never propagates them to other devices. The client surfaces this honestly
+  ("This phone's challenge was archived — your account already has one").
 - **Photos never sync in Phase 2**: the `photo_done` event syncs WITHOUT `photo_ref`
   (stripped client-side before push; refs are meaningless off-device). Opt-in encrypted
   photo sync is a later, separate design.
@@ -59,8 +96,17 @@ projections never sync, they recompute.
 - iOS: `SignInWithAppleButton` → identity token → `POST /v1/auth/apple`.
 - Server verifies the JWT against Apple's JWKS (aud = day.drome.app, iss = apple),
   extracts stable `sub`; account row: `id, apple_sub UNIQUE, email (relay, optional),
-  created_at`. Issues an opaque bearer session token (random 256-bit, hashed at rest,
-  rotating refresh; `Authorization: Bearer`). No passwords, ever.
+  created_at`. **Nonce binding**: the client generates a raw nonce, sends
+  `sha256(raw)` to Apple (echoed into the token's `nonce` claim) and the raw nonce
+  in the `POST /v1/auth/apple` body; the server rejects the exchange unless
+  `sha256(raw)` equals the claim (replay protection). Enforced whenever the token
+  carries a nonce claim; legacy tokens with neither claim nor supplied nonce still
+  authenticate. Issues an opaque bearer session token (random 256-bit, hashed at
+  rest, rotating refresh; `Authorization: Bearer`). **Sessions live 30 days**;
+  `POST /v1/auth/refresh` rotates BOTH tokens only while the session is unexpired
+  (`expires_at_epoch > now`) — an expired or unknown refresh token gets the same 401,
+  so the TTL is a real bound and a leaked refresh token is not a permanent
+  credential. No passwords, ever.
 - Deleting an account (App Store requirement): `DELETE /v1/account` wipes account rows,
   events, memberships server-side. Local data untouched.
 
@@ -85,9 +131,14 @@ projections never sync, they recompute.
 ## Server (drome-server)
 
 - Axum + rusqlite (WAL) — same event-store shape as the client core; embedded migrations
-  run at startup before serving (single-writer). `/healthz` (used by uptime check + deploy
-  gate). JSON API, versioned under `/v1`. Rate limiting: per-token simple token bucket.
-  No analytics; logs are operational only (no event payloads in logs).
+  run at startup before serving (single-writer). `/healthz` (uptime check + deploy gate)
+  **runs a trivial query under the db lock and returns 503 on any failure**, so it can't
+  greenlight a deploy or read green over a wedged/poisoned DB. JSON API, versioned under
+  `/v1`. Rate limiting: a per-token bucket on authed routes PLUS a coarse per-IP bucket
+  in front of the anonymous `/v1/auth/*` mint routes (they do real RSA/DB work with no
+  bearer token to key on); both bucket maps sweep idle entries past a TTL once large, so
+  they stay bounded under token rotation / IP churn. No analytics; logs are operational
+  only (no event payloads in logs).
 - Endpoints v1: `POST /v1/auth/apple`, `POST /v1/auth/refresh`, `DELETE /v1/account`,
   `POST /v1/sync` (push+pull in one round-trip), `POST /v1/groups`,
   `POST /v1/groups/join`, `GET /v1/groups/:id` (member day states),

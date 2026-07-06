@@ -80,7 +80,7 @@ fn demo_store() -> (TempDir, String, Arc<DromeStore>) {
         ))
         .expect("create challenge");
     store
-        .set_extra_enabled(JOB_EXTRA_ID.into(), true)
+        .set_extra_enabled(JOB_EXTRA_ID.into(), true, at("2026-07-04", 9, 0))
         .expect("enable extra");
     let days: Vec<BackfilledDay> = (1..=13)
         .map(|i| BackfilledDay {
@@ -757,12 +757,15 @@ fn water_state_paces_across_the_waking_window() {
 fn import_json_round_trips_into_a_fresh_store() {
     let (_d1, _p1, source) = demo_store();
     source
-        .update_presets(vec![drome_core::ContainerPreset {
-            id: "bottle".into(),
-            name: "24 oz bottle".into(),
-            ml: 710,
-            sort_order: 0,
-        }])
+        .update_presets(
+            vec![drome_core::ContainerPreset {
+                id: "bottle".into(),
+                name: "24 oz bottle".into(),
+                ml: 710,
+                sort_order: 0,
+            }],
+            at("2026-07-04", 9, 10),
+        )
         .expect("presets");
     // A varied live tail: water, a signed correction, a no-junk attestation,
     // a workout, a revoked reading, a goal change, a closed day, and a
@@ -866,7 +869,7 @@ fn import_json_round_trips_into_a_fresh_store() {
 fn diet_description_setter_trims_and_validates() {
     let (_dir, _path, store) = open_store();
     assert!(matches!(
-        store.set_diet_description("keto".into()),
+        store.set_diet_description("keto".into(), at("2026-06-21", 8, 0)),
         Err(DromeError::NoActiveChallenge)
     ));
 
@@ -879,7 +882,7 @@ fn diet_description_setter_trims_and_validates() {
         .expect("create");
 
     store
-        .set_diet_description("  keto, no alcohol  ".into())
+        .set_diet_description("  keto, no alcohol  ".into(), at("2026-06-21", 8, 5))
         .expect("set diet");
     let challenge = store.active_challenge().expect("query").expect("challenge");
     assert_eq!(
@@ -888,16 +891,18 @@ fn diet_description_setter_trims_and_validates() {
     );
 
     // Blank clears the field.
-    store.set_diet_description("   ".into()).expect("clear");
+    store
+        .set_diet_description("   ".into(), at("2026-06-21", 8, 10))
+        .expect("clear");
     let challenge = store.active_challenge().expect("query").expect("challenge");
     assert_eq!(challenge.diet_description, None);
 
     // 500 chars (after trimming) is fine; 501 is rejected.
     store
-        .set_diet_description(format!(" {} ", "x".repeat(500)))
+        .set_diet_description(format!(" {} ", "x".repeat(500)), at("2026-06-21", 8, 15))
         .expect("500 chars ok");
     assert!(matches!(
-        store.set_diet_description("x".repeat(501)),
+        store.set_diet_description("x".repeat(501), at("2026-06-21", 8, 20)),
         Err(DromeError::InvalidArgument(_))
     ));
     let challenge = store.active_challenge().expect("query").expect("challenge");
@@ -918,7 +923,9 @@ fn waking_window_setter_repaces_water_but_never_touches_day_state() {
     let summary_before = store.summary(now).expect("summary");
 
     // 6:00-21:00: same clock instant now sits 510 min into a 900-min window.
-    store.set_waking_window(360, 1_260).expect("set window");
+    store
+        .set_waking_window(360, 1_260, now)
+        .expect("set window");
     let after = store.water_state(now).expect("water");
     assert_eq!(after.pace_target_ml, GALLON_ML * 510 / 900);
     assert_ne!(after.pace_target_ml, before.pace_target_ml);
@@ -936,27 +943,31 @@ fn waking_window_setter_repaces_water_but_never_touches_day_state() {
 
     // Validation: start < end and end <= 1440, typed errors otherwise.
     assert!(matches!(
-        store.set_waking_window(600, 600),
+        store.set_waking_window(600, 600, now),
         Err(DromeError::InvalidArgument(_))
     ));
     assert!(matches!(
-        store.set_waking_window(700, 600),
+        store.set_waking_window(700, 600, now),
         Err(DromeError::InvalidArgument(_))
     ));
     assert!(matches!(
-        store.set_waking_window(0, 1_441),
+        store.set_waking_window(0, 1_441, now),
         Err(DromeError::InvalidArgument(_))
     ));
     // A midnight-end window is accepted by create/import, so it must stay
     // editable here too (same bounds).
-    store.set_waking_window(0, 1_440).expect("midnight-end ok");
+    store
+        .set_waking_window(0, 1_440, now)
+        .expect("midnight-end ok");
     let challenge = store.active_challenge().expect("query").expect("challenge");
     assert_eq!(challenge.waking_end_minutes, 1_440);
-    store.set_waking_window(0, 1_439).expect("edge window ok");
+    store
+        .set_waking_window(0, 1_439, now)
+        .expect("edge window ok");
 
     let (_d2, _p2, empty) = open_store();
     assert!(matches!(
-        empty.set_waking_window(360, 1_260),
+        empty.set_waking_window(360, 1_260, now),
         Err(DromeError::NoActiveChallenge)
     ));
 }
@@ -2208,12 +2219,15 @@ fn reset_then_restore_round_trip_rebuilds_identical_projections() {
     // The product's escape hatch: export → reset → import must be lossless.
     let (_dir, _path, store) = demo_store();
     store
-        .update_presets(vec![drome_core::ContainerPreset {
-            id: "bottle".into(),
-            name: "24 oz bottle".into(),
-            ml: 710,
-            sort_order: 0,
-        }])
+        .update_presets(
+            vec![drome_core::ContainerPreset {
+                id: "bottle".into(),
+                name: "24 oz bottle".into(),
+                ml: 710,
+                sort_order: 0,
+            }],
+            at("2026-07-04", 9, 10),
+        )
         .expect("presets");
     // A mixed live week on top of the fixture: water + a signed correction,
     // both workouts, reading (one entry revoked), all three attestations, a
@@ -2404,6 +2418,12 @@ fn widget_logs_racing_the_reset_never_survive_the_wipe() {
             // the invariant checked below is what's IN the store.
             let _ = widget.log_water(10, plus_min(at("2026-07-04", 10, 0), minute), None);
             minute += 1;
+            // Breathe between writes: a zero-gap hammer loop can starve the
+            // reset's BEGIN IMMEDIATE past the 5s busy_timeout (a livelock,
+            // not the race under test). The interleaving that this test cares
+            // about — a write whose challenge-read predates the wipe still
+            // firing across the reset window — is fully preserved.
+            std::thread::sleep(Duration::from_micros(500));
         }
     });
     std::thread::sleep(Duration::from_millis(25));

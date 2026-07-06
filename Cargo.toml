@@ -1,0 +1,13 @@
+# Workspace root. `core` (drome-core) and `server` (drome-server) share ONE
+# dependency resolution + lockfile so the `drome-core` types that cross the
+# client/server boundary (WireEvent, ConfigBlock — serde-derived) are compiled
+# against a single, feature-unified serde. Without this, building drome-core
+# from core/ vs server/ into the shared target dir yields serde artifacts with
+# different feature sets and the derived trait impls stop matching.
+#
+# Santa: the target dir is pinned to core/target/ in .cargo/config.toml so every
+# freshly built binary (core + server test/bench binaries) executes from a
+# Lockdown-allowlisted path. See CLAUDE.md / docs/PHASE2.md.
+[workspace]
+resolver = "2"
+members = ["core", "server"]

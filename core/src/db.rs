@@ -59,6 +59,52 @@ CREATE TABLE IF NOT EXISTS events (
 
 CREATE INDEX IF NOT EXISTS idx_events_challenge
     ON events (challenge_id, logged_at_epoch, id);
+
+-- Phase 2 sync state (docs/PHASE2.md \"Sync protocol\"). Plain config tables,
+-- NOT append-only: watermarks move forward, config stamps get overwritten.
+
+-- This store's stable device identity (lazily generated once).
+CREATE TABLE IF NOT EXISTS sync_device (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    device_id TEXT NOT NULL
+);
+
+-- Per account/device-context watermarks: `synced_through` is the local
+-- events.id high-water mark the server has acked (push side);
+-- `last_server_seq` is the pull cursor over the account's server_seq.
+CREATE TABLE IF NOT EXISTS sync_state (
+    context TEXT PRIMARY KEY,
+    synced_through INTEGER NOT NULL DEFAULT 0,
+    last_server_seq INTEGER NOT NULL DEFAULT 0
+);
+
+-- UUIDs of events applied FROM the server (remote origin), so
+-- pending_events never echoes them back to the server.
+CREATE TABLE IF NOT EXISTS remote_events (
+    event_uuid TEXT PRIMARY KEY
+);
+
+-- Per-slot last-writer-wins stamps for the config block (challenge settings,
+-- presets, extras). Written by the config setters, compared on merge.
+CREATE TABLE IF NOT EXISTS config_meta (
+    slot TEXT PRIMARY KEY,
+    updated_at_epoch INTEGER NOT NULL,
+    device_id TEXT NOT NULL
+);
+
+-- Monotonic reset generation (docs/PHASE2.md, sync/reset epoch invariant).
+-- A single row that reset_all_data INCREMENTS and, unlike every other sync
+-- table, NEVER wipes: it must survive the wipe so a sync round-trip captured
+-- before the reset can be told its tail writes are stale. Every cursor-or-
+-- state-mutating sync call carries the epoch in effect when its round-trip
+-- began and no-ops when this counter has moved on — that is what stops a
+-- stale in-flight round-trip from resurrecting a pre-reset pull cursor and
+-- silently stranding the account's server-held history.
+CREATE TABLE IF NOT EXISTS sync_epoch (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    epoch INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO sync_epoch (id, epoch) VALUES (1, 0);
 ";
 
 /// The append-only guard on `events`, enforced in the database itself.

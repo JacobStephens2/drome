@@ -447,6 +447,24 @@ struct BackfilledDay: Sendable, Hashable, Codable {
     var extraIds: [String]
 }
 
+// MARK: - Sync (Phase 2)
+
+/// One event serialized for the wire (docs/PHASE2.md "Sync protocol") — a
+/// client event row minus the local rowid. `payloadJson` is the event payload
+/// as JSON text; `photo_done` events cross the wire with `photo_ref` already
+/// stripped (photos never sync in Phase 2). This is plumbing for the iOS
+/// `SyncEngine` (built in the next stage); views never touch it.
+struct WireEvent: Sendable, Hashable, Codable {
+    var uuid: String
+    var challengeId: String
+    var loggedAtEpoch: Int64
+    var tzOffsetSecs: Int32
+    var effectiveDate: DayDate?
+    var kind: String
+    var payloadJson: String
+    var schemaVersion: Int64
+}
+
 // MARK: - Errors
 
 /// Swift-side mirror of the core's `DromeError`.
