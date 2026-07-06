@@ -1,0 +1,29 @@
+name: server-ci
+
+on:
+  push:
+    branches: [main]
+    paths: ["server/**", "core/**", "Cargo.toml", ".cargo/**", ".github/workflows/server-ci.yml"]
+  pull_request:
+    paths: ["server/**", "core/**", "Cargo.toml", ".cargo/**", ".github/workflows/server-ci.yml"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> core/target"
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test
+        run: cargo test
