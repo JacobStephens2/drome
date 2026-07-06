@@ -36,6 +36,16 @@ they are made by hand and never managed by the stack that stores state in them.
    `drome-tofu-state`. Create an **R2 API token** scoped to it; note the S3
    **Access Key ID** and **Secret Access Key** R2 shows you (the secret is
    `sha256(token value)`, which the R2 UI computes for you).
+   - **State protection (R2 has no object versioning).** Don't look for a
+     versioning toggle — it doesn't exist on R2, and don't put a **Bucket Lock**
+     on the whole bucket or the live state key: OpenTofu overwrites the state
+     object on every apply, so a lock there bricks the backend. Instead: the
+     state is already guarded by `use_lockfile = true` (no concurrent-write
+     corruption) + the encryption block (encrypted at rest), and the apply
+     workflow snapshots the encrypted state to `backups/<key>.<timestamp>`
+     before every apply. Optionally add an R2 **lifecycle rule** on the
+     `backups/` prefix to expire old copies (e.g. 90 days). Restore = copy a
+     `backups/` object back onto the live key with `aws s3 cp --endpoint-url …`.
 2. **State encryption passphrase.** Generate a passphrase (≥ 16 chars), store it
    in the password manager. This is `TF_VAR_state_encryption_passphrase`. **Lose
    it and the state is unrecoverable** — by design.

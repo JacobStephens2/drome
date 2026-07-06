@@ -138,6 +138,27 @@ jobs:
           EOF
       - name: init
         run: tofu init -input=false -backend-config=backend.hcl
+      - name: Snapshot state before apply (R2 has no object versioning)
+        env:
+          STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+          STATE_KEY: ${{ secrets.TF_STATE_KEY }}
+          STATE_ENDPOINT: ${{ secrets.TF_STATE_ENDPOINT }}
+          AWS_DEFAULT_REGION: auto
+        run: |
+          # R2 can't roll back a bad state write (no S3 versioning), so keep a
+          # timestamped copy of the already-encrypted state object before every
+          # apply. Restore = copy a backups/ object back onto the live key.
+          # Expire old copies with an R2 lifecycle rule on the backups/ prefix.
+          TS=$(date -u +%Y%m%dT%H%M%SZ)
+          if aws s3api head-object --bucket "$STATE_BUCKET" --key "$STATE_KEY" \
+               --endpoint-url "$STATE_ENDPOINT" >/dev/null 2>&1; then
+            aws s3 cp "s3://$STATE_BUCKET/$STATE_KEY" \
+              "s3://$STATE_BUCKET/backups/$STATE_KEY.$TS" \
+              --endpoint-url "$STATE_ENDPOINT"
+            echo "Backed up state → backups/$STATE_KEY.$TS"
+          else
+            echo "No prior state object — first apply, nothing to back up."
+          fi
       - name: apply
         run: tofu apply -no-color -input=false -auto-approve
 
