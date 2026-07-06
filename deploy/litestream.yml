@@ -1,0 +1,19 @@
+# Litestream: continuously replicate the server's SQLite DB to the R2
+# `litestream` bucket (plan.md tech stack). Litestream expands ${...} from its
+# process environment, which compose loads from .env (LITESTREAM_R2_*).
+#
+# The same replica is what `deploy.sh --restore` reads back onto an empty volume
+# in the from-zero recovery path (plan.md "Recreate drills").
+
+dbs:
+  - path: /data/drome/drome-server.sqlite
+    replicas:
+      - type: s3
+        endpoint: ${LITESTREAM_R2_ENDPOINT}
+        bucket: ${LITESTREAM_R2_BUCKET}
+        path: drome-server
+        region: auto
+        access-key-id: ${LITESTREAM_R2_ACCESS_KEY_ID}
+        secret-access-key: ${LITESTREAM_R2_SECRET_ACCESS_KEY}
+        # R2 needs path-style addressing.
+        force-path-style: true

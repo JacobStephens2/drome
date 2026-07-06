@@ -19,3 +19,17 @@ xcuserdata/
 *.log
 .scratch/
 ios/Frameworks/**/*.a
+
+# OpenTofu / infra (never commit state, downloaded plugins, real tfvars, or
+# backend creds; .terraform.lock.hcl IS committed for reproducible provider pins)
+infra/.terraform/
+*.tfstate
+*.tfstate.*
+infra/terraform.tfvars
+infra/*.auto.tfvars
+infra/backend.hcl
+tfplan
+crash.log
+
+# Deploy: the rendered .env is generated at deploy time from secrets
+deploy/.env

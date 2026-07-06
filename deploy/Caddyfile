@@ -1,0 +1,32 @@
+# Caddy: reverse proxy + automatic HTTPS (ACME/Let's Encrypt) for drome.day.
+#
+# Caddy obtains and renews the cert automatically on first boot. The CAA record
+# authorizing Let's Encrypt (infra/dns.tf) MUST be live first — .day is
+# HSTS-preloaded, so plain HTTP is refused and cert issuance is on the critical
+# path (plan.md). Certs persist in the caddy-data volume (on the block volume).
+#
+# {$VAR} are substituted from the container environment (compose passes
+# DROME_DOMAIN + ACME_EMAIL from .env).
+
+{
+	email {$ACME_EMAIL}
+
+	# Pin issuance to Let's Encrypt ONLY. Caddy's default issuer set falls back to
+	# ZeroSSL, but the CAA record (infra/dns.tf) authorizes only letsencrypt.org —
+	# a ZeroSSL fallback would be CAA-blocked and dead-end with NO cert. .day is
+	# HSTS-preloaded (no plain-HTTP fallback), so a cert dead-end is a full outage.
+	# `acme_ca` makes LE the sole issuer, so Caddy never dead-ends on ZeroSSL.
+	acme_ca https://acme-v02.api.letsencrypt.org/directory
+}
+
+{$DROME_DOMAIN} {
+	encode zstd gzip
+
+	# Everything proxies to the app container. /healthz rides through the same
+	# proxy so the public uptime check exercises the full path.
+	reverse_proxy drome-server:8080 {
+		health_uri      /healthz
+		health_interval 30s
+		health_timeout  5s
+	}
+}

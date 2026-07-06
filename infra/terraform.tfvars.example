@@ -1,0 +1,37 @@
+# EXAMPLE ONLY — copy to terraform.tfvars (gitignored) OR, preferred, supply
+# every value as TF_VAR_* from the GitHub `infra` environment. NEVER commit real
+# secrets. All values below are PLACEHOLDERS.
+
+# ---- Secrets (no defaults) ----
+do_token                    = "dop_v1_REPLACE_ME"
+cloudflare_token            = "REPLACE_ME_cloudflare_api_token"
+cloudflare_account_id       = "REPLACE_ME_cf_account_id"
+state_encryption_passphrase = "REPLACE_ME_min_16_chars_kept_in_password_manager"
+
+# SSH public keys (public halves only — safe to see, but still supplied, not
+# defaulted). The deploy user's PRIVATE key lives only in the GitHub `deploy`
+# environment.
+ssh_public_key         = "ssh-ed25519 AAAA...admin-break-glass"
+deploy_user_public_key = "ssh-ed25519 AAAA...deploy-ci"
+
+# Notifications
+alert_email = "ops@example.com"
+
+# ---- Non-secret tunables (shown with their defaults; omit to accept) ----
+# region               = "nyc3"
+# droplet_size         = "s-1vcpu-1gb-amd"   # Premium AMD 1 GB; 2gb => s-1vcpu-2gb-amd
+# droplet_image        = "ubuntu-24-04-x64"
+# deploy_user          = "deploy"
+# data_volume_size_gb  = 10
+# data_mount_path      = "/mnt/drome-data"
+# project_name         = "Drome"
+# environment          = "prod"
+# domain               = "drome.day"
+# healthcheck_url      = "https://drome.day/healthz"
+# uptime_regions       = ["us_east", "eu_west"]
+# r2_photos_bucket     = "drome-photos"
+# r2_litestream_bucket = "drome-litestream"
+# r2_location          = "enam"
+# cpu_alert_threshold    = 80
+# memory_alert_threshold = 80
+# disk_alert_threshold   = 80

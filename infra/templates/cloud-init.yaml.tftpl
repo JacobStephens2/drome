@@ -1,0 +1,76 @@
+#cloud-config
+# Rendered by OpenTofu (templatefile) into the droplet's user_data. Minimal by
+# design: docker + compose, mount the data volume, create the deploy user.
+#
+# user_data is ForceNew — editing this file recreates the droplet. That is a
+# DESIGNED non-event (plan.md "Sharp edges"): the data volume, reserved IP, and
+# DNS all survive, so a recreate + re-run of the deploy workflow restores
+# service with no data movement. Rotating the deploy key IS such an edit.
+package_update: true
+
+# Pre-create the `docker` group so the deploy user's membership (below) sticks
+# at user-creation time. Docker isn't installed until runcmd (the final stage),
+# which runs AFTER this users/groups module — without pre-creating the group,
+# `useradd -G docker` finds no such group and the deploy user can never reach
+# /var/run/docker.sock, so EVERY deploy fails on `permission denied`. docker-ce's
+# postinst reuses this existing group.
+groups:
+  - docker
+
+# The unprivileged deploy user CI SSHes in as. Docker-group membership makes it
+# root-equivalent, so this is operational hygiene, not a security boundary
+# (plan.md GitOps). Password auth is off (the DO key-only image default); root
+# SSH is NOT disabled — it is key-only and reserved for break-glass via the
+# separate admin key (project.tf). Everyday access is this deploy user.
+users:
+  - name: ${deploy_user}
+    shell: /bin/bash
+    groups: [docker]
+    sudo: false
+    ssh_authorized_keys:
+      - ${deploy_user_public_key}
+
+write_files:
+  # Keep journald from filling a small disk.
+  - path: /etc/systemd/journald.conf.d/99-drome.conf
+    content: |
+      [Journal]
+      SystemMaxUse=200M
+
+runcmd:
+  # ---- Docker Engine + Compose plugin (official apt repo) ----
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+  - echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
+  - apt-get update
+  - DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  - systemctl enable --now docker
+  # ---- Data volume ----
+  # Attached via the droplet's volume_ids, so it exists at first boot. Format
+  # ONLY if the device has no filesystem (the volume is also created pre-ext4 by
+  # OpenTofu) — this guard is what makes a droplet recreate NOT wipe the data.
+  # Mount with nofail so a volume hiccup never blocks boot.
+  - |
+    set -e
+    DEV="/dev/disk/by-id/scsi-0DO_Volume_${volume_name}"
+    for _ in $(seq 1 30); do [ -b "$DEV" ] && break; sleep 2; done
+    if ! blkid "$DEV" >/dev/null 2>&1; then
+      mkfs.ext4 -L "${volume_label}" "$DEV"
+    fi
+    mkdir -p "${data_mount}"
+    if ! grep -q "${data_mount}" /etc/fstab; then
+      echo "$DEV ${data_mount} ext4 defaults,nofail,discard 0 2" >> /etc/fstab
+    fi
+    mount -a
+    # Subdirs the compose bind-mounts expect (SQLite/Litestream, Caddy certs).
+    mkdir -p "${data_mount}/drome" "${data_mount}/caddy" "${data_mount}/caddy-config"
+    chown -R ${deploy_user}:${deploy_user} "${data_mount}"
+    # drome-server AND the litestream sidecar run as UID 10001 inside the
+    # container (server/Dockerfile: `useradd -u 10001 drome`; compose pins
+    # litestream to the same uid). The bind mount preserves host ownership with
+    # no UID remap, so the SQLite data dir MUST be owned by 10001 — otherwise the
+    # server can't create drome-server.sqlite + -wal/-shm (EACCES -> db::open
+    # errors -> exit(1) -> crash-loop -> the deploy health gate never goes green).
+    # Caddy runs as root, so its dirs stay owned by the deploy user.
+    chown -R 10001:10001 "${data_mount}/drome"

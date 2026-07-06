@@ -162,9 +162,67 @@ projections never sync, they recompute.
 Everything per plan.md "Server infrastructure (IaC)" and "GitOps" verbatim (droplet,
 volume, reserved IP, firewall-by-tag, monitor alerts, uptime check, R2 buckets, CF DNS
 zone, encrypted OpenTofu state in R2, push-based deploys, IMAGE_TAG=git SHA, rollback =
-re-run with earlier SHA, litestream restore-before-up guard). Bootstrap checklist for
-Jacob when we get there: DO API token, Cloudflare API token, hand-made R2 state bucket +
-keys, state passphrase (password manager), GitHub environment secrets (infra / deploy).
+re-run with earlier SHA, litestream restore-before-up guard). **All authored; nothing
+applied** — no cloud creds live in this repo.
+
+### The real files
+
+- **`infra/`** — one OpenTofu root module. `versions.tf` (OpenTofu ≥1.12; DO `~>2.93`,
+  Cloudflare `~>5.21`), `backend.tf` (S3 backend → R2 with `use_lockfile` + AES-GCM/PBKDF2
+  state encryption), `providers.tf`, `variables.tf` (every secret is a no-default var),
+  `project.tf`, `network.tf` (VPC, reserved IP, firewall-by-tag), `droplet.tf`,
+  `storage.tf` (data volume, `prevent_destroy`), `dns.tf` (CF zone + apex A + CAA + two R2
+  buckets + per-bucket scoped tokens), `monitoring.tf` (CPU/mem/disk alerts, `/healthz`
+  uptime check), `outputs.tf`, `templates/cloud-init.yaml.tftpl`. Verify locally with
+  `tofu fmt`; `tofu validate` runs in CI (Santa SIGKILLs the provider plugins on the Mac).
+  `infra/README.md` has the full bootstrap runbook + recreate drills.
+- **`deploy/`** — `compose.yml` (drome-server + Caddy + Litestream sidecar; named volumes
+  bind onto the mounted data volume), `Caddyfile` (auto-HTTPS for drome.day), `litestream.yml`
+  (SQLite → R2), `.env.template` (placeholders; note `DROME_DEV_AUTH` is NEVER set in
+  prod), `deploy.sh` (push deploy + the restore-before-up guard).
+- **`server/Dockerfile`** — multi-stage: static musl `drome-server` binary → debian-slim
+  runtime with a `/healthz` HEALTHCHECK. `.dockerignore` at the repo root (build context is
+  the repo root; the server crate has a `../core` path dep).
+- **`.github/workflows/infra-ci.yml`** — PR: fmt + init(-backend=false) + validate, plan
+  posted as a PR comment; push→main: apply behind the `infra` environment approval; weekly
+  drift check opens an issue. **`.github/workflows/server-deploy.yml`** — build+push the
+  amd64 image (tagged by git SHA), then SSH-deploy behind the `deploy` environment;
+  `workflow_dispatch` inputs `rollback_sha` and `deploy_mode` (normal/fresh/restore).
+
+### Bootstrap checklist for Jacob (run once, at the deploy milestone)
+
+1. **Hand-make the state store** (never managed by the stack it stores): create an R2
+   bucket `drome-tofu-state`; create an R2 API token scoped to it; note its S3 **Access
+   Key ID** + **Secret Access Key** (secret = `sha256(token value)`). Pick a **state
+   encryption passphrase** (≥16 chars) → password manager.
+2. **`infra` GitHub environment** (required reviewers = the apply approval). Secrets:
+   `TF_STATE_BUCKET`, `TF_STATE_KEY`, `TF_STATE_ENDPOINT` (`https://<acct>.r2.cloudflarestorage.com`),
+   `TF_STATE_ACCESS_KEY_ID`, `TF_STATE_SECRET_ACCESS_KEY`, `TF_STATE_PASSPHRASE`, `DO_TOKEN`,
+   `CLOUDFLARE_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `SSH_PUBLIC_KEY`, `DEPLOY_USER_PUBLIC_KEY`,
+   `ALERT_EMAIL`. Set repo variable `INFRA_ENABLED=true`.
+3. **First apply** (from `infra/README.md`): `tofu init -backend-config=…` → `plan` → `apply`
+   (in CI, behind the environment approval). Then set Porkbun's nameservers to
+   `tofu output cloudflare_nameservers`, and enter the DNSSEC DS record at Porkbun.
+4. **`deploy` GitHub environment.** Secrets: `DEPLOY_HOST` (reserved IP or drome.day),
+   `DEPLOY_SSH_KEY` (deploy user's private key; public half was `DEPLOY_USER_PUBLIC_KEY`),
+   `DEPLOY_SSH_HOST_KEY` (the droplet's SSH host public key — capture once right after first
+   boot with `ssh-keyscan <reserved-ip-or-drome.day>` and paste the line(s); pins the host so
+   the piped GHCR token + R2 secret can't be MITM'd. If unset, the first deploy falls back to
+   trust-on-first-use and warns),
+   `GHCR_PULL_TOKEN` (read:packages PAT), `ACME_EMAIL`, and the litestream R2 creds
+   `LITESTREAM_R2_ENDPOINT` / `_BUCKET` / `_ACCESS_KEY_ID` / `_SECRET_ACCESS_KEY` (from the
+   tofu outputs). Variables: `DEPLOY_USER=deploy`, `DROME_DOMAIN=drome.day`,
+   `DATA_DIR=/mnt/drome-data`, `BETA_ALL_ENTITLED=true`. Set repo variable `DEPLOY_ENABLED=true`.
+5. **First deploy:** run `server-deploy` via `workflow_dispatch` with `deploy_mode=fresh`
+   (empty volume, brand-new DB). Thereafter every push to main deploys `normal`. A
+   from-zero recovery uses `deploy_mode=restore` (litestream restore before start).
+
+**Nameserver-flip timing (plan.md):** do NOT create the free Cloudflare zone more than **28
+days** before flipping Porkbun's nameservers, or CF may release it. The **CAA** record
+(`issue "letsencrypt.org"`) must be live **before Caddy's first boot** — `.day` is
+HSTS-preloaded so cert issuance is on the critical path; the apply creates it, so let the
+zone/records settle before the first deploy. Universal SSL adds partner-CA CAA records, so a
+strict LE-only lockdown is not available.
 
 ## Sequencing
 

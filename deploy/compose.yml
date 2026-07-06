@@ -1,0 +1,107 @@
+# Drome production stack (plan.md GitOps). Three services on the droplet:
+#   drome-server  — the Axum API (GHCR image, pinned by git SHA, NEVER :latest)
+#   caddy         — reverse proxy + automatic ACME TLS for drome.day
+#   litestream    — sidecar, continuously replicates the SQLite DB to R2
+#
+# All durable state lives on the attached block volume (${DATA_DIR}, mounted by
+# cloud-init). The named volumes below are bind mounts onto it, so a droplet
+# recreate never loses the DB, Litestream position, or Caddy's certs.
+#
+# .env is written at deploy time by deploy.sh from the GitHub `deploy`
+# environment secrets. No secrets are committed.
+
+services:
+  drome-server:
+    image: ${IMAGE_TAG} # ghcr.io/<owner>/drome-server:<git-sha> — set by deploy.sh; NEVER :latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # DB path is INSIDE the container, on the bind-mounted data volume.
+      DROME_DB: /data/drome/drome-server.sqlite
+      DROME_BIND: 0.0.0.0:8080
+      BETA_ALL_ENTITLED: ${BETA_ALL_ENTITLED:-true}
+      # DROME_DEV_AUTH is intentionally NEVER set here — the dev auth route must
+      # not exist in production (docs/PHASE2.md).
+    volumes:
+      - drome-data:/data/drome
+    expose:
+      - "8080"
+    healthcheck:
+      # The runtime image is debian-slim with curl; /healthz touches the DB.
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks: [drome]
+
+  caddy:
+    # Pinned to an exact patch (not the floating `2-alpine`) so a droplet
+    # recreate or redeploy can't silently pull a new Caddy mid-incident
+    # (plan.md: git is the single source of truth). Bump deliberately via PR.
+    image: caddy:2.11.4-alpine
+    restart: unless-stopped
+    depends_on:
+      - drome-server
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3 (QUIC)
+    environment:
+      DROME_DOMAIN: ${DROME_DOMAIN:-drome.day}
+      ACME_EMAIL: ${ACME_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data # ACME certs + keys — MUST persist across restarts/recreate
+      - caddy-config:/config
+    networks: [drome]
+
+  litestream:
+    # Pinned to an exact patch, NEVER the floating `0.3` tag. The litestream
+    # replica/LTX storage layout changed incompatibly at 0.5 — letting the major
+    # float (or a manual `pull` grabbing 0.5) would make replicate/restore
+    # format-incompatible with the existing R2 replica (a data-recovery hazard).
+    # litestream.yml is 0.3-format config, so this stays on the 0.3 line; bump
+    # deliberately via PR. 0.3.14 is the highest 0.3.x release.
+    image: litestream/litestream:0.3.14
+    restart: unless-stopped
+    # Run as the SAME uid as drome-server (server/Dockerfile: uid 10001) so the
+    # DB files litestream restores/replicates are owned by — and openable by —
+    # the server. `deploy.sh --restore` does `compose run` on this service, so
+    # the restored DB inherits this uid too (else restore would write root:root
+    # and the server, uid 10001, still couldn't open it).
+    user: "10001:10001"
+    depends_on:
+      - drome-server
+    command: ["replicate"]
+    env_file: .env # supplies LITESTREAM_R2_* used by litestream.yml
+    volumes:
+      - drome-data:/data/drome
+      - ./litestream.yml:/etc/litestream.yml:ro
+    networks: [drome]
+
+networks:
+  drome:
+    driver: bridge
+
+# Named volumes are bind mounts onto the attached block volume (${DATA_DIR},
+# e.g. /mnt/drome-data). cloud-init pre-creates these subdirectories.
+volumes:
+  drome-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR}/drome
+  caddy-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR}/caddy
+  caddy-config:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR}/caddy-config
