@@ -476,6 +476,11 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
         challenge.wakingEndMinutes = Int(endMinutes)
     }
 
+    func setStartDate(_ startDate: DayDate) throws {
+        lock.lock(); defer { lock.unlock() }
+        challenge.startDate = startDate
+    }
+
     // MARK: - DromeCoreClient: logging
 
     func logWater(ml: Int64, effectiveDate: DayDate?) throws -> LogResult {

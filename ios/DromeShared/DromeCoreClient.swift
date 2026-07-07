@@ -44,6 +44,10 @@ protocol DromeCoreClient: AnyObject, Sendable {
     /// NOTE: day_cutoff_minutes deliberately has NO setter — changing it
     /// mid-challenge would re-attribute past events (docs/ARCHITECTURE.md).
     func setWakingWindow(startMinutes: UInt16, endMinutes: UInt16) throws
+    /// Edit the challenge start date after onboarding (`DayDate`, "YYYY-MM-DD"),
+    /// e.g. the user set the wrong "already underway" day. Renumbers days;
+    /// events keep their calendar dates. Config, not an event (syncs LWW).
+    func setStartDate(_ startDate: DayDate) throws
 
     // MARK: Logging intents
     //

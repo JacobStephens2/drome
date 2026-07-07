@@ -152,6 +152,10 @@ final class LiveDromeCore: DromeCoreClient, @unchecked Sendable {
         try call { try store.setWaterGoal(ml: ml, now: Self.nowInstant()) }
     }
 
+    func setStartDate(_ startDate: DayDate) throws {
+        try call { try store.setStartDate(startDate: startDate, now: Self.nowInstant()) }
+    }
+
     func setDietDescription(_ desc: String) throws {
         try call { try store.setDietDescription(desc: desc, now: Self.nowInstant()) }
     }

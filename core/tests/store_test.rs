@@ -106,6 +106,35 @@ fn demo_store() -> (TempDir, String, Arc<DromeStore>) {
 }
 
 #[test]
+fn set_start_date_reindexes_days_and_rejects_bad_dates() {
+    let (_dir, _path, store) = open_store();
+    // Onboarded as "Day 5": start 2026-06-30, today 2026-07-04.
+    store
+        .create_challenge(challenge_cfg(
+            RulesetKind::Flexible,
+            "2026-06-30",
+            at("2026-07-04", 9, 0),
+        ))
+        .expect("create");
+    let now = at("2026-07-04", 10, 0);
+    assert_eq!(store.today(now).expect("today").day_index, 5);
+
+    // Correct it: actually started 2026-06-27, so today is Day 8.
+    store
+        .set_start_date("2026-06-27".into(), at("2026-07-04", 10, 1))
+        .expect("set start date");
+    let today = store.today(now).expect("today after edit");
+    assert_eq!(today.date, "2026-07-04");
+    assert_eq!(today.day_index, 8);
+
+    // An unparseable date is rejected and leaves the start unchanged.
+    assert!(store
+        .set_start_date("not-a-date".into(), at("2026-07-04", 10, 2))
+        .is_err());
+    assert_eq!(store.today(now).expect("today").day_index, 8);
+}
+
+#[test]
 fn demo_fixture_day_indexing_and_counts() {
     let (_dir, _path, store) = demo_store();
     let now = at("2026-07-04", 10, 0);

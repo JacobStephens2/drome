@@ -600,6 +600,32 @@ impl DromeStore {
         Ok(())
     }
 
+    /// Edit the challenge's start date after the fact — e.g. the user picked
+    /// the wrong "already underway" day at onboarding. Config-only, like the
+    /// other challenge setters: the projection re-indexes day numbers from the
+    /// new start automatically. Days that now fall before the new start are
+    /// simply outside the challenge; days newly uncovered by an earlier start
+    /// can be backfilled. `now` stamps the challenge config-LWW slot
+    /// (docs/PHASE2.md), so the edit syncs like any other config change.
+    ///
+    /// Contrast `day_cutoff_minutes`, which deliberately has NO setter — it
+    /// would move events to different DAYS. Changing the start date only
+    /// renumbers days; events keep the calendar dates they were logged on.
+    pub fn set_start_date(&self, start_date: String, now: LocalInstant) -> Result<(), DromeError> {
+        time::parse_date(&start_date)?;
+        now.wall_secs()?;
+        let mut conn = self.lock()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let challenge = require_active(&tx)?;
+        tx.execute(
+            "UPDATE challenge SET start_date = ?1 WHERE id = ?2",
+            params![start_date, challenge.id],
+        )?;
+        sync::touch_config_slot(&tx, sync::SLOT_CHALLENGE, now)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn log_water(
         &self,
         ml: i64,

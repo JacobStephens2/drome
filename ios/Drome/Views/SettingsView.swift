@@ -26,6 +26,7 @@ struct SettingsView: View {
     @State private var challenge: Challenge?
     @State private var todayDayIndex = 0
     @State private var lengthDays = 75
+    @State private var showChangeStartDay = false
 
     // Water
     @State private var goalOz = 128
@@ -108,6 +109,13 @@ struct SettingsView: View {
                     .monospacedDigit()
                     .foregroundStyle(Color.dromeInk)
             }
+            Button {
+                showChangeStartDay = true
+            } label: {
+                Label("Change start day", systemImage: "calendar.badge.clock")
+                    .foregroundStyle(Color.dromeClay)
+            }
+            .frame(minHeight: DromeSpacing.tapTarget)
             LabeledContent("Ruleset") {
                 Text(challenge?.ruleset.label ?? Ruleset.flexible.label)
                     .foregroundStyle(Color.dromeInk.opacity(0.75))
@@ -124,6 +132,14 @@ struct SettingsView: View {
             sectionHeader("Challenge")
         }
         .listRowBackground(rowBackground)
+        .sheet(isPresented: $showChangeStartDay) {
+            ChangeStartDaySheet(
+                client: client,
+                currentDayIndex: todayDayIndex,
+                lengthDays: lengthDays,
+                onChanged: { appModel?.refresh() }
+            )
+        }
     }
 
     private var waterSection: some View {
