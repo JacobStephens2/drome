@@ -171,6 +171,8 @@ struct OnboardingView: View {
                         }
                         .pickerStyle(.segmented)
 
+                        caption("\"Starting today\" begins at Day 1. Already a few days in? Choose \"Already underway\" to set which day you're on.")
+
                         if startMode == .underway {
                             HStack(spacing: DromeSpacing.s) {
                                 Text("I'm on Day")
