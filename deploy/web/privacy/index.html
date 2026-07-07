@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy Policy — Drome</title>
+<meta name="description" content="Drome collects no data. Everything stays in a local database on your device.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%90%AA%3C/text%3E%3C/svg%3E">
+<style>
+  :root {
+    --sand: #F3EAD8;
+    --sand-deep: #E9DCC3;
+    --ink: #292524;
+    --ink-soft: #57534E;
+    --clay: #C2410C;
+    --camel: #B45309;
+    --oasis: #0E7490;
+    --line: rgba(41, 37, 36, 0.14);
+    --card: rgba(255, 255, 255, 0.45);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --sand: #1C1917;
+      --sand-deep: #292019;
+      --ink: #EDE3D1;
+      --ink-soft: #A8A29E;
+      --oasis: #22D3EE;
+      --line: rgba(237, 227, 209, 0.16);
+      --card: rgba(255, 255, 255, 0.04);
+    }
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Ubuntu, sans-serif;
+    background: var(--sand);
+    color: var(--ink);
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    background-image: radial-gradient(1100px 460px at 85% -10%, var(--sand-deep), transparent 70%);
+    background-attachment: fixed;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 0 24px; }
+  header { padding: 28px 0 0; display: flex; justify-content: space-between; align-items: baseline; }
+  .brand { font-weight: 900; font-size: 1.35rem; letter-spacing: -0.03em; text-transform: uppercase; }
+  .brand a { color: var(--ink); text-decoration: none; }
+  .brand .dot { color: var(--clay); }
+  header nav a { color: var(--ink-soft); text-decoration: none; font-size: 0.92rem; font-weight: 600; margin-left: 22px; }
+  header nav a:hover { color: var(--clay); }
+  main { padding: 64px 0 40px; }
+  .kicker {
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+    font-size: 0.78rem; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--clay); margin-bottom: 14px;
+  }
+  h1 {
+    font-weight: 900; letter-spacing: -0.04em; line-height: 1.02;
+    font-size: clamp(2.2rem, 6vw, 3.4rem); text-transform: uppercase; margin-bottom: 10px;
+  }
+  .effective {
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+    font-size: 0.85rem; color: var(--ink-soft); margin-bottom: 40px;
+  }
+  .tldr {
+    border: 2px solid var(--ink); border-radius: 14px; background: var(--card);
+    padding: 26px 28px; margin-bottom: 48px; font-size: 1.12rem;
+  }
+  .tldr b { color: var(--oasis); }
+  h2 {
+    font-weight: 800; letter-spacing: -0.02em; font-size: 1.25rem;
+    margin: 40px 0 12px; text-transform: uppercase;
+  }
+  p { color: var(--ink-soft); margin-bottom: 14px; }
+  p strong, li strong { color: var(--ink); }
+  ul { margin: 0 0 14px 22px; color: var(--ink-soft); }
+  li { margin-bottom: 8px; }
+  a { color: var(--clay); font-weight: 600; text-decoration: none; border-bottom: 1.5px solid var(--line); }
+  a:hover { border-bottom-color: var(--clay); }
+  footer { margin-top: 70px; border-top: 1.5px solid var(--line); padding: 30px 0 46px; }
+  footer p { font-size: 0.85rem; }
+</style>
+</head>
+<body>
+
+<header class="wrap">
+  <div class="brand"><a href="/">Drome<span class="dot">.</span></a></div>
+  <nav><a href="/">Home</a><a href="https://github.com/JacobStephens2/drome">GitHub</a></nav>
+</header>
+
+<main class="wrap">
+  <div class="kicker">Drome for iOS</div>
+  <h1>Privacy Policy</h1>
+  <p class="effective">Effective July 5, 2026</p>
+
+  <div class="tldr">
+    Drome collects <b>no data</b>. There is no server, no account, no analytics, and no advertising. Everything you log stays in a local database on your device.
+  </div>
+
+  <h2>What Drome collects</h2>
+  <p>Nothing. Drome (bundle ID <strong>day.drome.app</strong>) does not collect, transmit, sell, or share any personal data. It has no backend server to send data to, no user accounts, no third-party analytics or advertising SDKs, and no crash-reporting service.</p>
+
+  <h2>Where your data lives</h2>
+  <p>Everything you enter - water logs, workouts, reading, diet check-offs, progress photos, and challenge history - is stored in a local SQLite database on your device. The Drome home-screen widget reads and writes that same on-device database; nothing about that sharing leaves your phone.</p>
+  <p>Your device backups work the way Apple designed them: if you use iCloud Backup or an encrypted local backup, Drome's data is included in that backup under your Apple account, governed by <a href="https://www.apple.com/legal/privacy/">Apple's privacy policy</a>. Drome itself never uploads anything.</p>
+
+  <h2>Photos</h2>
+  <p>Progress photos you take or attach in Drome are stored on your device only. Drome does not upload them anywhere and accesses only the photos you explicitly choose.</p>
+
+  <h2>Export and backup</h2>
+  <p>Drome can export your data on request. Exports are user-initiated: the file is created on your device and goes only where you choose to send or save it. Once you share an export, that copy is governed by whatever service you shared it to.</p>
+
+  <h2>Data deletion</h2>
+  <p>Deleting the app deletes all of Drome's data from your device (aside from copies in device backups or exports you created yourself). There is nothing to delete on any server, because there is no server.</p>
+
+  <h2>Children</h2>
+  <p>Drome collects no data from anyone, including children.</p>
+
+  <h2>Changes to this policy</h2>
+  <p>If a future version of Drome ever adds a feature that touches the network (for example, optional sync), this policy will be updated first and the change will be called out in the App Store release notes. The current policy always lives at <a href="https://drome.day/privacy/">drome.day/privacy</a>.</p>
+
+  <h2>Contact</h2>
+  <p>Questions about this policy: email <a href="mailto:jacob@stephens.page">jacob@stephens.page</a> or open an issue at <a href="https://github.com/JacobStephens2/drome/issues">github.com/JacobStephens2/drome/issues</a>.</p>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>Drome is an independent project by Jacob Stephens. Not affiliated with or endorsed by 75 HARD® or 44Seven Media.</p>
+  </div>
+</footer>
+
+</body>
+</html>

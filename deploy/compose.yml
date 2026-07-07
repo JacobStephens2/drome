@@ -52,6 +52,7 @@ services:
       ACME_EMAIL: ${ACME_EMAIL}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./web:/srv/web:ro # static marketing site served at / (index, privacy, jerome-history)
       - caddy-data:/data # ACME certs + keys — MUST persist across restarts/recreate
       - caddy-config:/config
     networks: [drome]

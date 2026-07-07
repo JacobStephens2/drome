@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Drome — a free, local-first 75-day challenge tracker for iOS</title>
+<meta name="description" content="Drome is a free, local-first iOS tracker for 75-day challenges. No server, no accounts, no analytics. Fill Jerome the camel as you drink.">
+<meta property="og:title" content="Drome">
+<meta property="og:description" content="A free, local-first iOS tracker for 75-day challenges. Filling Jerome is using Drome.">
+<meta property="og:url" content="https://drome.day">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%90%AA%3C/text%3E%3C/svg%3E">
+<style>
+  :root {
+    --sand: #F3EAD8;
+    --sand-deep: #E9DCC3;
+    --ink: #292524;
+    --ink-soft: #57534E;
+    --clay: #C2410C;
+    --camel: #B45309;
+    --oasis: #0E7490;
+    --oasis-bright: #22D3EE;
+    --done: #15803D;
+    --line: rgba(41, 37, 36, 0.14);
+    --card: rgba(255, 255, 255, 0.45);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --sand: #1C1917;
+      --sand-deep: #292019;
+      --ink: #EDE3D1;
+      --ink-soft: #A8A29E;
+      --oasis: #22D3EE;
+      --line: rgba(237, 227, 209, 0.16);
+      --card: rgba(255, 255, 255, 0.04);
+    }
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Ubuntu, sans-serif;
+    background: var(--sand);
+    color: var(--ink);
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    background-image:
+      radial-gradient(1200px 500px at 85% -10%, var(--sand-deep), transparent 70%),
+      radial-gradient(900px 420px at -10% 40%, var(--sand-deep), transparent 65%);
+    background-attachment: fixed;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 24px; }
+
+  /* header */
+  header { padding: 28px 0 0; display: flex; justify-content: space-between; align-items: baseline; }
+  .brand {
+    font-weight: 900;
+    font-size: 1.35rem;
+    letter-spacing: -0.03em;
+    text-transform: uppercase;
+  }
+  .brand .dot { color: var(--clay); }
+  nav a {
+    color: var(--ink-soft);
+    text-decoration: none;
+    font-size: 0.92rem;
+    font-weight: 600;
+    margin-left: 22px;
+    border-bottom: 2px solid transparent;
+    padding-bottom: 2px;
+  }
+  nav a:hover { color: var(--clay); border-bottom-color: var(--clay); }
+
+  /* hero */
+  .hero {
+    display: grid;
+    grid-template-columns: 1.15fr 0.85fr;
+    gap: 40px;
+    align-items: center;
+    padding: 84px 0 72px;
+  }
+  h1 {
+    font-weight: 900;
+    letter-spacing: -0.045em;
+    line-height: 0.98;
+    font-size: clamp(2.9rem, 7.5vw, 5.2rem);
+    text-transform: uppercase;
+  }
+  h1 .days {
+    color: var(--clay);
+    font-variant-numeric: tabular-nums;
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+    letter-spacing: -0.06em;
+  }
+  .hero p.lede {
+    margin-top: 22px;
+    font-size: 1.18rem;
+    color: var(--ink-soft);
+    max-width: 34ch;
+  }
+  .hero p.lede strong { color: var(--ink); }
+  .cta-row { margin-top: 34px; display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+  .btn {
+    display: inline-block;
+    text-decoration: none;
+    font-weight: 700;
+    font-size: 0.98rem;
+    padding: 13px 26px;
+    border-radius: 10px;
+    letter-spacing: 0.01em;
+  }
+  .btn-primary { background: var(--clay); color: #FFF7ED; }
+  .btn-primary:hover { background: var(--camel); }
+  .btn-ghost { color: var(--ink); border: 1.5px solid var(--line); background: var(--card); }
+  .btn-ghost:hover { border-color: var(--clay); color: var(--clay); }
+  .soon {
+    font-size: 0.8rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+    color: var(--ink-soft);
+  }
+
+  /* Jerome */
+  .jerome-stage { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+  .jerome-stage figcaption {
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+    font-size: 0.82rem;
+    color: var(--ink-soft);
+    letter-spacing: 0.02em;
+  }
+  .jerome { width: min(340px, 80vw); height: auto; }
+  .jerome .outline { fill: none; stroke: var(--camel); stroke-width: 6.5; stroke-linejoin: round; stroke-linecap: round; }
+  .jerome .water-rect { animation: fill-up 6s ease-in-out infinite; }
+  @keyframes fill-up {
+    0%, 12%   { transform: translateY(150px); }
+    68%, 88%  { transform: translateY(-35px); }
+    100%      { transform: translateY(150px); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .jerome .water-rect { animation: none; transform: translateY(60px); }
+  }
+
+  /* ticker strip */
+  .strip {
+    border-top: 1.5px solid var(--line);
+    border-bottom: 1.5px solid var(--line);
+    padding: 14px 0;
+    overflow: hidden;
+    white-space: nowrap;
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+    font-size: 0.86rem;
+    color: var(--ink-soft);
+    letter-spacing: 0.04em;
+  }
+  .strip span { margin-right: 3.2em; }
+  .strip b { color: var(--clay); font-weight: 700; }
+
+  /* features */
+  section { padding: 76px 0 8px; }
+  h2 {
+    font-weight: 900;
+    letter-spacing: -0.03em;
+    text-transform: uppercase;
+    font-size: clamp(1.6rem, 3.4vw, 2.3rem);
+    margin-bottom: 8px;
+  }
+  .kicker {
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+    font-size: 0.78rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--clay);
+    margin-bottom: 14px;
+  }
+  .grid {
+    margin-top: 36px;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 18px;
+  }
+  .card {
+    background: var(--card);
+    border: 1.5px solid var(--line);
+    border-radius: 14px;
+    padding: 24px 22px 26px;
+  }
+  .card h3 {
+    font-weight: 800;
+    letter-spacing: -0.015em;
+    font-size: 1.06rem;
+    margin-bottom: 8px;
+  }
+  .card p { color: var(--ink-soft); font-size: 0.95rem; }
+  .card .num {
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+    font-size: 0.75rem;
+    color: var(--clay);
+    letter-spacing: 0.1em;
+    display: block;
+    margin-bottom: 14px;
+  }
+
+  /* local-first block */
+  .promise {
+    margin-top: 76px;
+    border: 2px solid var(--ink);
+    border-radius: 18px;
+    padding: 44px 40px;
+    background: var(--card);
+    position: relative;
+    overflow: hidden;
+  }
+  .promise::after {
+    content: "";
+    position: absolute;
+    inset: auto -60px -110px auto;
+    width: 260px; height: 260px;
+    border-radius: 50%;
+    background: radial-gradient(circle, var(--oasis) 0%, transparent 70%);
+    opacity: 0.16;
+  }
+  .promise h2 { margin-bottom: 18px; }
+  .promise p { max-width: 62ch; color: var(--ink-soft); }
+  .promise p strong { color: var(--ink); }
+  .promise .zeroes {
+    margin-top: 26px;
+    display: flex;
+    gap: 34px;
+    flex-wrap: wrap;
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+  }
+  .promise .zeroes div b {
+    display: block;
+    font-size: 2rem;
+    color: var(--oasis);
+    font-weight: 700;
+  }
+  .promise .zeroes div span { font-size: 0.8rem; color: var(--ink-soft); letter-spacing: 0.06em; text-transform: uppercase; }
+
+  /* footer */
+  footer { margin-top: 90px; border-top: 1.5px solid var(--line); padding: 34px 0 46px; }
+  footer .wrap { display: flex; justify-content: space-between; gap: 24px; flex-wrap: wrap; }
+  footer p { font-size: 0.85rem; color: var(--ink-soft); max-width: 58ch; }
+  footer a { color: var(--ink); font-weight: 600; text-decoration: none; border-bottom: 1.5px solid var(--line); }
+  footer a:hover { color: var(--clay); border-bottom-color: var(--clay); }
+  footer .links { display: flex; flex-direction: column; gap: 8px; font-size: 0.9rem; }
+
+  @media (max-width: 760px) {
+    .hero { grid-template-columns: 1fr; padding: 56px 0 48px; text-align: left; }
+    .jerome-stage { order: -1; }
+    .grid { grid-template-columns: 1fr; }
+    .promise { padding: 32px 24px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="wrap">
+  <div class="brand">Drome<span class="dot">.</span></div>
+  <nav>
+    <a href="https://github.com/JacobStephens2/drome">GitHub</a>
+    <a href="/privacy/">Privacy</a>
+  </nav>
+</header>
+
+<main>
+  <div class="wrap hero">
+    <div>
+      <h1><span class="days">75</span> days.<br>One camel.</h1>
+      <p class="lede"><strong>Drome</strong> is a free, local-first iOS tracker for 75-day challenges. The camel is named Jerome. He fills as you drink. Filling Jerome is using Drome.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="https://github.com/JacobStephens2/drome">View on GitHub</a>
+        <span class="soon">App Store — coming soon</span>
+      </div>
+    </div>
+    <figure class="jerome-stage">
+      <svg class="jerome" viewBox="0 0 320 230" role="img" aria-label="Jerome the camel, filling with water">
+        <defs>
+          <clipPath id="camelClip">
+            <path d="M104 92 C124 42 152 20 184 20 C216 20 242 48 250 88 Q251 90 255 89 Q275 94 282 112 Q289 136 276 147 Q267 154 262 144 Q258 132 250 120 Q246 114 244 115 Q250 127 250 140 L250 195 Q250 210 238 210 Q226 210 226 195 L226 158 Q223 152 219 158 L219 195 Q219 210 207 210 Q195 210 195 195 L195 154 Q182 148 162 148 Q142 148 130 154 L130 195 Q130 210 118 210 Q106 210 106 195 L106 158 Q102 152 98 158 L98 195 Q98 210 86 210 Q74 210 74 195 L74 142 Q73 118 70 92 Q62 78 54 64 L40 62 Q30 62 28 52 Q26 42 36 40 L56 37 Q62 36 66 38 Q66 28 73 29 Q78 31 75 39 Q82 44 84 52 Q88 68 94 82 Q98 92 104 92 Z"/>
+          </clipPath>
+        </defs>
+        <g clip-path="url(#camelClip)">
+          <rect x="0" y="0" width="320" height="230" fill="var(--sand-deep)"/>
+          <g class="water-rect">
+            <rect x="0" y="40" width="320" height="230" fill="var(--oasis)" opacity="0.85"/>
+            <path d="M0 40 Q 40 28 80 40 T 160 40 T 240 40 T 320 40 L320 60 L0 60 Z" fill="var(--oasis-bright)" opacity="0.6"/>
+          </g>
+        </g>
+        <path class="outline" d="M104 92 C124 42 152 20 184 20 C216 20 242 48 250 88 Q251 90 255 89 Q275 94 282 112 Q289 136 276 147 Q267 154 262 144 Q258 132 250 120 Q246 114 244 115 Q250 127 250 140 L250 195 Q250 210 238 210 Q226 210 226 195 L226 158 Q223 152 219 158 L219 195 Q219 210 207 210 Q195 210 195 195 L195 154 Q182 148 162 148 Q142 148 130 154 L130 195 Q130 210 118 210 Q106 210 106 195 L106 158 Q102 152 98 158 L98 195 Q98 210 86 210 Q74 210 74 195 L74 142 Q73 118 70 92 Q62 78 54 64 L40 62 Q30 62 28 52 Q26 42 36 40 L56 37 Q62 36 66 38 Q66 28 73 29 Q78 31 75 39 Q82 44 84 52 Q88 68 94 82 Q98 92 104 92 Z"/>
+        <circle cx="44" cy="48" r="4.5" fill="var(--ink)"/>
+      </svg>
+      <figcaption>jerome.fill = water.today / goal</figcaption>
+    </figure>
+  </div>
+
+  <div class="strip" aria-hidden="true">
+    <span><b>0</b> servers</span><span><b>0</b> accounts</span><span><b>0</b> analytics</span><span><b>0</b> ads</span><span><b>$0</b> forever</span><span><b>75</b> days</span><span><b>1</b> camel</span><span><b>0</b> servers</span><span><b>0</b> accounts</span><span><b>0</b> analytics</span><span><b>0</b> ads</span><span><b>$0</b> forever</span>
+  </div>
+
+  <section class="wrap" id="features">
+    <div class="kicker">Gear, not toy</div>
+    <h2>Built for the hard days</h2>
+    <div class="grid">
+      <div class="card">
+        <span class="num">01</span>
+        <h3>Two rulesets</h3>
+        <p>Run it purist - the strict, no-substitutions original - or flexible, where you define the rules you'll actually keep for 75 days.</p>
+      </div>
+      <div class="card">
+        <span class="num">02</span>
+        <h3>Water pacing</h3>
+        <p>A gallon is a schedule, not a sprint. Drome paces your day and an anti-chug guard keeps a 9pm panic-liter from counting as progress.</p>
+      </div>
+      <div class="card">
+        <span class="num">03</span>
+        <h3>Waking-hours days</h3>
+        <p>Your day ends when you sleep, not at midnight. Late workouts land on the day you actually did them.</p>
+      </div>
+      <div class="card">
+        <span class="num">04</span>
+        <h3>Widget quick-add</h3>
+        <p>Log water from your home screen without opening the app. Jerome fills right on the widget.</p>
+      </div>
+      <div class="card">
+        <span class="num">05</span>
+        <h3>Append-only history</h3>
+        <p>Every log is an event in a local, append-only journal. Your 75 days are a record, not a mutable counter.</p>
+      </div>
+      <div class="card">
+        <span class="num">06</span>
+        <h3>Honest, not shaming</h3>
+        <p>Miss a day and Drome says so plainly, then gets you back to work. No guilt screens, no streak-freeze gimmicks.</p>
+      </div>
+    </div>
+
+    <div class="promise" id="local-first">
+      <div class="kicker">Local-first</div>
+      <h2>Your 75 days stay on your phone</h2>
+      <p>Drome has <strong>no server, no accounts, no payments, and no analytics</strong>. Everything - logs, progress photos, history - lives in a local database on your device. Export and back up whenever you want; nothing leaves unless you send it.</p>
+      <div class="zeroes">
+        <div><b>0</b><span>bytes collected</span></div>
+        <div><b>0</b><span>third-party SDKs</span></div>
+        <div><b>100%</b><span>on-device</span></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>Drome is an independent project by Jacob Stephens. Not affiliated with or endorsed by 75 HARD® or 44Seven Media. 75 HARD® is a registered trademark of 44Seven Media.<br>Jerome takes inspiration from <a href="https://www.flaticon.com/free-icons/camel" title="camel icons">Camel icons created by Freepik - Flaticon</a>.</p>
+    <div class="links">
+      <a href="https://github.com/JacobStephens2/drome">Source on GitHub</a>
+      <a href="/privacy/">Privacy policy</a>
+      <a href="/jerome-history.html">Jerome's evolution</a>
+      <a href="mailto:jacob@stephens.page">jacob@stephens.page</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

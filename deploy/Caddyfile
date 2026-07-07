@@ -22,11 +22,21 @@
 {$DROME_DOMAIN} {
 	encode zstd gzip
 
-	# Everything proxies to the app container. /healthz rides through the same
-	# proxy so the public uptime check exercises the full path.
-	reverse_proxy drome-server:8080 {
-		health_uri      /healthz
-		health_interval 30s
-		health_timeout  5s
+	# API + health probe go to the app container (/healthz rides the same proxy so
+	# the public uptime check exercises the full path). Everything else is the
+	# static marketing site (deploy/web, bind-mounted at /srv/web) -- so drome.day/
+	# and drome.day/privacy stay served even when the app container is down.
+	@api path /v1/* /healthz
+	handle @api {
+		reverse_proxy drome-server:8080 {
+			health_uri      /healthz
+			health_interval 30s
+			health_timeout  5s
+		}
+	}
+
+	handle {
+		root * /srv/web
+		file_server
 	}
 }
