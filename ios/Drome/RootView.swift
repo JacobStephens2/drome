@@ -387,7 +387,7 @@ private struct YesterdayLogSheet: View {
                     ) { log { appModel.logWorkout(durationMin: 45, outdoor: true, effectiveDate: $0) } }
                     taskRow(
                         done: day.secondWorkoutDone,
-                        title: "Second workout",
+                        title: "Indoor or Outdoor",
                         buttonLabel: "Log 30 min",
                         unmark: unmarkAction(for: day.secondSlotEntry)
                     ) { log { appModel.logWorkout(durationMin: 30, outdoor: false, effectiveDate: $0) } }

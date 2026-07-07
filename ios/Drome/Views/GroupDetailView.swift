@@ -148,7 +148,7 @@ struct GroupDetailView: View {
         HStack(spacing: DromeSpacing.s) {
             dot("Water", tasks.water)
             dot("Outdoor workout", tasks.outdoorWorkout)
-            dot("Second workout", tasks.secondWorkout)
+            dot("Indoor or Outdoor", tasks.secondWorkout)
             dot("Reading", tasks.reading)
             dot("Diet", tasks.diet)
             dot("No junk or alcohol", tasks.noJunk)

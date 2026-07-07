@@ -27,7 +27,8 @@ enum FeatureFlags {
         }
         return true
         #else
-        return UserDefaults.standard.bool(forKey: "DromeServerFeatures")
+        // drome-server is deployed at drome.day — ship server features ON.
+        return true
         #endif
     }
 }

@@ -69,7 +69,7 @@ struct OnboardingView: View {
 
     @State private var page = Page.intro
     @State private var startMode = StartMode.today
-    @State private var pastStartDate = Date()
+    @State private var underwayDay = 2
     @State private var dietDescription = ""
     @State private var waterGoalOz = 128
     @State private var presetRows = [PresetRow(name: "32 oz bottle", oz: "32")]
@@ -172,25 +172,23 @@ struct OnboardingView: View {
                         .pickerStyle(.segmented)
 
                         if startMode == .underway {
-                            DatePicker(
-                                selection: $pastStartDate,
-                                in: startDateRange,
-                                displayedComponents: .date
-                            ) {
-                                Text("Start date")
-                                    .font(.system(size: 15, weight: .semibold))
+                            HStack(spacing: DromeSpacing.s) {
+                                Text("I'm on Day")
+                                    .font(.system(size: 16, weight: .semibold))
                                     .foregroundStyle(Color.dromeInk)
+                                TextField("2", value: $underwayDay, format: .number)
+                                    .keyboardType(.numberPad)
+                                    .multilineTextAlignment(.center)
+                                    .frame(width: 56)
+                                    .modifier(FieldChrome())
+                                Text("of 75")
+                                    .font(.system(size: 15, weight: .medium))
+                                    .foregroundStyle(Color.dromeInk.opacity(0.6))
+                                Spacer()
                             }
-                            .tint(Color.dromeClay)
-
-                            let dayNumber = liveDayNumber
-                            Text("You're on Day \(dayNumber)")
-                                .font(.system(size: 22, weight: .black))
-                                .monospacedDigit()
-                                .tracking(-0.3)
-                                .foregroundStyle(Color.dromeClay)
-                            if dayNumber > 1 {
-                                caption("You'll catch up Days 1–\(dayNumber - 1) next — it takes about a minute.")
+                            caption("Your Day 1 was \(underwayStartCaption).")
+                            if underwayDayClamped > 1 {
+                                caption("You'll catch up Days 1–\(underwayDayClamped - 1) next — it takes about a minute.")
                             }
                         }
                     }
@@ -319,26 +317,24 @@ struct OnboardingView: View {
 
     // MARK: - Derived values
 
-    /// Live "You're on Day N" for the picked past start date.
-    private var liveDayNumber: Int {
+    /// Clamp the entered "I'm on Day N" to the valid 1...75 window.
+    private var underwayDayClamped: Int { min(max(underwayDay, 1), 75) }
+
+    /// The Day-1 calendar date implied by "I'm on Day N": today − (N−1) days.
+    private var underwayStartDate: Date {
         let calendar = Calendar.current
-        let start = calendar.startOfDay(for: pastStartDate)
         let today = calendar.startOfDay(for: Date())
-        let delta = calendar.dateComponents([.day], from: start, to: today).day ?? 0
-        return max(delta, 0) + 1
+        return calendar.date(byAdding: .day, value: -(underwayDayClamped - 1), to: today) ?? today
     }
 
-    /// Pickable start dates: within the current 75-day window, up to today.
-    private var startDateRange: ClosedRange<Date> {
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: Date())
-        let earliest = calendar.date(byAdding: .day, value: -74, to: today) ?? today
-        return earliest...Date()
+    /// Human-readable Day-1 date for the confirmation caption.
+    private var underwayStartCaption: String {
+        underwayStartDate.formatted(date: .abbreviated, time: .omitted)
     }
 
     private var continueLabel: String {
-        if startMode == .underway, liveDayNumber > 1 {
-            let count = liveDayNumber - 1
+        if startMode == .underway, underwayDayClamped > 1 {
+            let count = underwayDayClamped - 1
             return count == 1 ? "Continue — catch up 1 day" : "Continue — catch up \(count) days"
         }
         return "Start Day 1"
@@ -356,7 +352,7 @@ struct OnboardingView: View {
         cfg.dietDescription = dietDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         cfg.initialWaterGoalMl = WaterUnits.ml(fromFlOz: Double(waterGoalOz))
         if startMode == .underway {
-            cfg.startDate = Self.dayFormatter.string(from: pastStartDate)
+            cfg.startDate = Self.dayFormatter.string(from: underwayStartDate)
         }
         do {
             let challenge = try client.createChallenge(cfg)

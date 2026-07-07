@@ -211,7 +211,7 @@ struct DayBoardWorkoutsTile: View {
                     entry: day.outdoorSlotEntry, outdoor: true
                 )
                 slotRow(
-                    label: "Second", done: day.secondWorkoutDone,
+                    label: "Indoor/Outdoor", done: day.secondWorkoutDone,
                     entry: day.secondSlotEntry, outdoor: false
                 )
             }

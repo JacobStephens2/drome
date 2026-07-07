@@ -127,7 +127,7 @@ enum CoreTask: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .water: return "Water"
         case .outdoorWorkout: return "Outdoor workout"
-        case .secondWorkout: return "Second workout"
+        case .secondWorkout: return "Indoor or Outdoor"
         case .reading: return "Reading"
         case .diet: return "Diet"
         case .photo: return "Progress photo"

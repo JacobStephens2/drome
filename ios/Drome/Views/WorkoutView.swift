@@ -417,7 +417,7 @@ private struct SlotCard: View {
         guard done else {
             return outdoor
                 ? "Log a \(DayState.slotDefaultDurationMin) minute outdoor workout"
-                : "Log a \(DayState.slotDefaultDurationMin) minute second workout"
+                : "Log a \(DayState.slotDefaultDurationMin) minute indoor or outdoor workout"
         }
         return entry != nil ? "Undo \(title.lowercased())" : "\(title) done"
     }

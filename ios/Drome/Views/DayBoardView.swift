@@ -171,7 +171,7 @@ struct DayBoardView: View {
             items.append("\(DayBoardFormat.ozLeft(total: day.waterTotalMl, goal: day.waterGoalMl)) oz")
         }
         if !day.outdoorWorkoutDone { items.append("outdoor workout") }
-        if !day.secondWorkoutDone { items.append("2nd workout") }
+        if !day.secondWorkoutDone { items.append("indoor/outdoor workout") }
         if !day.readingDone { items.append(DayBoardFormat.pagesLeftLabel(day.pagesRead)) }
         if !day.dietDone { items.append("diet") }
         if !day.noJunkDone { items.append("no junk") }
