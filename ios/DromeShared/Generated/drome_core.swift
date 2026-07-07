@@ -863,6 +863,21 @@ public protocol DromeStoreProtocol: AnyObject, Sendable {
     func setLastServerSeq(context: String, seq: Int64, expectedResetEpoch: Int64) throws  -> SyncOutcome
     
     /**
+     * Edit the challenge's start date after the fact — e.g. the user picked
+     * the wrong "already underway" day at onboarding. Config-only, like the
+     * other challenge setters: the projection re-indexes day numbers from the
+     * new start automatically. Days that now fall before the new start are
+     * simply outside the challenge; days newly uncovered by an earlier start
+     * can be backfilled. `now` stamps the challenge config-LWW slot
+     * (docs/PHASE2.md), so the edit syncs like any other config change.
+     *
+     * Contrast `day_cutoff_minutes`, which deliberately has NO setter — it
+     * would move events to different DAYS. Changing the start date only
+     * renumbers days; events keep the calendar dates they were logged on.
+     */
+    func setStartDate(startDate: String, now: LocalInstant) throws 
+    
+    /**
      * The waking window only drives WaterState pacing and the
      * discourage_catch_up display — never day attribution or completion — so
      * editing it mid-challenge is a plain config update, not an event.
@@ -1528,6 +1543,29 @@ open func setLastServerSeq(context: String, seq: Int64, expectedResetEpoch: Int6
         FfiConverterInt64.lower(expectedResetEpoch),uniffiCallStatus
     )
 })
+}
+    
+    /**
+     * Edit the challenge's start date after the fact — e.g. the user picked
+     * the wrong "already underway" day at onboarding. Config-only, like the
+     * other challenge setters: the projection re-indexes day numbers from the
+     * new start automatically. Days that now fall before the new start are
+     * simply outside the challenge; days newly uncovered by an earlier start
+     * can be backfilled. `now` stamps the challenge config-LWW slot
+     * (docs/PHASE2.md), so the edit syncs like any other config change.
+     *
+     * Contrast `day_cutoff_minutes`, which deliberately has NO setter — it
+     * would move events to different DAYS. Changing the start date only
+     * renumbers days; events keep the calendar dates they were logged on.
+     */
+open func setStartDate(startDate: String, now: LocalInstant)throws   {try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
+        uniffiCallStatus in
+    uniffi_drome_core_fn_method_dromestore_set_start_date(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(startDate),
+        FfiConverterTypeLocalInstant_lower(now),uniffiCallStatus
+    )
+}
 }
     
     /**
@@ -4339,6 +4377,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_drome_core_checksum_method_dromestore_set_last_server_seq() != 43219) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_drome_core_checksum_method_dromestore_set_start_date() != 22348) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_drome_core_checksum_method_dromestore_set_waking_window() != 59741) {
