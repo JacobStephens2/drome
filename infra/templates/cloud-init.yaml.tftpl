@@ -2,7 +2,7 @@
 # Rendered by OpenTofu (templatefile) into the droplet's user_data. Minimal by
 # design: docker + compose, mount the data volume, create the deploy user.
 #
-# user_data is ForceNew — editing this file recreates the droplet. That is a
+# user_data is ForceNew -- editing this file recreates the droplet. That is a
 # DESIGNED non-event (plan.md "Sharp edges"): the data volume, reserved IP, and
 # DNS all survive, so a recreate + re-run of the deploy workflow restores
 # service with no data movement. Rotating the deploy key IS such an edit.
@@ -10,7 +10,7 @@ package_update: true
 
 # Pre-create the `docker` group so the deploy user's membership (below) sticks
 # at user-creation time. Docker isn't installed until runcmd (the final stage),
-# which runs AFTER this users/groups module — without pre-creating the group,
+# which runs AFTER this users/groups module -- without pre-creating the group,
 # `useradd -G docker` finds no such group and the deploy user can never reach
 # /var/run/docker.sock, so EVERY deploy fails on `permission denied`. docker-ce's
 # postinst reuses this existing group.
@@ -20,7 +20,7 @@ groups:
 # The unprivileged deploy user CI SSHes in as. Docker-group membership makes it
 # root-equivalent, so this is operational hygiene, not a security boundary
 # (plan.md GitOps). Password auth is off (the DO key-only image default); root
-# SSH is NOT disabled — it is key-only and reserved for break-glass via the
+# SSH is NOT disabled -- it is key-only and reserved for break-glass via the
 # separate admin key (project.tf). Everyday access is this deploy user.
 users:
   - name: ${deploy_user}
@@ -49,7 +49,7 @@ runcmd:
   # ---- Data volume ----
   # Attached via the droplet's volume_ids, so it exists at first boot. Format
   # ONLY if the device has no filesystem (the volume is also created pre-ext4 by
-  # OpenTofu) — this guard is what makes a droplet recreate NOT wipe the data.
+  # OpenTofu) -- this guard is what makes a droplet recreate NOT wipe the data.
   # Mount with nofail so a volume hiccup never blocks boot.
   - |
     set -e
@@ -69,7 +69,7 @@ runcmd:
     # drome-server AND the litestream sidecar run as UID 10001 inside the
     # container (server/Dockerfile: `useradd -u 10001 drome`; compose pins
     # litestream to the same uid). The bind mount preserves host ownership with
-    # no UID remap, so the SQLite data dir MUST be owned by 10001 — otherwise the
+    # no UID remap, so the SQLite data dir MUST be owned by 10001 -- otherwise the
     # server can't create drome-server.sqlite + -wal/-shm (EACCES -> db::open
     # errors -> exit(1) -> crash-loop -> the deploy health gate never goes green).
     # Caddy runs as root, so its dirs stay owned by the deploy user.
