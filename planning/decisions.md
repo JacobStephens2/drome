@@ -44,3 +44,12 @@ Phase 2 kickoff (2026-07-05, confirmed by Jacob):
   now run on the Mac. SHA pins hold across re-inits of the lockfile-pinned versions; re-pin
   only on a deliberate provider upgrade. `tofu plan`/`apply` still need the real DO/CF/R2
   credentials in the env.
+
+Product principle (2026-07-07, confirmed by Jacob):
+- **Lean into flexibility, trust the honest self-user.** The app is for the user's own use,
+  so there's no incentive to game it — favor permissive, useful features over rigid
+  correctness / anti-cheat guards, and keep copy confident and light rather than cautionary.
+  This is why flexible mode is the default (purist opt-in), why the app is "honest, not
+  shaming" (no partial-credit celebration, no streak freezes), and why post-onboarding
+  start-date editing ("Change start day" in Settings) is the right call despite renumbering
+  days. Exception: genuine safety features stay — e.g. the water anti-chug guard.
