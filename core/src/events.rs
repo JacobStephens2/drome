@@ -16,6 +16,7 @@ pub const KIND_EXTRA_DONE: &str = "extra_done";
 pub const KIND_DAY_CLOSED: &str = "day_closed";
 pub const KIND_DAY_BACKFILLED: &str = "day_backfilled";
 pub const KIND_GOAL_CHANGED: &str = "goal_changed";
+pub const KIND_CUTOFF_CHANGED: &str = "cutoff_changed";
 pub const KIND_REVOKED: &str = "revoked";
 
 pub const KNOWN_KINDS: &[&str] = &[
@@ -30,6 +31,7 @@ pub const KNOWN_KINDS: &[&str] = &[
     KIND_DAY_CLOSED,
     KIND_DAY_BACKFILLED,
     KIND_GOAL_CHANGED,
+    KIND_CUTOFF_CHANGED,
     KIND_REVOKED,
 ];
 
@@ -126,6 +128,16 @@ impl DayBackfilledPayload {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GoalChangedPayload {
     pub water_goal_ml: i64,
+}
+
+/// A day-cutoff change. Unlike the goal, the cutoff decides which DAY a live
+/// log lands on, so the projection applies it forward-only: it is keyed by the
+/// change's own `logged_at` instant, and each event is attributed under the
+/// cutoff in effect when it was logged. Past days keep the boundary they were
+/// lived under; only later logs use the new cutoff.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CutoffChangedPayload {
+    pub day_cutoff_minutes: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

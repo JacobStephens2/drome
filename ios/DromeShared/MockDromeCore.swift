@@ -481,6 +481,16 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
         challenge.startDate = startDate
     }
 
+    func setDayCutoff(minutes: UInt32) throws {
+        guard minutes < 1_440 else {
+            throw DromeError.invalidArgument("day_cutoff_minutes must be in 0..=1439")
+        }
+        lock.lock(); defer { lock.unlock() }
+        // The mock doesn't re-attribute past events (forward-only is a core
+        // concern); surfacing the current cutoff is enough for UI/preview use.
+        challenge.dayCutoffMinutes = Int(minutes)
+    }
+
     // MARK: - DromeCoreClient: logging
 
     func logWater(ml: Int64, effectiveDate: DayDate?) throws -> LogResult {

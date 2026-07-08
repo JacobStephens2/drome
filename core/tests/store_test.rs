@@ -135,6 +135,74 @@ fn set_start_date_reindexes_days_and_rejects_bad_dates() {
 }
 
 #[test]
+fn set_day_cutoff_is_forward_only_and_surfaces_current() {
+    let (_dir, _path, store) = open_store();
+    // 4:00 AM cutoff (240). Start 2026-06-21.
+    store
+        .create_challenge(challenge_cfg(
+            RulesetKind::Flexible,
+            "2026-06-21",
+            at("2026-07-04", 9, 0),
+        ))
+        .expect("create");
+
+    // A pour at 2:00 AM on 07-04 is BEFORE the 4 AM cutoff → it belongs to 07-03.
+    store
+        .log_water(500, at("2026-07-04", 2, 0), None)
+        .expect("log A");
+    let now = at("2026-07-04", 10, 0);
+    assert_eq!(
+        store.day_state("2026-07-03".into(), now).unwrap().water_ml,
+        500
+    );
+    assert_eq!(
+        store.day_state("2026-07-04".into(), now).unwrap().water_ml,
+        0
+    );
+
+    // Move the cutoff earlier, to 1:00 AM (60), at 10:01 AM on 07-04.
+    store
+        .set_day_cutoff(60, at("2026-07-04", 10, 1))
+        .expect("set cutoff");
+
+    // Forward-only: the already-logged 2 AM pour keeps its day (still 07-03),
+    // NOT re-attributed to 07-04 under the new 1 AM boundary.
+    assert_eq!(
+        store.day_state("2026-07-03".into(), now).unwrap().water_ml,
+        500
+    );
+    assert_eq!(
+        store.day_state("2026-07-04".into(), now).unwrap().water_ml,
+        0
+    );
+
+    // A NEW pour at 2:00 AM on 07-05 is logged AFTER the change → the new 1 AM
+    // cutoff applies: 2 AM ≥ 1 AM, so it belongs to 07-05 (under the old 4 AM
+    // cutoff it would have counted toward 07-04).
+    let now5 = at("2026-07-05", 10, 0);
+    store
+        .log_water(700, at("2026-07-05", 2, 0), None)
+        .expect("log B");
+    assert_eq!(
+        store.day_state("2026-07-05".into(), now5).unwrap().water_ml,
+        700
+    );
+    assert_eq!(
+        store.day_state("2026-07-04".into(), now5).unwrap().water_ml,
+        0
+    );
+
+    // active_challenge surfaces the CURRENT cutoff (60), not the initial (240).
+    let ch = store.active_challenge().unwrap().expect("active");
+    assert_eq!(ch.day_cutoff_minutes, 60);
+
+    // Out-of-range cutoff is rejected.
+    assert!(store
+        .set_day_cutoff(1_440, at("2026-07-05", 11, 0))
+        .is_err());
+}
+
+#[test]
 fn demo_fixture_day_indexing_and_counts() {
     let (_dir, _path, store) = demo_store();
     let now = at("2026-07-04", 10, 0);

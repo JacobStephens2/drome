@@ -41,13 +41,15 @@ protocol DromeCoreClient: AnyObject, Sendable {
     /// Display config; safe to edit mid-challenge (never rewrites past days).
     func setDietDescription(_ desc: String) throws
     /// Waking window (minutes after midnight); water pacing only.
-    /// NOTE: day_cutoff_minutes deliberately has NO setter — changing it
-    /// mid-challenge would re-attribute past events (docs/ARCHITECTURE.md).
     func setWakingWindow(startMinutes: UInt16, endMinutes: UInt16) throws
     /// Edit the challenge start date after onboarding (`DayDate`, "YYYY-MM-DD"),
     /// e.g. the user set the wrong "already underway" day. Renumbers days;
     /// events keep their calendar dates. Config, not an event (syncs LWW).
     func setStartDate(_ startDate: DayDate) throws
+    /// Edit the day cutoff (minutes after midnight the day rolls over).
+    /// FORWARD-ONLY and event-sourced: past days keep the boundary they were
+    /// lived under; only later logs use the new cutoff (see set_day_cutoff).
+    func setDayCutoff(minutes: UInt32) throws
 
     // MARK: Logging intents
     //

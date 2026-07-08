@@ -168,6 +168,10 @@ final class LiveDromeCore: DromeCoreClient, @unchecked Sendable {
         }
     }
 
+    func setDayCutoff(minutes: UInt32) throws {
+        try call { try store.setDayCutoff(dayCutoffMinutes: minutes, now: Self.nowInstant()) }
+    }
+
     // MARK: - DromeCoreClient: logging
 
     func logWater(ml: Int64, effectiveDate: DayDate?) throws -> LogResult {

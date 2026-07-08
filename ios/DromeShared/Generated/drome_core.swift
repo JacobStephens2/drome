@@ -840,6 +840,19 @@ public protocol DromeStoreProtocol: AnyObject, Sendable {
     func setCurrentBook(title: String, now: LocalInstant) throws 
     
     /**
+     * Edit the day cutoff (minutes past local midnight the day rolls over).
+     * Unlike the other setters, the cutoff decides which DAY a live log lands
+     * on, so it is event-sourced and FORWARD-ONLY: this records a
+     * `cutoff_changed` event stamped at `now`, and the projection attributes
+     * each event under the cutoff that was live when it was logged. Already-
+     * logged days keep the boundary they were lived under; only later logs use
+     * the new cutoff — resolving the hazard the `set_start_date` note warns of
+     * (a naive setter would move events to different days). The DB column stays
+     * the initial cutoff; `active_challenge` surfaces the current one.
+     */
+    func setDayCutoff(dayCutoffMinutes: UInt32, now: LocalInstant) throws 
+    
+    /**
      * Display-only config; safe to edit mid-challenge. `now` stamps the
      * challenge config-LWW slot (docs/PHASE2.md).
      */
@@ -1490,6 +1503,27 @@ open func setCurrentBook(title: String, now: LocalInstant)throws   {try rustCall
     uniffi_drome_core_fn_method_dromestore_set_current_book(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(title),
+        FfiConverterTypeLocalInstant_lower(now),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Edit the day cutoff (minutes past local midnight the day rolls over).
+     * Unlike the other setters, the cutoff decides which DAY a live log lands
+     * on, so it is event-sourced and FORWARD-ONLY: this records a
+     * `cutoff_changed` event stamped at `now`, and the projection attributes
+     * each event under the cutoff that was live when it was logged. Already-
+     * logged days keep the boundary they were lived under; only later logs use
+     * the new cutoff — resolving the hazard the `set_start_date` note warns of
+     * (a naive setter would move events to different days). The DB column stays
+     * the initial cutoff; `active_challenge` surfaces the current one.
+     */
+open func setDayCutoff(dayCutoffMinutes: UInt32, now: LocalInstant)throws   {try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
+        uniffiCallStatus in
+    uniffi_drome_core_fn_method_dromestore_set_day_cutoff(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(dayCutoffMinutes),
         FfiConverterTypeLocalInstant_lower(now),uniffiCallStatus
     )
 }
@@ -4368,6 +4402,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_drome_core_checksum_method_dromestore_set_current_book() != 64213) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_drome_core_checksum_method_dromestore_set_day_cutoff() != 2199) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_drome_core_checksum_method_dromestore_set_diet_description() != 18226) {

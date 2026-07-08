@@ -13,8 +13,8 @@ use crate::api::{
 };
 use crate::error::{DromeError, Result};
 use crate::events::{
-    self, EventRow, GoalChangedPayload, PhotoDonePayload, ReadingPayload, WaterAddPayload,
-    WaterAdjustPayload, WorkoutPayload,
+    self, CutoffChangedPayload, EventRow, GoalChangedPayload, PhotoDonePayload, ReadingPayload,
+    WaterAddPayload, WaterAdjustPayload, WorkoutPayload,
 };
 use crate::projections::Projection;
 use crate::time::{self, LocalInstant};
@@ -115,6 +115,14 @@ pub fn validate_event_payload(id: &str, kind: &str, payload: &serde_json::Value)
             if !(1..=MAX_WATER_GOAL_ML).contains(&p.water_goal_ml) {
                 return Err(DromeError::InvalidArgument(format!(
                     "event {id}: water goal ml must be in 1..={MAX_WATER_GOAL_ML}"
+                )));
+            }
+        }
+        events::KIND_CUTOFF_CHANGED => {
+            let p: CutoffChangedPayload = serde_json::from_value(payload.clone())?;
+            if p.day_cutoff_minutes >= 1_440 {
+                return Err(DromeError::InvalidArgument(format!(
+                    "event {id}: day_cutoff_minutes must be in 0..=1439"
                 )));
             }
         }

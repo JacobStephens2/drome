@@ -355,7 +355,16 @@ impl DromeStore {
 
     pub fn active_challenge(&self) -> Result<Option<Challenge>, DromeError> {
         let conn = self.lock()?;
-        load_active_challenge(&conn)
+        let Some(mut challenge) = load_active_challenge(&conn)? else {
+            return Ok(None);
+        };
+        // The DB column is the cutoff the challenge was CREATED with; forward-
+        // only edits live in the event log. Surface the CURRENT cutoff so the
+        // app displays it and computes "today" under the boundary in force now.
+        let events = load_events(&conn, &challenge.id)?;
+        let projection = Projection::build(&challenge, &events)?;
+        challenge.day_cutoff_minutes = projection.current_day_cutoff_minutes();
+        Ok(Some(challenge))
     }
 
     pub fn create_challenge(&self, cfg: NewChallenge) -> Result<Challenge, DromeError> {
@@ -538,6 +547,43 @@ impl DromeStore {
             None,
             events::KIND_GOAL_CHANGED,
             &json!({ "water_goal_ml": ml }),
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Edit the day cutoff (minutes past local midnight the day rolls over).
+    /// Unlike the other setters, the cutoff decides which DAY a live log lands
+    /// on, so it is event-sourced and FORWARD-ONLY: this records a
+    /// `cutoff_changed` event stamped at `now`, and the projection attributes
+    /// each event under the cutoff that was live when it was logged. Already-
+    /// logged days keep the boundary they were lived under; only later logs use
+    /// the new cutoff — resolving the hazard the `set_start_date` note warns of
+    /// (a naive setter would move events to different days). The DB column stays
+    /// the initial cutoff; `active_challenge` surfaces the current one.
+    pub fn set_day_cutoff(
+        &self,
+        day_cutoff_minutes: u32,
+        now: LocalInstant,
+    ) -> Result<(), DromeError> {
+        if day_cutoff_minutes >= 1_440 {
+            return Err(DromeError::InvalidArgument(
+                "day_cutoff_minutes must be in 0..=1439".into(),
+            ));
+        }
+        now.wall_secs()?;
+        let mut conn = self.lock()?;
+        // Atomic check-then-insert (see set_water_goal): the change event must
+        // never land under a challenge a concurrent reset just deleted.
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let challenge = require_active(&tx)?;
+        insert_event(
+            &tx,
+            &challenge.id,
+            now,
+            None,
+            events::KIND_CUTOFF_CHANGED,
+            &json!({ "day_cutoff_minutes": day_cutoff_minutes }),
         )?;
         tx.commit()?;
         Ok(())

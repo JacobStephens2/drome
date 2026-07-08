@@ -5,6 +5,13 @@ use serde::{Deserialize, Serialize};
 
 pub const ON_PACE_SLACK_ML: i64 = 250;
 pub const FINAL_OUNCE_ML: i64 = 150;
+/// Completion slack (~half a US fl oz) absorbing oz⇄ml display rounding: a goal
+/// entered in whole ounces stores as ml, and whole-ounce pours store as ml that
+/// don't sum back to it exactly (four 32 oz bottles = 3784 ml vs a 3785 ml
+/// gallon), so an exact ml comparison leaves the goal unreachable and "of N oz"
+/// disagreeing with "oz to go". Within this slack the day counts as met and
+/// nothing remains — below the finest amount the user can see (1 oz).
+pub const FILL_TOLERANCE_ML: i64 = 15;
 pub const CATCH_UP_WINDOW_MIN: i64 = 90;
 pub const CATCH_UP_REMAINING_ML: i64 = 1_000;
 pub const CHUG_WINDOW_SECS: i64 = 3_600;
@@ -49,7 +56,15 @@ pub fn compute_water_state(
         .unwrap_or(0)
         .clamp(0, goal_ml.max(0));
 
-    let remaining_ml = (goal_ml - total_ml).max(0);
+    // Within the fill tolerance the goal counts as met, so nothing remains —
+    // this is what makes a whole-ounce goal reachable by whole-ounce pours and
+    // keeps "oz to go" consistent with the "of N oz" line.
+    let raw_remaining = (goal_ml - total_ml).max(0);
+    let remaining_ml = if raw_remaining <= FILL_TOLERANCE_ML {
+        0
+    } else {
+        raw_remaining
+    };
     WaterState {
         total_ml,
         goal_ml,
@@ -140,14 +155,27 @@ mod tests {
     #[test]
     fn final_ounce_band() {
         for (total, expected) in [
-            (GOAL, false),       // remaining 0: done, not "final ounce"
-            (GOAL - 1, true),    // remaining 1
-            (GOAL - 150, true),  // remaining 150 (boundary)
-            (GOAL - 151, false), // remaining 151
+            (GOAL, false),                        // remaining 0: done, not "final ounce"
+            (GOAL - FILL_TOLERANCE_ML, false),    // within fill tolerance: met, nothing remains
+            (GOAL - FILL_TOLERANCE_ML - 1, true), // just past tolerance: the real band starts
+            (GOAL - FINAL_OUNCE_ML, true),        // 150 ml (boundary)
+            (GOAL - FINAL_OUNCE_ML - 1, false),   // 151 ml
         ] {
             let s = compute_water_state(total, GOAL, 800, START, END);
             assert_eq!(s.final_ounce, expected, "total {total}");
         }
+    }
+
+    #[test]
+    fn fill_tolerance_completes_a_whole_ounce_goal_from_whole_ounce_pours() {
+        // Four 32 oz bottles store as 4 × 946 ml = 3784 ml, one ml shy of the
+        // 3785 ml gallon: the tolerance still zeroes the remainder (done).
+        let s = compute_water_state(3_784, GOAL, 800, START, END);
+        assert_eq!(s.remaining_ml, 0);
+        assert!(!s.final_ounce);
+        // A genuine shortfall past the tolerance still shows a remainder.
+        let s = compute_water_state(GOAL - 100, GOAL, 800, START, END);
+        assert_eq!(s.remaining_ml, 100);
     }
 
     #[test]
