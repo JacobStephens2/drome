@@ -180,12 +180,19 @@ pub fn test_server_with_clock(beta_all_entitled: bool, now_epoch: i64) -> TestSe
 #[derive(Default)]
 pub struct RecordingSender {
     codes: Mutex<HashMap<String, String>>,
+    /// Signup notifications: (operator recipient, new account's email or None).
+    signups: Mutex<Vec<(String, Option<String>)>>,
 }
 
 impl RecordingSender {
     /// The last code recorded for `email`, if any.
     pub fn code_for(&self, email: &str) -> Option<String> {
         self.codes.lock().unwrap().get(email).cloned()
+    }
+
+    /// Every signup notification recorded so far, in order.
+    pub fn signups(&self) -> Vec<(String, Option<String>)> {
+        self.signups.lock().unwrap().clone()
     }
 }
 
@@ -195,6 +202,18 @@ impl EmailSender for RecordingSender {
             .lock()
             .unwrap()
             .insert(to.to_owned(), code.to_owned());
+        Ok(())
+    }
+
+    fn send_signup_notification(
+        &self,
+        to: &str,
+        new_account_email: Option<&str>,
+    ) -> Result<(), ApiError> {
+        self.signups
+            .lock()
+            .unwrap()
+            .push((to.to_owned(), new_account_email.map(str::to_owned)));
         Ok(())
     }
 }
@@ -220,7 +239,8 @@ pub fn test_server_email(
     let verifier = JwtAppleVerifier::new(Box::new(provider), AUDIENCE);
     let state = AppState::new(conn, Arc::new(verifier), beta_all_entitled)
         .with_clock(clock)
-        .with_email_sender(sender);
+        .with_email_sender(sender)
+        .with_signup_notify_to(Some("ops@drome.test".to_owned()));
     let app = build_router(state.clone());
     TestServer {
         app,

@@ -2383,3 +2383,51 @@ async fn email_otp_rejects_malformed_address() {
     }
     assert!(recorder.code_for("not-an-email").is_none());
 }
+
+/// Drives the email-OTP request+verify flow to a minted session, so a test can
+/// then inspect the recorder for the operator signup notification.
+async fn sign_in_email(app: &axum::Router, recorder: &RecordingSender, email: &str) {
+    json_request(
+        app,
+        "POST",
+        "/v1/auth/email/request",
+        None,
+        json!({ "email": email }),
+    )
+    .await;
+    let code = recorder.code_for(email).expect("code recorded");
+    let (status, _) = json_request(
+        app,
+        "POST",
+        "/v1/auth/email/verify",
+        None,
+        json!({ "email": email, "code": code }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "verify should mint a session for {email}");
+}
+
+// docs/specs.md "Accounts": the operator is emailed on every new account, but
+// NOT on a returning sign-in.
+#[tokio::test]
+async fn signup_notification_fires_once_per_new_account() {
+    let recorder = Arc::new(RecordingSender::default());
+    let srv = test_server_email(true, fixed_clock(1_700_000_000), recorder.clone());
+
+    // First sign-in for this address creates the account → one notification,
+    // carrying the new account's email to the configured operator.
+    sign_in_email(&srv.app, &recorder, "new@user.com").await;
+    assert_eq!(
+        recorder.signups(),
+        vec![("ops@drome.test".to_owned(), Some("new@user.com".to_owned()))],
+    );
+
+    // Same address again is a returning login, not a new account — no notify.
+    sign_in_email(&srv.app, &recorder, "new@user.com").await;
+    assert_eq!(recorder.signups().len(), 1, "re-auth must not notify again");
+
+    // A different address is a distinct new account → a second notification.
+    sign_in_email(&srv.app, &recorder, "other@user.com").await;
+    assert_eq!(recorder.signups().len(), 2);
+    assert_eq!(recorder.signups()[1].1.as_deref(), Some("other@user.com"));
+}

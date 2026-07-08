@@ -49,9 +49,17 @@ async fn main() {
         }
     };
 
+    // Operator notified on every new account (docs/specs.md "Accounts").
+    // Defaults to jacob@stephens.page; override via DROME_SIGNUP_NOTIFY_TO, or
+    // set it empty to disable. Delivery still requires a configured Resend
+    // sender — with the LogSender fallback the notification is only logged.
+    let signup_notify_to = std::env::var("DROME_SIGNUP_NOTIFY_TO")
+        .unwrap_or_else(|_| "jacob@stephens.page".to_owned());
+
     let state = AppState::new(conn, Arc::new(JwtAppleVerifier::apple()), beta_all_entitled)
         .with_dev_auth(dev_auth)
-        .with_email_sender(email_sender);
+        .with_email_sender(email_sender)
+        .with_signup_notify_to(Some(signup_notify_to));
     if dev_auth {
         eprintln!(
             "WARNING: DROME_DEV_AUTH=1 — POST /v1/auth/dev is ENABLED. It mints real \

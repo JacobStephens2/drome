@@ -169,24 +169,49 @@ pub async fn apple_auth(
     verify_apple_nonce(req.nonce.as_deref(), identity.nonce.as_deref())?;
     let now = state.now_epoch();
 
-    let conn = state.db.lock().map_err(|_| ApiError::internal("db lock"))?;
-    // Upsert by apple_sub; keep the latest non-null relay email.
-    conn.execute(
-        "INSERT INTO account (apple_sub, email, created_at_epoch) VALUES (?1, ?2, ?3)
-         ON CONFLICT(apple_sub) DO UPDATE SET email = COALESCE(excluded.email, account.email)",
-        params![identity.sub, identity.email, now],
-    )
-    .map_err(ApiError::internal)?;
-    let account_id: i64 = conn
-        .query_row(
-            "SELECT id FROM account WHERE apple_sub = ?1",
-            params![identity.sub],
-            |r| r.get(0),
+    let (resp, is_new_account) = {
+        let conn = state.db.lock().map_err(|_| ApiError::internal("db lock"))?;
+        // Whether this sub already had an account decides if a signup fired: the
+        // upsert below can't tell insert from update on its own (ON CONFLICT
+        // reports a change either way), so check before writing.
+        let is_new_account = !account_exists(&conn, &identity.sub)?;
+        // Upsert by apple_sub; keep the latest non-null relay email.
+        conn.execute(
+            "INSERT INTO account (apple_sub, email, created_at_epoch) VALUES (?1, ?2, ?3)
+             ON CONFLICT(apple_sub) DO UPDATE SET email = COALESCE(excluded.email, account.email)",
+            params![identity.sub, identity.email, now],
         )
         .map_err(ApiError::internal)?;
+        let account_id: i64 = conn
+            .query_row(
+                "SELECT id FROM account WHERE apple_sub = ?1",
+                params![identity.sub],
+                |r| r.get(0),
+            )
+            .map_err(ApiError::internal)?;
 
-    let resp = issue_session(&conn, account_id, now)?;
+        (issue_session(&conn, account_id, now)?, is_new_account)
+    };
+    // Lock dropped: notify best-effort so a slow/failing email can't stall auth.
+    if is_new_account {
+        state.notify_signup(identity.email.as_deref());
+    }
     Ok(Json(resp))
+}
+
+/// True if an account already exists for `apple_sub`. Used by the auth handlers
+/// to distinguish a first-time signup (fire the operator notification) from a
+/// returning sign-in (upsert reports a change for both, so it can't tell them
+/// apart on its own).
+fn account_exists(conn: &rusqlite::Connection, apple_sub: &str) -> Result<bool, ApiError> {
+    conn.query_row(
+        "SELECT 1 FROM account WHERE apple_sub = ?1",
+        params![apple_sub],
+        |_| Ok(()),
+    )
+    .optional()
+    .map_err(ApiError::internal)
+    .map(|r| r.is_some())
 }
 
 /// `POST /v1/auth/refresh` — rotate the session (old tokens are invalidated).
@@ -411,6 +436,9 @@ pub async fn email_verify(
     conn.execute("DELETE FROM email_code WHERE email = ?1", params![email])
         .map_err(ApiError::internal)?;
     let identity = format!("email:{email}");
+    // Check before the upsert so a first-time signup can be told from a repeat
+    // sign-in (same reasoning as the Apple path).
+    let is_new_account = !account_exists(&conn, &identity)?;
     conn.execute(
         "INSERT INTO account (apple_sub, email, created_at_epoch) VALUES (?1, ?2, ?3)
          ON CONFLICT(apple_sub) DO UPDATE SET email = excluded.email",
@@ -426,6 +454,11 @@ pub async fn email_verify(
         .map_err(ApiError::internal)?;
 
     let resp = issue_session(&conn, account_id, now)?;
+    // Drop the lock before the best-effort notification (see apple_auth).
+    drop(conn);
+    if is_new_account {
+        state.notify_signup(Some(&email));
+    }
     Ok(Json(resp))
 }
 

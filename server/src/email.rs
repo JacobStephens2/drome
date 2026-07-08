@@ -12,6 +12,18 @@ use crate::error::ApiError;
 /// retry rather than silently drop a code they'll never receive.
 pub trait EmailSender: Send + Sync {
     fn send_login_code(&self, to: &str, code: &str) -> Result<(), ApiError>;
+
+    /// Notifies the operator (`to`) that a brand-new account was just created.
+    /// `new_account_email` is the signer's email when known (`None` for an Apple
+    /// private-relay account that shared no address). Fired best-effort by the
+    /// auth handlers — a failure here must never block someone's sign-in — so the
+    /// returned error is logged, not surfaced to the caller (docs/specs.md
+    /// "Accounts": jacob@stephens.page is emailed on every new Drome account).
+    fn send_signup_notification(
+        &self,
+        to: &str,
+        new_account_email: Option<&str>,
+    ) -> Result<(), ApiError>;
 }
 
 /// Fallback when `RESEND_API_KEY` is unset: logs the code to stderr instead of
@@ -22,6 +34,16 @@ pub struct LogSender;
 impl EmailSender for LogSender {
     fn send_login_code(&self, to: &str, code: &str) -> Result<(), ApiError> {
         eprintln!("[email-otp] login code for {to}: {code}  (RESEND_API_KEY unset — NOT emailed)");
+        Ok(())
+    }
+
+    fn send_signup_notification(
+        &self,
+        to: &str,
+        new_account_email: Option<&str>,
+    ) -> Result<(), ApiError> {
+        let who = new_account_email.unwrap_or("(no email shared)");
+        eprintln!("[signup-notify] new Drome account ({who}) — would notify {to}  (RESEND_API_KEY unset — NOT emailed)");
         Ok(())
     }
 }
@@ -38,6 +60,26 @@ pub struct ResendSender {
 impl ResendSender {
     pub fn new(api_key: String, from: String) -> Self {
         Self { api_key, from }
+    }
+
+    /// Posts one transactional email to Resend. Shared by every message this
+    /// sender delivers so the auth header / endpoint / error handling live in
+    /// one place. The provider's response is opaque to the client; on any error
+    /// we surface `err_msg` and never leak Resend's body.
+    fn post(&self, to: &str, subject: &str, text: &str, html: &str, err_msg: &'static str) -> Result<(), ApiError> {
+        let result = ureq::post("https://api.resend.com/emails")
+            .set("Authorization", &format!("Bearer {}", self.api_key))
+            .send_json(serde_json::json!({
+                "from": self.from,
+                "to": [to],
+                "subject": subject,
+                "text": text,
+                "html": html,
+            }));
+        match result {
+            Ok(_) => Ok(()),
+            Err(_) => Err(ApiError::bad_gateway(err_msg)),
+        }
     }
 }
 
@@ -56,19 +98,23 @@ impl EmailSender for ResendSender {
                  If you didn't request it, you can ignore this email.</p>\
              </div>"
         );
-        let result = ureq::post("https://api.resend.com/emails")
-            .set("Authorization", &format!("Bearer {}", self.api_key))
-            .send_json(serde_json::json!({
-                "from": self.from,
-                "to": [to],
-                "subject": subject,
-                "text": text,
-                "html": html,
-            }));
-        match result {
-            Ok(_) => Ok(()),
-            // The provider is opaque to the client; don't leak its response.
-            Err(_) => Err(ApiError::bad_gateway("couldn't send the code — try again")),
-        }
+        self.post(to, &subject, &text, &html, "couldn't send the code — try again")
+    }
+
+    fn send_signup_notification(
+        &self,
+        to: &str,
+        new_account_email: Option<&str>,
+    ) -> Result<(), ApiError> {
+        let who = new_account_email.unwrap_or("(no email shared)");
+        let subject = "New Drome account created".to_owned();
+        let text = format!("A new Drome account was just created.\n\nEmail: {who}");
+        let html = format!(
+            "<div style=\"font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#2b2118\">\
+               <p>A new Drome account was just created.</p>\
+               <p><strong>Email:</strong> {who}</p>\
+             </div>"
+        );
+        self.post(to, &subject, &text, &html, "couldn't send signup notification")
     }
 }

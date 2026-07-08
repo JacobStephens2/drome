@@ -59,6 +59,10 @@ pub struct AppState {
     /// Sends email OTP login codes. Defaults to `LogSender` (logs, never sends);
     /// `main` swaps in the Resend sender when `RESEND_API_KEY` is configured.
     pub email_sender: Arc<dyn EmailSender>,
+    /// Operator address emailed when a new account is created (docs/specs.md
+    /// "Accounts"). `None` disables the notification; `main` defaults it to
+    /// jacob@stephens.page (env `DROME_SIGNUP_NOTIFY_TO`, empty = off).
+    signup_notify_to: Option<String>,
     pub beta_all_entitled: bool,
     /// Local-dev auth affordance (`POST /v1/auth/dev`). OFF by default so a
     /// default (production) configuration can never mint synthetic sessions;
@@ -82,6 +86,7 @@ impl AppState {
             db: Arc::new(Mutex::new(conn)),
             verifier,
             email_sender: Arc::new(LogSender),
+            signup_notify_to: None,
             beta_all_entitled,
             dev_auth: false,
             clock: Arc::new(system_now),
@@ -100,6 +105,26 @@ impl AppState {
     pub fn with_email_sender(mut self, sender: Arc<dyn EmailSender>) -> Self {
         self.email_sender = sender;
         self
+    }
+
+    /// Sets the operator address notified on new-account creation. An empty /
+    /// whitespace-only value disables the notification (stored as `None`).
+    pub fn with_signup_notify_to(mut self, to: Option<String>) -> Self {
+        self.signup_notify_to = to.filter(|s| !s.trim().is_empty());
+        self
+    }
+
+    /// Best-effort operator notification that a new account was created. Called
+    /// by the auth handlers AFTER the session is issued and the DB lock dropped,
+    /// so a slow or failing email never delays or breaks someone's sign-in — a
+    /// delivery error is logged, not propagated (docs/specs.md "Accounts").
+    pub fn notify_signup(&self, new_account_email: Option<&str>) {
+        let Some(to) = self.signup_notify_to.as_deref() else {
+            return;
+        };
+        if let Err(e) = self.email_sender.send_signup_notification(to, new_account_email) {
+            eprintln!("[signup-notify] failed to email {to}: {e:?}");
+        }
     }
 
     /// Enables the local-dev auth affordance (`POST /v1/auth/dev`). OFF by
