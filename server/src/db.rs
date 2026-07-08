@@ -122,6 +122,19 @@ CREATE TABLE IF NOT EXISTS entitlement (
     active INTEGER NOT NULL DEFAULT 0,
     updated_at_epoch INTEGER NOT NULL
 );
+
+-- Pending email six-digit OTP codes (docs/PHASE2.md \"Auth\"). ONE row per
+-- email (a new request replaces the prior code), the code stored ONLY as a
+-- SHA-256 hash. `attempts` caps guessing; `expires_at_epoch` bounds the window;
+-- `created_at_epoch` drives the resend cooldown. The row is deleted on success,
+-- expiry, or attempt exhaustion — it never becomes an account by itself.
+CREATE TABLE IF NOT EXISTS email_code (
+    email TEXT PRIMARY KEY,
+    code_hash TEXT NOT NULL,
+    expires_at_epoch INTEGER NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    created_at_epoch INTEGER NOT NULL
+);
 ";
 
 /// Opens the server DB (WAL, foreign keys on) and runs migrations.

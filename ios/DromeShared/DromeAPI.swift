@@ -275,6 +275,22 @@ final class DromeAPI {
         return try await postAuth(path: "v1/auth/apple", body: body)
     }
 
+    /// `POST /v1/auth/email/request` — email a six-digit code. Returns on 2xx
+    /// (204 No Content, no body); the code is redeemed via `authEmailVerify`.
+    func authEmailRequest(email: String) async throws {
+        let body = try encoder.encode(EmailRequestBody(email: email))
+        let (data, http) = try await send(
+            request("v1/auth/email/request", method: "POST", accessToken: nil, body: body)
+        )
+        try ensureOK(data, http)
+    }
+
+    /// `POST /v1/auth/email/verify` — exchange the emailed code for a session.
+    func authEmailVerify(email: String, code: String) async throws -> AuthResponse {
+        let body = try encoder.encode(EmailVerifyBody(email: email, code: code))
+        return try await postAuth(path: "v1/auth/email/verify", body: body)
+    }
+
     #if DEBUG
     /// `POST /v1/auth/dev` — LOCAL DEV ONLY. Mints a session for a synthetic
     /// account keyed by `accountKey` (server must run with `DROME_DEV_AUTH=1`,
@@ -494,6 +510,15 @@ private struct DevAuthBody: Encodable {
     enum CodingKeys: String, CodingKey {
         case accountKey = "account_key"
     }
+}
+
+private struct EmailRequestBody: Encodable {
+    let email: String
+}
+
+private struct EmailVerifyBody: Encodable {
+    let email: String
+    let code: String
 }
 
 private struct RefreshBody: Encodable {

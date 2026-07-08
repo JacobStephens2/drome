@@ -51,6 +51,11 @@ impl ApiError {
         Self::new(StatusCode::SERVICE_UNAVAILABLE, "unavailable", message)
     }
 
+    /// An upstream dependency failed (e.g. the transactional-email provider).
+    pub fn bad_gateway(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::BAD_GATEWAY, "bad_gateway", message)
+    }
+
     pub fn not_implemented(message: impl Into<String>) -> Self {
         Self::new(StatusCode::NOT_IMPLEMENTED, "not_implemented", message)
     }

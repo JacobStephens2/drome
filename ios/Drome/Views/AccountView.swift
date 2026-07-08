@@ -22,6 +22,8 @@ struct AccountView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     @State private var deleteConfirmPresented = false
+    @State private var emailInput = ""
+    @State private var codeInput = ""
     #if DEBUG
     @State private var devKey = "alice"
     #endif
@@ -87,9 +89,64 @@ struct AccountView: View {
         }
         .listRowBackground(Color.clear)
 
+        emailSignInSection
+
         #if DEBUG
         devSignInSection
         #endif
+    }
+
+    /// Passwordless email six-digit OTP. Two steps in one section: enter an
+    /// email to be sent a code, then enter the code. `awaitingCodeForEmail`
+    /// (on AppModel) decides which step shows.
+    @ViewBuilder
+    private var emailSignInSection: some View {
+        Section {
+            if let email = appModel.awaitingCodeForEmail {
+                Text("Enter the 6-digit code sent to \(email).")
+                    .font(.footnote)
+                    .foregroundStyle(Color.dromeInk.opacity(0.7))
+                    .padding(.vertical, DromeSpacing.xs)
+                HStack(spacing: DromeSpacing.s) {
+                    TextField("6-digit code", text: $codeInput)
+                        .keyboardType(.numberPad)
+                        .textContentType(.oneTimeCode)
+                        .monospacedDigit()
+                        .frame(minHeight: DromeSpacing.tapTarget)
+                    Button("Verify") { appModel.verifyEmailCode(codeInput) }
+                        .font(.headline.weight(.black))
+                        .foregroundStyle(Color.dromeClay)
+                        .disabled(codeInput.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                Button("Use a different email") {
+                    codeInput = ""
+                    appModel.cancelEmailSignIn()
+                }
+                .font(.subheadline)
+                .foregroundStyle(Color.dromeInk.opacity(0.6))
+                .frame(minHeight: DromeSpacing.tapTarget)
+            } else {
+                HStack(spacing: DromeSpacing.s) {
+                    TextField("you@example.com", text: $emailInput)
+                        .keyboardType(.emailAddress)
+                        .textContentType(.emailAddress)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .frame(minHeight: DromeSpacing.tapTarget)
+                    Button("Email code") { appModel.requestEmailCode(emailInput) }
+                        .font(.headline.weight(.black))
+                        .foregroundStyle(Color.dromeClay)
+                        .disabled(emailInput.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+        } header: {
+            sectionHeader("Or sign in with email")
+        } footer: {
+            Text(appModel.awaitingCodeForEmail == nil
+                 ? "We'll email you a six-digit code — no password."
+                 : "The code expires in 10 minutes.")
+        }
+        .listRowBackground(rowBackground)
     }
 
     #if DEBUG

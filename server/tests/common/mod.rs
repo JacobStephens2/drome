@@ -1,11 +1,14 @@
 //! Shared test scaffolding: an in-process server (mock JWKS), signed Apple
 //! identity tokens, and a JSON request helper over `tower::ServiceExt`.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
+use drome_server::email::EmailSender;
+use drome_server::error::ApiError;
 use drome_server::jwks::{Jwk, JwtAppleVerifier, StaticJwksProvider};
 use drome_server::{build_router, db, AppState, Clock};
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
@@ -164,6 +167,60 @@ pub fn test_server_with_clock(beta_all_entitled: bool, now_epoch: i64) -> TestSe
     let verifier = JwtAppleVerifier::new(Box::new(provider), AUDIENCE);
     let clock: Clock = Arc::new(move || now_epoch);
     let state = AppState::new(conn, Arc::new(verifier), beta_all_entitled).with_clock(clock);
+    let app = build_router(state.clone());
+    TestServer {
+        app,
+        state,
+        _dir: dir,
+    }
+}
+
+/// Captures the email OTP codes the server would have sent, keyed by the
+/// (normalized) recipient — so a test can read the code and redeem it.
+#[derive(Default)]
+pub struct RecordingSender {
+    codes: Mutex<HashMap<String, String>>,
+}
+
+impl RecordingSender {
+    /// The last code recorded for `email`, if any.
+    pub fn code_for(&self, email: &str) -> Option<String> {
+        self.codes.lock().unwrap().get(email).cloned()
+    }
+}
+
+impl EmailSender for RecordingSender {
+    fn send_login_code(&self, to: &str, code: &str) -> Result<(), ApiError> {
+        self.codes
+            .lock()
+            .unwrap()
+            .insert(to.to_owned(), code.to_owned());
+        Ok(())
+    }
+}
+
+/// A server with a mock JWKS, an injected `clock`, and an injected email
+/// `sender` — for the email OTP tests, which need both deterministic time
+/// (expiry) and access to the code that "was sent".
+pub fn test_server_email(
+    beta_all_entitled: bool,
+    clock: Clock,
+    sender: Arc<dyn EmailSender>,
+) -> TestServer {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir
+        .path()
+        .join("server.sqlite")
+        .to_string_lossy()
+        .into_owned();
+    let conn = db::open(&path).expect("open server db");
+    let provider = StaticJwksProvider {
+        keys: vec![test_jwk()],
+    };
+    let verifier = JwtAppleVerifier::new(Box::new(provider), AUDIENCE);
+    let state = AppState::new(conn, Arc::new(verifier), beta_all_entitled)
+        .with_clock(clock)
+        .with_email_sender(sender);
     let app = build_router(state.clone());
     TestServer {
         app,

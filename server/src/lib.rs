@@ -14,12 +14,14 @@ use rusqlite::Connection;
 
 pub mod auth;
 pub mod db;
+pub mod email;
 pub mod entitlement;
 pub mod error;
 pub mod groups;
 pub mod jwks;
 pub mod sync;
 
+use crate::email::{EmailSender, LogSender};
 use crate::error::ApiError;
 use crate::jwks::AppleVerifier;
 
@@ -54,6 +56,9 @@ const AUTH_IP_REFILL_PER_SEC: f64 = 4.0;
 pub struct AppState {
     pub db: Arc<Mutex<Connection>>,
     pub verifier: Arc<dyn AppleVerifier>,
+    /// Sends email OTP login codes. Defaults to `LogSender` (logs, never sends);
+    /// `main` swaps in the Resend sender when `RESEND_API_KEY` is configured.
+    pub email_sender: Arc<dyn EmailSender>,
     pub beta_all_entitled: bool,
     /// Local-dev auth affordance (`POST /v1/auth/dev`). OFF by default so a
     /// default (production) configuration can never mint synthetic sessions;
@@ -76,6 +81,7 @@ impl AppState {
         Self {
             db: Arc::new(Mutex::new(conn)),
             verifier,
+            email_sender: Arc::new(LogSender),
             beta_all_entitled,
             dev_auth: false,
             clock: Arc::new(system_now),
@@ -87,6 +93,12 @@ impl AppState {
     /// Overrides the clock (tests only).
     pub fn with_clock(mut self, clock: Clock) -> Self {
         self.clock = clock;
+        self
+    }
+
+    /// Sets the email OTP sender (`main` injects Resend; tests inject a recorder).
+    pub fn with_email_sender(mut self, sender: Arc<dyn EmailSender>) -> Self {
+        self.email_sender = sender;
         self
     }
 
@@ -225,6 +237,8 @@ pub fn build_router(state: AppState) -> Router {
     // / DB work with no bearer token to key the per-token limiter on).
     let mut public_auth = Router::new()
         .route("/v1/auth/apple", post(auth::apple_auth))
+        .route("/v1/auth/email/request", post(auth::email_request))
+        .route("/v1/auth/email/verify", post(auth::email_verify))
         .route("/v1/auth/refresh", post(auth::refresh));
     // `/v1/auth/dev` is mounted ONLY when DROME_DEV_AUTH=1. In a default
     // (production) configuration the route simply does not exist, so it is

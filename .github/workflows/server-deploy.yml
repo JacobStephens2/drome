@@ -162,6 +162,10 @@ jobs:
           DROME_DOMAIN: ${{ vars.DROME_DOMAIN }}
           DATA_DIR: ${{ vars.DATA_DIR }}
           BETA_ALL_ENTITLED: ${{ vars.BETA_ALL_ENTITLED }}
+          # Email OTP sign-in. Optional: unset → the server logs codes instead
+          # of emailing. RESEND_FROM must be a verified sender on Resend.
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RESEND_FROM: ${{ vars.RESEND_FROM }}
           LITESTREAM_R2_ENDPOINT: ${{ secrets.LITESTREAM_R2_ENDPOINT }}
           LITESTREAM_R2_BUCKET: ${{ secrets.LITESTREAM_R2_BUCKET }}
           LITESTREAM_R2_ACCESS_KEY_ID: ${{ secrets.LITESTREAM_R2_ACCESS_KEY_ID }}

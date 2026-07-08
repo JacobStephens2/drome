@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use drome_server::email::{EmailSender, LogSender, ResendSender};
 use drome_server::jwks::JwtAppleVerifier;
 use drome_server::{build_router, db, AppState};
 
@@ -30,8 +31,27 @@ async fn main() {
         }
     };
 
+    // Email OTP sender: Resend when configured, else a stderr logger (the flow
+    // still works locally — read the code from the log). RESEND_FROM must be a
+    // verified sender on the Resend account (e.g. "Drome <login@drome.day>").
+    let email_sender: Arc<dyn EmailSender> = match std::env::var("RESEND_API_KEY") {
+        Ok(key) if !key.trim().is_empty() => {
+            let from = std::env::var("RESEND_FROM")
+                .unwrap_or_else(|_| "Drome <login@drome.day>".to_owned());
+            Arc::new(ResendSender::new(key, from))
+        }
+        _ => {
+            eprintln!(
+                "WARNING: RESEND_API_KEY unset — email sign-in codes are LOGGED, not emailed. \
+                 Set RESEND_API_KEY (and RESEND_FROM) to deliver real email."
+            );
+            Arc::new(LogSender)
+        }
+    };
+
     let state = AppState::new(conn, Arc::new(JwtAppleVerifier::apple()), beta_all_entitled)
-        .with_dev_auth(dev_auth);
+        .with_dev_auth(dev_auth)
+        .with_email_sender(email_sender);
     if dev_auth {
         eprintln!(
             "WARNING: DROME_DEV_AUTH=1 — POST /v1/auth/dev is ENABLED. It mints real \

@@ -10,11 +10,13 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use common::{
     json_request, json_request_xff, sign_token, sign_token_with_nonce, test_server,
-    test_server_opts, test_server_with_clock, valid_token, AUDIENCE, ISSUER,
+    test_server_email, test_server_opts, test_server_with_clock, valid_token, RecordingSender,
+    AUDIENCE, ISSUER,
 };
 use drome_core::{
     BackfilledDay, DromeStore, LocalInstant, NewChallenge, RulesetKind, WireEvent, JOB_EXTRA_ID,
 };
+use drome_server::Clock;
 use serde_json::{json, Value};
 use tempfile::TempDir;
 
@@ -2229,4 +2231,155 @@ async fn member_handle_differs_across_groups_and_hides_account_id() {
         !b1.to_string().contains("account_id") && !b2.to_string().contains("account_id"),
         "the global account id must never appear on the group wire"
     );
+}
+
+// --- email OTP sign-in -----------------------------------------------------
+
+fn fixed_clock(secs: i64) -> Clock {
+    Arc::new(move || secs)
+}
+
+#[tokio::test]
+async fn email_otp_request_then_verify_mints_a_working_session() {
+    let recorder = Arc::new(RecordingSender::default());
+    let srv = test_server_email(true, fixed_clock(1_700_000_000), recorder.clone());
+
+    // Request a code — mixed case + surrounding space normalizes away.
+    let (status, _) = json_request(
+        &srv.app,
+        "POST",
+        "/v1/auth/email/request",
+        None,
+        json!({ "email": " Sam@Example.COM " }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // The sender captured a six-digit code, keyed by the normalized address.
+    let code = recorder
+        .code_for("sam@example.com")
+        .expect("a code was sent");
+    assert_eq!(code.len(), 6);
+    assert!(code.chars().all(|c| c.is_ascii_digit()));
+
+    // Verify it → a session.
+    let (status, body) = json_request(
+        &srv.app,
+        "POST",
+        "/v1/auth/email/verify",
+        None,
+        json!({ "email": "sam@example.com", "code": code }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let access = body["access_token"]
+        .as_str()
+        .expect("access token")
+        .to_owned();
+    assert!(!access.is_empty());
+
+    // The session authenticates a real (authed) route.
+    let (status, _) =
+        json_request(&srv.app, "GET", "/v1/entitlement", Some(&access), json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // The code is single-use: replaying it now fails.
+    let (status, _) = json_request(
+        &srv.app,
+        "POST",
+        "/v1/auth/email/verify",
+        None,
+        json!({ "email": "sam@example.com", "code": code }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn email_otp_wrong_code_burns_attempts_then_invalidates() {
+    let recorder = Arc::new(RecordingSender::default());
+    let srv = test_server_email(true, fixed_clock(1_700_000_000), recorder.clone());
+    json_request(
+        &srv.app,
+        "POST",
+        "/v1/auth/email/request",
+        None,
+        json!({ "email": "a@b.com" }),
+    )
+    .await;
+    let good = recorder.code_for("a@b.com").expect("code");
+    let wrong = if good == "000000" { "111111" } else { "000000" };
+
+    // Five wrong guesses, each 401. The fifth also invalidates the code.
+    for _ in 0..5 {
+        let (status, _) = json_request(
+            &srv.app,
+            "POST",
+            "/v1/auth/email/verify",
+            None,
+            json!({ "email": "a@b.com", "code": wrong }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    // Even the correct code no longer works — the row was burned.
+    let (status, _) = json_request(
+        &srv.app,
+        "POST",
+        "/v1/auth/email/verify",
+        None,
+        json!({ "email": "a@b.com", "code": good }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn email_otp_expired_code_is_rejected() {
+    use std::sync::atomic::{AtomicI64, Ordering};
+    let recorder = Arc::new(RecordingSender::default());
+    let secs = Arc::new(AtomicI64::new(1_700_000_000));
+    let secs_read = secs.clone();
+    let clock: Clock = Arc::new(move || secs_read.load(Ordering::SeqCst));
+    let srv = test_server_email(true, clock, recorder.clone());
+
+    json_request(
+        &srv.app,
+        "POST",
+        "/v1/auth/email/request",
+        None,
+        json!({ "email": "c@d.com" }),
+    )
+    .await;
+    let code = recorder.code_for("c@d.com").expect("code");
+
+    // Advance past the 10-minute TTL; the code is now expired.
+    secs.fetch_add(10 * 60 + 1, Ordering::SeqCst);
+    let (status, _) = json_request(
+        &srv.app,
+        "POST",
+        "/v1/auth/email/verify",
+        None,
+        json!({ "email": "c@d.com", "code": code }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn email_otp_rejects_malformed_address() {
+    let recorder = Arc::new(RecordingSender::default());
+    let srv = test_server_email(true, fixed_clock(1_700_000_000), recorder.clone());
+    for bad in ["not-an-email", "a@b", "a@@b.com", "a b@c.com", "@x.com"] {
+        let (status, _) = json_request(
+            &srv.app,
+            "POST",
+            "/v1/auth/email/request",
+            None,
+            json!({ "email": bad }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "bad address {bad:?}");
+    }
+    assert!(recorder.code_for("not-an-email").is_none());
 }

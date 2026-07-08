@@ -167,6 +167,11 @@ final class AppModel {
     /// replay binding). Never persisted.
     private var pendingAppleRawNonce: String?
 
+    /// Email OTP: the (normalized) address a code was just sent to, or nil.
+    /// Non-nil drives the AccountView to its code-entry step; cleared on a
+    /// successful sign-in or when the user backs out.
+    private(set) var awaitingCodeForEmail: String?
+
     /// Legacy UserDefaults key: the display label (which could be a real email)
     /// used to be persisted here in cleartext. It now lives in the this-device
     /// Keychain item; this key is only purged on sign-out to remove any legacy
@@ -261,6 +266,42 @@ final class AppModel {
         }
     }
 
+    /// Step 1 of email OTP: ask the server to email a six-digit code. On success
+    /// `awaitingCodeForEmail` flips the AccountView to code entry; on failure the
+    /// alert explains why and the view stays on the email step.
+    func requestEmailCode(_ rawEmail: String) {
+        let email = rawEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !email.isEmpty else {
+            accountAlert = AccountAlert(title: "Couldn't sign in", message: "Enter your email.")
+            return
+        }
+        Task {
+            do {
+                try await api.authEmailRequest(email: email)
+                awaitingCodeForEmail = email
+            } catch {
+                accountAlert = AccountAlert(title: "Couldn't sign in", message: accountErrorText(error))
+            }
+        }
+    }
+
+    /// Step 2 of email OTP: redeem the code for a session. A wrong code leaves
+    /// the view on code entry (the alert says to try again); success signs in.
+    func verifyEmailCode(_ rawCode: String) {
+        guard let email = awaitingCodeForEmail else { return }
+        let code = rawCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty else {
+            accountAlert = AccountAlert(title: "Couldn't sign in", message: "Enter the code from your email.")
+            return
+        }
+        Task { await performSignIn(.email(email: email, code: code), label: email) }
+    }
+
+    /// Abandons an in-progress email sign-in (back button on code entry).
+    func cancelEmailSignIn() {
+        awaitingCodeForEmail = nil
+    }
+
     #if DEBUG
     /// Local dev sign-in (server must run with `DROME_DEV_AUTH=1`). Debug only.
     func signInDev(key: String) {
@@ -275,6 +316,7 @@ final class AppModel {
 
     private enum SignInMethod {
         case apple(identityToken: String, rawNonce: String)
+        case email(email: String, code: String)
         #if DEBUG
         case dev(key: String)
         #endif
@@ -286,6 +328,8 @@ final class AppModel {
             switch method {
             case .apple(let token, let nonce):
                 auth = try await api.authApple(identityToken: token, rawNonce: nonce)
+            case .email(let email, let code):
+                auth = try await api.authEmailVerify(email: email, code: code)
             #if DEBUG
             case .dev(let key):
                 auth = try await api.authDev(accountKey: key)
@@ -321,6 +365,7 @@ final class AppModel {
             accountLabel = resolvedLabel
             accountId = auth.accountId
             signedIn = true
+            awaitingCodeForEmail = nil
             makeSyncEngine(accountId: auth.accountId)
             syncEngine?.syncNow()
             await fetchEntitlement()
@@ -478,7 +523,13 @@ final class AppModel {
         switch apiError {
         case .offline:
             return "Couldn't reach the server. Check your connection and try again."
-        case .unauthorized:
+        case .unauthorized(let code, let message):
+            // The email OTP verify returns specific, user-actionable text
+            // (incorrect / expired / too many attempts); surface it. Apple and
+            // session failures stay deliberately generic.
+            if code == "bad_code", !message.isEmpty {
+                return message
+            }
             return "That sign-in didn't go through. Please try again."
         case .notEntitled(let message):
             return message.isEmpty ? "Sync isn't available on this account right now." : message

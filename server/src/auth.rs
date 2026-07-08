@@ -6,7 +6,7 @@ use axum::http::{header, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
 use axum::{Extension, Json};
-use rand::RngCore;
+use rand::{Rng, RngCore};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -16,6 +16,13 @@ use crate::AppState;
 
 /// Sessions live 30 days; a refresh rotates both tokens and resets the clock.
 const SESSION_TTL_SECS: i64 = 30 * 24 * 3_600;
+
+/// Email OTP: a six-digit code, good for 10 minutes, at most 5 guesses, and no
+/// more than one email per 30 seconds (inbox-spam backstop on top of the per-IP
+/// limiter). Same numbers recommended in docs/PHASE2.md "Auth".
+const EMAIL_CODE_TTL_SECS: i64 = 10 * 60;
+const MAX_EMAIL_CODE_ATTEMPTS: i64 = 5;
+const EMAIL_CODE_RESEND_COOLDOWN_SECS: i64 = 30;
 
 /// An authenticated account, loaded by the middleware and handed to handlers
 /// via `Extension`.
@@ -65,6 +72,17 @@ pub struct DevAuthRequest {
     pub account_key: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct EmailRequestBody {
+    pub email: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EmailVerifyBody {
+    pub email: String,
+    pub code: String,
+}
+
 // --- token helpers ---------------------------------------------------------
 
 /// A fresh 256-bit opaque token, hex-encoded.
@@ -106,6 +124,35 @@ fn verify_apple_nonce(raw: Option<&str>, claim: Option<&str>) -> Result<(), ApiE
             "nonce missing or does not match the identity token",
         )),
     }
+}
+
+/// A fresh, uniformly-random six-digit code, zero-padded (`"000000".."999999"`).
+fn generate_email_code() -> String {
+    let n: u32 = rand::thread_rng().gen_range(0..1_000_000);
+    format!("{n:06}")
+}
+
+/// Normalizes and lightly validates a login email: trimmed, lowercased, exactly
+/// one `@`, non-empty local part, a dotted domain, no whitespace, sane length.
+/// `None` → a malformed address (a 400, not an account-existence signal: email
+/// OTP unifies sign-up and sign-in, so any well-formed address is acceptable —
+/// there is no "unknown email" to leak).
+fn normalize_email(raw: &str) -> Option<String> {
+    let email = raw.trim().to_lowercase();
+    if email.len() < 3 || email.len() > 254 || email.contains(char::is_whitespace) {
+        return None;
+    }
+    if email.matches('@').count() != 1 {
+        return None;
+    }
+    let (local, domain) = email.split_once('@')?;
+    if local.is_empty() || domain.len() < 3 || !domain.contains('.') {
+        return None;
+    }
+    if domain.starts_with('.') || domain.ends_with('.') || domain.contains("..") {
+        return None;
+    }
+    Some(email)
 }
 
 // --- handlers --------------------------------------------------------------
@@ -227,6 +274,153 @@ pub async fn dev_auth(
         .query_row(
             "SELECT id FROM account WHERE apple_sub = ?1",
             params![apple_sub],
+            |r| r.get(0),
+        )
+        .map_err(ApiError::internal)?;
+
+    let resp = issue_session(&conn, account_id, now)?;
+    Ok(Json(resp))
+}
+
+/// `POST /v1/auth/email/request` — email the caller a six-digit code. Always
+/// 204 for a well-formed address (no account-existence signal): the code both
+/// creates the account and signs in, so there is no "unknown email". A code
+/// issued within the resend cooldown is kept as-is (no new email). The code is
+/// stored ONLY as a hash; the plaintext exists just long enough to hand to the
+/// sender, which runs OUTSIDE the DB lock (a network call must never hold it).
+pub async fn email_request(
+    State(state): State<AppState>,
+    Json(req): Json<EmailRequestBody>,
+) -> Result<StatusCode, ApiError> {
+    let email = normalize_email(&req.email)
+        .ok_or_else(|| ApiError::bad_request("enter a valid email address"))?;
+    let now = state.now_epoch();
+
+    let code = {
+        let conn = state.db.lock().map_err(|_| ApiError::internal("db lock"))?;
+        // Resend cooldown: a very recent code stays valid and is not re-emailed,
+        // so a double-tap (or a hostile flood aimed at someone's inbox) can't
+        // spam mail — the client still advances to code entry (204).
+        let prior_created: Option<i64> = conn
+            .query_row(
+                "SELECT created_at_epoch FROM email_code WHERE email = ?1",
+                params![email],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(ApiError::internal)?;
+        if let Some(created) = prior_created {
+            if now - created < EMAIL_CODE_RESEND_COOLDOWN_SECS {
+                return Ok(StatusCode::NO_CONTENT);
+            }
+        }
+        let code = generate_email_code();
+        // Upsert: a new request replaces any prior code and resets attempts.
+        conn.execute(
+            "INSERT INTO email_code (email, code_hash, expires_at_epoch, attempts, created_at_epoch)
+             VALUES (?1, ?2, ?3, 0, ?4)
+             ON CONFLICT(email) DO UPDATE SET
+                 code_hash = excluded.code_hash,
+                 expires_at_epoch = excluded.expires_at_epoch,
+                 attempts = 0,
+                 created_at_epoch = excluded.created_at_epoch",
+            params![email, hash_token(&code), now + EMAIL_CODE_TTL_SECS, now],
+        )
+        .map_err(ApiError::internal)?;
+        code
+    }; // DB lock dropped before the network send below.
+
+    if let Err(err) = state.email_sender.send_login_code(&email, &code) {
+        // A failed send must not strand an un-deliverable code: drop it so the
+        // user gets a clean "try again" rather than a dead 10-minute window.
+        if let Ok(conn) = state.db.lock() {
+            let _ = conn.execute("DELETE FROM email_code WHERE email = ?1", params![email]);
+        }
+        return Err(err);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /v1/auth/email/verify` — redeem a six-digit code for a session. On the
+/// first match: consume the code, upsert the account (identity `"email:" +
+/// email`, mirroring the `dev:` convention so it never collides with an Apple
+/// `sub`), and issue a session via the shared `issue_session` path. A wrong code
+/// burns one of `MAX_EMAIL_CODE_ATTEMPTS`; expiry / exhaustion delete the row.
+pub async fn email_verify(
+    State(state): State<AppState>,
+    Json(req): Json<EmailVerifyBody>,
+) -> Result<Json<AuthResponse>, ApiError> {
+    let email = normalize_email(&req.email)
+        .ok_or_else(|| ApiError::bad_request("enter a valid email address"))?;
+    let code = req.code.trim().to_owned();
+    if code.is_empty() {
+        return Err(ApiError::bad_request("enter the code from your email"));
+    }
+    let now = state.now_epoch();
+
+    let conn = state.db.lock().map_err(|_| ApiError::internal("db lock"))?;
+    let row: Option<(String, i64, i64)> = conn
+        .query_row(
+            "SELECT code_hash, expires_at_epoch, attempts FROM email_code WHERE email = ?1",
+            params![email],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()
+        .map_err(ApiError::internal)?;
+    let Some((code_hash, expires_at, attempts)) = row else {
+        return Err(ApiError::unauthorized(
+            "bad_code",
+            "that code isn't valid — request a new one",
+        ));
+    };
+    if now >= expires_at {
+        conn.execute("DELETE FROM email_code WHERE email = ?1", params![email])
+            .map_err(ApiError::internal)?;
+        return Err(ApiError::unauthorized(
+            "bad_code",
+            "that code expired — request a new one",
+        ));
+    }
+    if attempts >= MAX_EMAIL_CODE_ATTEMPTS {
+        conn.execute("DELETE FROM email_code WHERE email = ?1", params![email])
+            .map_err(ApiError::internal)?;
+        return Err(ApiError::unauthorized(
+            "bad_code",
+            "too many attempts — request a new one",
+        ));
+    }
+    // Preimage resistance (not secret comparison) is what protects the code, so
+    // a plain equality check is sufficient — same reasoning as the token hashes.
+    if hash_token(&code) != code_hash {
+        let next = attempts + 1;
+        if next >= MAX_EMAIL_CODE_ATTEMPTS {
+            // Last guess spent: invalidate the code entirely.
+            conn.execute("DELETE FROM email_code WHERE email = ?1", params![email])
+                .map_err(ApiError::internal)?;
+        } else {
+            conn.execute(
+                "UPDATE email_code SET attempts = ?2 WHERE email = ?1",
+                params![email, next],
+            )
+            .map_err(ApiError::internal)?;
+        }
+        return Err(ApiError::unauthorized("bad_code", "incorrect code"));
+    }
+
+    // Correct: single-use, so consume it before minting anything.
+    conn.execute("DELETE FROM email_code WHERE email = ?1", params![email])
+        .map_err(ApiError::internal)?;
+    let identity = format!("email:{email}");
+    conn.execute(
+        "INSERT INTO account (apple_sub, email, created_at_epoch) VALUES (?1, ?2, ?3)
+         ON CONFLICT(apple_sub) DO UPDATE SET email = excluded.email",
+        params![identity, email, now],
+    )
+    .map_err(ApiError::internal)?;
+    let account_id: i64 = conn
+        .query_row(
+            "SELECT id FROM account WHERE apple_sub = ?1",
+            params![identity],
             |r| r.get(0),
         )
         .map_err(ApiError::internal)?;
