@@ -26,9 +26,12 @@ enum DayBoardFormat {
         Int(WaterUnits.flOz(fromMl: ml).rounded())
     }
 
-    /// Rounds up so an unfinished goal never displays "0 oz left".
+    /// Ounces left in the SAME rounded-ounce space as the "X / Y oz" the tile
+    /// shows (shown goal minus shown total), so the two reconcile. Ceiling the
+    /// raw remaining ml instead makes "96 / 128" read "33 oz left" (see
+    /// WaterView.ozToGo).
     static func ozLeft(total: Int64, goal: Int64) -> Int {
-        max(0, Int(WaterUnits.flOz(fromMl: max(0, goal - total)).rounded(.up)))
+        max(0, oz(goal) - oz(total))
     }
 
     static func pagesLeftLabel(_ pagesRead: Int) -> String {
@@ -294,51 +297,77 @@ struct DayBoardWorkoutsTile: View {
 
 // MARK: - Reading
 
+/// The header row (with its chevron) still opens ReadingView for a custom page
+/// count, notes, or the book. The inline toggle row below marks the day's 10
+/// pages read in one tap without leaving the board (a flat +10, matching
+/// ReadingView's primary button and the RootView row) — tap done to peel the
+/// newest reading entry when a live event backs it. A done backed only by a
+/// backfill flag renders done and doesn't respond, like every other tile.
 struct DayBoardReadingTile: View {
     var day: DayState
     var book: String
     var onOpen: () -> Void
+    /// Log the full 10-page goal for the day (flat +10, same as ReadingView).
+    var onMarkRead: () -> Void
+    /// Peel the newest reading entry (`revokeTask(.reading)`); the row may
+    /// honestly stay done if earlier entries still cover the goal.
+    var onUndo: () -> Void
 
     var body: some View {
-        Button(action: onOpen) {
-            DayBoardTileChrome(done: day.readingDone) {
-                VStack(alignment: .leading, spacing: DromeSpacing.s) {
-                    DayBoardTileHeader(
-                        icon: "book.fill", title: "READING", tint: .dromeCamel,
-                        done: day.readingDone, showsChevron: true
-                    )
-                    HStack(alignment: .firstTextBaseline, spacing: DromeSpacing.xs) {
-                        Text("\(day.pagesRead)")
-                            .font(.title2.weight(.black))
-                            .monospacedDigit()
-                            .foregroundStyle(Color.dromeInk)
-                        Text("/ \(DayBoardFormat.readingGoalPages) pages")
-                            .font(.subheadline.weight(.bold))
-                            .monospacedDigit()
-                            .foregroundStyle(Color.dromeInk.opacity(0.55))
-                    }
-                    HStack(spacing: DromeSpacing.xs) {
-                        if !day.readingDone {
-                            Text("\(DayBoardFormat.pagesLeftLabel(day.pagesRead)) left")
-                                .font(.footnote.weight(.semibold))
+        DayBoardTileChrome(done: day.readingDone) {
+            VStack(alignment: .leading, spacing: DromeSpacing.s) {
+                Button(action: onOpen) {
+                    VStack(alignment: .leading, spacing: DromeSpacing.s) {
+                        DayBoardTileHeader(
+                            icon: "book.fill", title: "READING", tint: .dromeCamel,
+                            done: day.readingDone, showsChevron: true
+                        )
+                        HStack(alignment: .firstTextBaseline, spacing: DromeSpacing.xs) {
+                            Text("\(day.pagesRead)")
+                                .font(.title2.weight(.black))
                                 .monospacedDigit()
-                                .foregroundStyle(Color.dromeInk.opacity(0.7))
-                            Text("·")
-                                .font(.footnote.weight(.semibold))
-                                .foregroundStyle(Color.dromeInk.opacity(0.4))
+                                .foregroundStyle(Color.dromeInk)
+                            Text("/ \(DayBoardFormat.readingGoalPages) pages")
+                                .font(.subheadline.weight(.bold))
+                                .monospacedDigit()
+                                .foregroundStyle(Color.dromeInk.opacity(0.55))
                         }
-                        Text(book.isEmpty ? "No current book set" : book)
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(Color.dromeInk.opacity(0.55))
-                            .lineLimit(1)
+                        HStack(spacing: DromeSpacing.xs) {
+                            if !day.readingDone {
+                                Text("\(DayBoardFormat.pagesLeftLabel(day.pagesRead)) left")
+                                    .font(.footnote.weight(.semibold))
+                                    .monospacedDigit()
+                                    .foregroundStyle(Color.dromeInk.opacity(0.7))
+                                Text("·")
+                                    .font(.footnote.weight(.semibold))
+                                    .foregroundStyle(Color.dromeInk.opacity(0.4))
+                            }
+                            Text(book.isEmpty ? "No current book set" : book)
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(Color.dromeInk.opacity(0.55))
+                                .lineLimit(1)
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel(day.readingDone
+                    ? "Reading done, \(day.pagesRead) pages. Open for a custom page count."
+                    : "Reading, \(day.pagesRead) of \(DayBoardFormat.readingGoalPages) pages, \(DayBoardFormat.pagesLeftLabel(day.pagesRead)) left. Open for a custom page count.")
+                DayBoardAttestToggleRow(
+                    done: day.readingDone,
+                    canRevoke: day.revocable.reading,
+                    label: day.readingDone ? "10 pages read" : "Read your 10 pages",
+                    openHint: "tap to mark read",
+                    attestActionLabel: "Mark 10 pages read",
+                    revokeActionLabel: "Undo last reading entry",
+                    doneStateLabel: "Reading done",
+                    onAttest: onMarkRead,
+                    onRevoke: onUndo
+                )
             }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(day.readingDone
-            ? "Reading done, \(day.pagesRead) pages"
-            : "Reading, \(day.pagesRead) of \(DayBoardFormat.readingGoalPages) pages, \(DayBoardFormat.pagesLeftLabel(day.pagesRead)) left")
     }
 }
 
@@ -623,8 +652,8 @@ struct DayBoardWeekExtraTile: View {
             DayBoardWaterTile(day: doneDay) {}
             DayBoardWorkoutsTile(day: openDay, onOpen: {}, onLogSlot: { _ in }, onUndoEntry: { _ in })
             DayBoardWorkoutsTile(day: doneDay, onOpen: {}, onLogSlot: { _ in }, onUndoEntry: { _ in })
-            DayBoardReadingTile(day: openDay, book: "Atomic Habits") {}
-            DayBoardReadingTile(day: doneDay, book: "Atomic Habits") {}
+            DayBoardReadingTile(day: openDay, book: "Atomic Habits", onOpen: {}, onMarkRead: {}, onUndo: {})
+            DayBoardReadingTile(day: doneDay, book: "Atomic Habits", onOpen: {}, onMarkRead: {}, onUndo: {})
             DayBoardDietTile(
                 dietDescription: "no junk, no alcohol", done: false, canRevoke: false,
                 onAttest: {}, onRevoke: {}

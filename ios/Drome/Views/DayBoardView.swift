@@ -284,7 +284,9 @@ struct DayBoardView: View {
             DayBoardReadingTile(
                 day: today.day,
                 book: appModel.challenge?.currentBook ?? "",
-                onOpen: onOpenReading
+                onOpen: onOpenReading,
+                onMarkRead: { appModel.logReading(pages: DayBoardFormat.readingGoalPages) },
+                onUndo: { appModel.revokeTask(.reading) }
             )
             DayBoardDietTile(
                 dietDescription: appModel.challenge?.dietDescription ?? "",

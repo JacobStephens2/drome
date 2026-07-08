@@ -35,6 +35,7 @@ struct SettingsView: View {
 
     // Day rhythm
     @State private var cutoffMinutes = 240
+    @State private var savedCutoffMinutes = 240
     @State private var wakingStartMinutes = 420
     @State private var wakingEndMinutes = 1320
 
@@ -66,13 +67,13 @@ struct SettingsView: View {
             cutoffSection
             wakingSection
             extrasSection
-            readingSection
-            dietSection
-            dataSection
             if FeatureFlags.serverFeatures {
                 accountSection
                 groupsSection
             }
+            readingSection
+            dietSection
+            dataSection
             aboutSection
             startOverSection
         }
@@ -82,6 +83,7 @@ struct SettingsView: View {
         .navigationTitle("Settings")
         .task { load() }
         .onChange(of: presets) { pushPresets() }
+        .onChange(of: cutoffMinutes) { saveCutoff() }
         .onChange(of: wakingStartMinutes) { saveWakingWindow() }
         .onChange(of: wakingEndMinutes) { saveWakingWindow() }
         .sheet(isPresented: $resetSheetPresented, onDismiss: performArmedReset) {
@@ -189,21 +191,22 @@ struct SettingsView: View {
         .listRowBackground(rowBackground)
     }
 
-    /// Read-only on purpose: changing the cutoff mid-challenge would
-    /// re-attribute past events and could flip completed days
-    /// (docs/ARCHITECTURE.md — the core deliberately has no setter).
+    /// Editable and forward-only: the core records the change as an event and
+    /// attributes each log under the cutoff live when it was made, so past days
+    /// keep the boundary they were lived under (only later logs use the new
+    /// one). Saving on change is guarded against re-emitting on load.
     private var cutoffSection: some View {
         Section {
-            LabeledContent("Day cutoff") {
-                Text(timeLabel(cutoffMinutes))
-                    .monospacedDigit()
-                    .foregroundStyle(Color.dromeInk.opacity(0.75))
+            Picker("Day cutoff", selection: $cutoffMinutes) {
+                ForEach(cutoffOptions, id: \.self) { minutes in
+                    Text(timeLabel(minutes)).tag(minutes)
+                }
             }
             .frame(minHeight: DromeSpacing.tapTarget)
         } header: {
             sectionHeader("Day rhythm")
         } footer: {
-            Text("Late nights count toward the day you lived them — your day rolls over at this cutoff. Locked during a challenge — changing it would rewrite past days. Coming later.")
+            Text("Your day rolls over at this cutoff — a late night counts toward the day you lived it. Changes apply from today; past days keep the boundary they were lived under.")
         }
         .listRowBackground(rowBackground)
     }
@@ -464,6 +467,12 @@ struct SettingsView: View {
         return date.formatted(date: .omitted, time: .shortened)
     }
 
+    /// Realistic rollover times — midnight through 6 AM, plus whatever the
+    /// challenge is currently set to (in case it was created off-grid).
+    private var cutoffOptions: [Int] {
+        pickerOptions(stride(from: 0, through: 360, by: 60), including: cutoffMinutes)
+    }
+
     private var wakingStartOptions: [Int] {
         pickerOptions(stride(from: 240, through: 720, by: 60), including: wakingStartMinutes)
     }
@@ -505,6 +514,7 @@ struct SettingsView: View {
             goalOz = oz
             savedGoalOz = oz
 
+            savedCutoffMinutes = challenge.dayCutoffMinutes
             cutoffMinutes = challenge.dayCutoffMinutes
             wakingStartMinutes = challenge.wakingStartMinutes
             wakingEndMinutes = challenge.wakingEndMinutes
@@ -539,6 +549,24 @@ struct SettingsView: View {
         }
         do {
             try client.updatePresets(reindexed)
+            appModel?.refresh()
+        } catch {
+            errorMessage = settingsErrorText(error)
+        }
+    }
+
+    /// Guarded against the load-time assignment (which sets `cutoffMinutes`):
+    /// only a real user change differs from `savedCutoffMinutes`, so switching
+    /// tabs or reloading never emits a no-op cutoff-change event.
+    private func saveCutoff() {
+        guard cutoffMinutes != savedCutoffMinutes else { return }
+        guard (0..<1440).contains(cutoffMinutes) else {
+            errorMessage = "The day cutoff must be between midnight and 11:59 PM."
+            return
+        }
+        do {
+            try client.setDayCutoff(minutes: UInt32(cutoffMinutes))
+            savedCutoffMinutes = cutoffMinutes
             appModel?.refresh()
         } catch {
             errorMessage = settingsErrorText(error)

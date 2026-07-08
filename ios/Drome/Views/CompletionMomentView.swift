@@ -25,7 +25,7 @@ private enum MomentTiming {
     static let nightHold: TimeInterval = 0.15
     /// Gap between the DAY slam and "DONE."
     static let doneDelay: TimeInterval = 0.55
-    /// The beat before "That was hard. You did it." + the run line.
+    /// The beat before the run line.
     static let messageDelay: TimeInterval = 0.60
     /// Gap before the seal stamps in.
     static let sealDelay: TimeInterval = 0.60
@@ -53,7 +53,6 @@ private enum MomentTiming {
 private enum MomentCopy {
     static func day(_ n: Int) -> String { "DAY \(n)" }
     static let done = "DONE."
-    static let message = "That was hard. You did it."
     static func run(_ n: Int) -> String { n == 1 ? "RUN: 1 DAY" : "RUN: \(n) DAYS" }
     static let dismiss = "ONWARD"
 
@@ -124,20 +123,13 @@ struct CompletionMomentView: View {
                 .opacity(phase >= .done ? 1 : 0)
                 .scaleEffect(phase >= .done ? 1 : MomentTiming.slamStartScale)
 
-            VStack(spacing: DromeSpacing.s) {
-                Text(MomentCopy.message)
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(Color.dromeInk.opacity(0.85))
-                    .multilineTextAlignment(.center)
-
-                Text(MomentCopy.run(currentRun))
-                    .font(.system(size: 14, weight: .bold))
-                    .monospacedDigit()
-                    .tracking(1.5)
-                    .foregroundStyle(Color.dromeInk.opacity(0.6))
-            }
-            .padding(.top, DromeSpacing.s)
-            .opacity(phase >= .message ? 1 : 0)
+            Text(MomentCopy.run(currentRun))
+                .font(.system(size: 14, weight: .bold))
+                .monospacedDigit()
+                .tracking(1.5)
+                .foregroundStyle(Color.dromeInk.opacity(0.6))
+                .padding(.top, DromeSpacing.s)
+                .opacity(phase >= .message ? 1 : 0)
 
             SealMark(size: 88, color: .dromeClay)
                 .padding(.top, DromeSpacing.m)

@@ -5,7 +5,8 @@
 //  History tab: every day from challenge start through today, as a plain
 //  honest list — Day N, date, complete / not complete, and a BACKFILLED tag
 //  where it applies. No streak theatrics, no shame styling: an incomplete
-//  day is a quiet "—", not a red mark. Tapping a day opens its ShareCardSheet.
+//  day is a quiet "—", not a red mark. Tapping a day opens its DayEditSheet
+//  (edit what was done, or share the day from there).
 //
 //  Data comes straight from `client.calendar` (the SAME client instance
 //  backing AppModel). DesignSystem tokens only.
@@ -42,7 +43,7 @@ struct HistoryView: View {
                         }
                         .listRowBackground(Color.dromeInk.opacity(0.06))
                     } footer: {
-                        Text("\(completeCount) of \(briefs.count) days complete so far. Tap a day for its share card.")
+                        Text("\(completeCount) of \(briefs.count) days complete so far. Tap a day to edit or share it.")
                             .monospacedDigit()
                     }
                 }
@@ -52,16 +53,12 @@ struct HistoryView: View {
         .background(Color.dromeSand.ignoresSafeArea())
         .navigationTitle("History")
         .onAppear(perform: load)
-        .sheet(item: $selected) { brief in
-            if let data = try? client.shareCard(date: brief.date) {
-                ShareCardSheet(data: data)
-            } else {
-                Text("Couldn't load that day.")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Color.dromeInk.opacity(0.6))
-                    .padding(DromeSpacing.l)
-                    .presentationDetents([.medium])
-            }
+        // Tapping a day opens its editor — fix what was (or wasn't) done on any
+        // prior day (a closed Day 23 while you're on Day 25 included; the core
+        // has no editable-window guard). Its "Share" button keeps the read-only
+        // card one tap away. Reload on dismiss so edited days re-project here.
+        .sheet(item: $selected, onDismiss: load) { brief in
+            DayEditSheet(date: brief.date)
         }
     }
 

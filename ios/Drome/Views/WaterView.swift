@@ -331,7 +331,7 @@ struct WaterView: View {
                         .multilineTextAlignment(.center)
                 } else {
                     HStack(alignment: .firstTextBaseline, spacing: DromeSpacing.s) {
-                        Text("\(ozCeil(water.remainingMl))")
+                        Text("\(ozToGo(total: water.totalMl, goal: water.goalMl))")
                             .dromeCounter()
                         Text("oz to go")
                             .font(.system(size: 20, weight: .bold))
@@ -368,7 +368,7 @@ struct WaterView: View {
             return "Goal met. You don't need more today."
         }
         if water.discourageCatchUp {
-            return "It's late and \(ozCeil(water.remainingMl)) oz remain. Don't chug to catch up — your body handles about 34 oz an hour. Log what you actually drink."
+            return "It's late and \(ozToGo(total: water.totalMl, goal: water.goalMl)) oz remain. Don't chug to catch up — your body handles about 34 oz an hour. Log what you actually drink."
         }
         if water.onPace {
             return "On pace. Target by now: \(oz(water.paceTargetMl)) oz."
@@ -517,6 +517,14 @@ struct WaterView: View {
 /// Nearest ounce — for totals, goals, presets.
 private func oz(_ ml: Int64) -> Int {
     max(0, Int(WaterUnits.flOz(fromMl: ml).rounded()))
+}
+
+/// Ounces still to drink, in the SAME rounded-ounce space as the "X of Y oz"
+/// line — shown goal minus shown poured — so the two always reconcile. Ceiling
+/// the raw remaining ml instead makes "96 of 128" read "33 oz to go" (96 poured
+/// stores as slightly under 96 oz of ml, and the leftover ceils up a whole oz).
+private func ozToGo(total: Int64, goal: Int64) -> Int {
+    max(0, oz(goal) - oz(total))
 }
 
 /// Rounded up — for remaining/behind amounts, so a nonzero remainder never

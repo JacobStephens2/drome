@@ -240,11 +240,39 @@ struct RootView: View {
         case .photo:
             PhotoView(client: appModel.client)
         case .yesterday:
-            YesterdayLogSheet()
+            // The board only offers this while yesterday is open, but the
+            // editor itself works on any day (DayEditSheet).
+            if let yesterday = yesterdayDate() {
+                DayEditSheet(date: yesterday)
+            } else {
+                Text("Couldn't load yesterday.")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.dromeInk.opacity(0.6))
+                    .padding(DromeSpacing.l)
+            }
         case .share(let data):
             ShareCardSheet(data: data)
         }
     }
+
+    /// Yesterday's calendar date ("YYYY-MM-DD"), for the board's "log for
+    /// yesterday" affordance. Display-only date math; attribution stays in core.
+    private func yesterdayDate() -> DayDate? {
+        guard let today = appModel.todayState?.date,
+              let base = Self.dayFormatter.date(from: today),
+              let shifted = Calendar.current.date(byAdding: .day, value: -1, to: base)
+        else { return nil }
+        return Self.dayFormatter.string(from: shifted)
+    }
+
+    private static let dayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.calendar = Calendar(identifier: .gregorian)
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = .current
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
 
     // MARK: - Weekly moment (junior to the daily moment, never simultaneous)
 
@@ -339,298 +367,6 @@ private struct NudgeBanner: View {
                 .shadow(color: Color.black.opacity(0.12), radius: 8, y: 2)
         )
         .accessibilityElement(children: .combine)
-    }
-}
-
-// MARK: - Yesterday sheet (retroactive one-tap logging, honestly labeled)
-
-/// Compact "log for yesterday" sheet: the six task tiles (workout tile =
-/// two slots) as one-tap buttons writing with `effectiveDate` = yesterday,
-/// plus yesterday's removable pour log (corrections cut both ways). Done
-/// rows toggle off too: an "Un-mark" appears whenever yesterday's
-/// `DayState.revocable` (or a live workout slot entry) says a live event
-/// backs the done — backfill-flag days render done, not tappable-off. This
-/// edits yesterday only — the header says so plainly.
-private struct YesterdayLogSheet: View {
-    @Environment(AppModel.self) private var appModel
-    @Environment(\.dismiss) private var dismiss
-
-    @State private var yesterdayDate: DayDate?
-    @State private var day: DayState?
-
-    /// Yesterday's non-revoked pours — live logs from the day itself plus
-    /// any "backdated" adds made from this sheet. Yesterday stays editable
-    /// until closed, and that includes taking a pour back: a fat-fingered
-    /// log noticed after the cutoff (or an accidental "Met goal" tap here)
-    /// is corrected by swiping it away below.
-    @State private var pours: [WaterLogEntry] = []
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: DromeSpacing.m) {
-            header
-
-            if let day {
-                VStack(spacing: DromeSpacing.s) {
-                    waterRow(day)
-                    if !pours.isEmpty {
-                        poursSection
-                    }
-                    taskRow(
-                        done: day.outdoorWorkoutDone,
-                        title: "Outdoor workout",
-                        buttonLabel: "Log 45 min",
-                        // Un-marking revokes exactly the entry the shared
-                        // slot mapping displays (Models.swift) — never a
-                        // hidden one. Flag-only (backfilled) slots have no
-                        // entry and render plain done.
-                        unmark: unmarkAction(for: day.outdoorSlotEntry)
-                    ) { log { appModel.logWorkout(durationMin: 45, outdoor: true, effectiveDate: $0) } }
-                    taskRow(
-                        done: day.secondWorkoutDone,
-                        title: "Indoor or Outdoor",
-                        buttonLabel: "Log 30 min",
-                        unmark: unmarkAction(for: day.secondSlotEntry)
-                    ) { log { appModel.logWorkout(durationMin: 30, outdoor: false, effectiveDate: $0) } }
-                    taskRow(
-                        done: day.readingDone,
-                        title: "Reading",
-                        detail: "\(day.pagesRead) of 10 pages",
-                        buttonLabel: "+10 pages",
-                        // Peels the newest entry; the row may honestly stay
-                        // done until enough entries are peeled — so the
-                        // label promises an entry undo (matching
-                        // ReadingView), never a full un-mark.
-                        unmark: day.revocable.reading ? { unmark(.reading) } : nil,
-                        unmarkLabel: "Undo last entry",
-                        unmarkAccessibilityLabel: "Undo yesterday's last reading entry"
-                    ) { log { appModel.logReading(pages: 10, effectiveDate: $0) } }
-                    taskRow(
-                        done: day.dietDone,
-                        title: "Diet",
-                        buttonLabel: "Kept it",
-                        unmark: day.revocable.diet ? { unmark(.diet) } : nil
-                    ) { log { appModel.logDietOk(effectiveDate: $0) } }
-                    taskRow(
-                        done: day.noJunkDone,
-                        title: "No junk or alcohol",
-                        buttonLabel: "Clean day",
-                        unmark: day.revocable.noJunk ? { unmark(.noJunk) } : nil
-                    ) { log { appModel.logNoJunkOk(effectiveDate: $0) } }
-                    taskRow(
-                        done: day.photoDone,
-                        title: "Progress photo",
-                        buttonLabel: "Taken",
-                        unmark: day.revocable.photo ? { unmark(.photo) } : nil
-                    ) { log { appModel.logPhotoDone(effectiveDate: $0) } }
-                }
-            } else {
-                Text("Couldn't load yesterday.")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Color.dromeInk.opacity(0.6))
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(DromeSpacing.l)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Color.dromeSand.ignoresSafeArea())
-        .presentationDetents([.large])
-        .onAppear(perform: load)
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: DromeSpacing.xs) {
-            Text("EDITING YESTERDAY")
-                .font(.system(size: 12, weight: .black))
-                .tracking(1.4)
-                .foregroundStyle(Color.dromeClay)
-            if let day {
-                Text("Day \(day.dayIndex) — \(Self.displayDate(day.date))")
-                    .font(.system(size: 22, weight: .black))
-                    .monospacedDigit()
-                    .tracking(-0.3)
-                    .foregroundStyle(Color.dromeInk)
-            }
-            Text("Everything you log here counts toward yesterday, not today.")
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(Color.dromeInk.opacity(0.6))
-        }
-    }
-
-    // MARK: Rows
-
-    /// The shared pour ledger (PourLogList), scoped to yesterday. Removing a
-    /// pour may honestly flip the water task back to not-done — the row's
-    /// "Met goal" button then reappears. Retro adds show the "backdated"
-    /// capsule; pours logged live during the day don't.
-    private var poursSection: some View {
-        VStack(alignment: .leading, spacing: DromeSpacing.xs) {
-            Text("YESTERDAY'S POURS")
-                .font(.system(size: 12, weight: .black))
-                .tracking(1)
-                .foregroundStyle(Color.dromeInk.opacity(0.45))
-            PourLogList(entries: pours) { entry in
-                appModel.revoke(eventUuid: entry.id)
-                reload()
-            }
-        }
-        .padding(.horizontal, DromeSpacing.m)
-    }
-
-    private func waterRow(_ day: DayState) -> some View {
-        let remaining = max(0, day.waterGoalMl - day.waterTotalMl)
-        let remainingOz = Int(WaterUnits.flOz(fromMl: remaining).rounded(.up))
-        return taskRow(
-            done: day.waterDone,
-            title: "Water",
-            detail: "\(Int(WaterUnits.flOz(fromMl: day.waterTotalMl).rounded())) of \(Int(WaterUnits.flOz(fromMl: day.waterGoalMl).rounded())) oz",
-            buttonLabel: "Met goal (+\(remainingOz) oz)"
-        ) {
-            guard remaining > 0 else { return }
-            log { appModel.logWater(ml: remaining, effectiveDate: $0) }
-        }
-    }
-
-    private func taskRow(
-        done: Bool,
-        title: String,
-        detail: String? = nil,
-        buttonLabel: String,
-        /// Non-nil exactly when a live event backs the done (yesterday's
-        /// `DayState.revocable`, or a displayed workout slot entry) — the
-        /// row then toggles off. Nil + done = backfilled flag: renders done,
-        /// not tappable-off.
-        unmark: (() -> Void)? = nil,
-        /// Visible label for the unmark control. The default suits the
-        /// attest tasks, whose revoke genuinely un-marks; a task whose
-        /// revoke only peels one entry (reading) MUST say so instead.
-        unmarkLabel: String = "Un-mark",
-        unmarkAccessibilityLabel: String? = nil,
-        action: @escaping () -> Void
-    ) -> some View {
-        HStack(spacing: DromeSpacing.m) {
-            Image(systemName: done ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(done ? Color.dromeDone : Color.dromeInk.opacity(0.3))
-                .contentTransition(.symbolEffect(.replace))
-                .animation(.spring(response: 0.3, dampingFraction: 0.55), value: done)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(Color.dromeInk)
-                if let detail {
-                    Text(detail)
-                        .font(.footnote.weight(.semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(Color.dromeInk.opacity(0.55))
-                }
-            }
-            Spacer(minLength: 0)
-            if done {
-                if let unmark {
-                    // A plain correction — same quiet weight as the log
-                    // button, no confirmation (re-logging is one tap away).
-                    Button(action: unmark) {
-                        Text(unmarkLabel)
-                            .font(.footnote.weight(.bold))
-                            .foregroundStyle(Color.dromeInk.opacity(0.7))
-                            .padding(.horizontal, DromeSpacing.m)
-                            .frame(minHeight: DromeSpacing.tapTarget)
-                            .background(Capsule().strokeBorder(Color.dromeInk.opacity(0.3), lineWidth: 1))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(
-                        unmarkAccessibilityLabel ?? "Un-mark \(title.lowercased()), for yesterday"
-                    )
-                } else {
-                    Text("Done")
-                        .font(.footnote.weight(.bold))
-                        .foregroundStyle(Color.dromeDone)
-                }
-            } else if yesterdayDate != nil {
-                Button(action: action) {
-                    Text(buttonLabel)
-                        .font(.footnote.weight(.bold))
-                        .monospacedDigit()
-                        .foregroundStyle(Color.dromeClay)
-                        .padding(.horizontal, DromeSpacing.m)
-                        .frame(minHeight: DromeSpacing.tapTarget)
-                        .background(Capsule().strokeBorder(Color.dromeClay, lineWidth: 1.5))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("\(buttonLabel), for yesterday")
-            }
-        }
-        .padding(.horizontal, DromeSpacing.m)
-        .padding(.vertical, DromeSpacing.s)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(done ? Color.dromeDone.opacity(0.10) : Color.dromeInk.opacity(0.05))
-        )
-    }
-
-    // MARK: Data
-
-    /// Runs an AppModel intent, then reloads yesterday's projection and pour
-    /// log (the intent already refreshed the model's own caches).
-    private func log(_ intent: (DayDate) -> Void) {
-        guard let date = yesterdayDate else { return }
-        intent(date)
-        reload()
-    }
-
-    /// Toggles a task off for yesterday (revokes its newest live event).
-    private func unmark(_ kind: RevocableTask) {
-        guard let date = yesterdayDate else { return }
-        appModel.revokeTask(kind, date: date)
-        reload()
-    }
-
-    /// Un-mark action for a workout slot: revokes exactly the entry the
-    /// shared slot mapping displays, or nil when nothing live backs the slot
-    /// (unfilled, or a backfill flag).
-    private func unmarkAction(for entry: WorkoutEntry?) -> (() -> Void)? {
-        guard let entry else { return nil }
-        return {
-            appModel.revoke(eventUuid: entry.id)
-            reload()
-        }
-    }
-
-    private func load() {
-        guard let today = appModel.todayState?.date,
-              let date = Self.shift(today, by: -1) else { return }
-        yesterdayDate = date
-        reload()
-    }
-
-    private func reload() {
-        guard let date = yesterdayDate else { return }
-        day = try? appModel.client.dayState(date: date)
-        pours = (try? appModel.client.waterLog(date: date)) ?? []
-    }
-
-    // MARK: Date plumbing (display only; attribution stays in core)
-
-    private static let dayFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.calendar = Calendar(identifier: .gregorian)
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = .current
-        f.dateFormat = "yyyy-MM-dd"
-        return f
-    }()
-
-    private static func shift(_ date: DayDate, by days: Int) -> DayDate? {
-        guard let base = dayFormatter.date(from: date),
-              let shifted = Calendar.current.date(byAdding: .day, value: days, to: base)
-        else { return nil }
-        return dayFormatter.string(from: shifted)
-    }
-
-    private static func displayDate(_ date: DayDate) -> String {
-        guard let parsed = dayFormatter.date(from: date) else { return date }
-        return parsed.formatted(.dateTime.weekday(.wide).month(.wide).day())
     }
 }
 
