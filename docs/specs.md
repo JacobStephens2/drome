@@ -12,5 +12,7 @@ Account and Groups should be above Reading.
 # Accounts
 Users should be able to sign in with either Apple or email six digit one time passcodes.
 
+jacob@stephens.page should be emailed anytime someone makes a Drome account.
+
 # Groups
 If the user is in a group, there should be a group icon in the main menu at the bottom of the app.
