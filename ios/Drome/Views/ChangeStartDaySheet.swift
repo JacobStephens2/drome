@@ -55,7 +55,7 @@ struct ChangeStartDaySheet: View {
                 } header: {
                     Text("What day are you on?")
                 } footer: {
-                    Text("This renumbers your days from the corrected start; your logged entries keep the dates you made them. Days before the new start leave the challenge. If this moves your start earlier, the days it opens up begin empty — catch them up from those days on your board.")
+                    Text("Renumbers your days from the new start. Earlier starts open empty days you can catch up from your board.")
                 }
             }
             .navigationTitle("Change start day")
