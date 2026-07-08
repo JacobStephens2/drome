@@ -66,9 +66,9 @@ struct DayEditSheet: View {
                     taskRow(
                         done: day.secondWorkoutDone,
                         title: "Indoor or Outdoor",
-                        buttonLabel: "Log 30 min",
+                        buttonLabel: "Log 45 min",
                         unmark: unmarkAction(for: day.secondSlotEntry)
-                    ) { log { appModel.logWorkout(durationMin: 30, outdoor: false, effectiveDate: $0) } }
+                    ) { log { appModel.logWorkout(durationMin: 45, outdoor: false, effectiveDate: $0) } }
                     taskRow(
                         done: day.readingDone,
                         title: "Reading",
