@@ -18,7 +18,7 @@ struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     private enum Tab: Hashable {
-        case today, history, settings
+        case today, history, groups, settings
     }
 
     private enum TodaySheet: Identifiable {
@@ -58,6 +58,16 @@ struct RootView: View {
             .tabItem { Label("History", systemImage: "calendar") }
             .tag(Tab.history)
 
+            // A dedicated Groups tab appears ONLY while you're in at least one
+            // group (specs.md, Groups) — otherwise groups live under Settings.
+            if !appModel.myGroups.isEmpty {
+                NavigationStack {
+                    GroupsView()
+                }
+                .tabItem { Label("Groups", systemImage: "person.3") }
+                .tag(Tab.groups)
+            }
+
             NavigationStack {
                 SettingsView(client: appModel.client)
             }
@@ -88,6 +98,13 @@ struct RootView: View {
                     // Fresh groups + nudge check on every return to foreground.
                     appModel.refreshGroupsAndNudges()
                 }
+            }
+        }
+        // Leaving your last group removes the Groups tab; if it was selected,
+        // fall back to Today so the selection can't point at a gone tab.
+        .onChange(of: appModel.myGroups.isEmpty) { _, isEmpty in
+            if isEmpty && tab == .groups {
+                tab = .today
             }
         }
         .sheet(item: $sheet) { presented in
