@@ -4,7 +4,7 @@ You are the build agent for **Phase 1 of Drome**, an iOS-first, local-first trac
 
 ## Read these, in this order
 
-1. [decisions.md](decisions.md) — the short canonical decision log (name, domain, hosting, GitOps, repo privacy).
+1. [decisions.md](JacobStephens2/drome/planning/decisions.md) — the short canonical decision log (name, domain, hosting, GitOps, repo privacy).
 2. [plan.md](75hard/plan.md) — the full plan. **Your scope is the section "MVP — Phase 1: iOS, local-first, free"** plus the "Tech stack", "Design", and "The two modes" sections. Phase 2-4 sections are context only — do not build them.
 3. [My sister and her 75 Hard app problem.md](My%20sister%20and%20her%2075%20Hard%20app%20problem.md) — the user this app is for. When a design call is ambiguous, this document is the tiebreaker.
 4. [research/description-of-75-hard.md](research/description-of-75-hard.md) — the program's actual rules (purist mode must encode these exactly).

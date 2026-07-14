@@ -1,6 +1,6 @@
 # Plan: A 75 Hard–style Tracker Built for My Sister (and Her Friends)
 
-Sources: [research/description-of-75-hard.md](research/description-of-75-hard.md) (what the program actually is), [research/what-would-make-a-hard75-app-useful.md](research/what-would-make-a-hard75-app-useful.md) (feature research and market landscape), and — primarily — [My sister and her 75 Hard app problem.md](My%20sister%20and%20her%2075%20Hard%20app%20problem.md) (a real user, mid-challenge, with observed workarounds). The canonical short decision log is [decisions.md](decisions.md); this plan carries the detail behind those decisions.
+Sources: [research/description-of-75-hard.md](research/description-of-75-hard.md) (what the program actually is), [research/what-would-make-a-hard75-app-useful.md](research/what-would-make-a-hard75-app-useful.md) (feature research and market landscape), and — primarily — [My sister and her 75 Hard app problem.md](My%20sister%20and%20her%2075%20Hard%20app%20problem.md) (a real user, mid-challenge, with observed workarounds). The canonical short decision log is [decisions.md](JacobStephens2/drome/planning/decisions.md); this plan carries the detail behind those decisions.
 
 ## The problem, concretely
 
