@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Privacy Policy — Drome</title>
-<meta name="description" content="Drome collects no data. Everything stays in a local database on your device.">
+<meta name="description" content="How Drome handles your data: local-first by default, with opt-in accounts, sync, and friend groups. No ads, no third-party analytics, no tracking.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%90%AA%3C/text%3E%3C/svg%3E">
 <style>
   :root {
@@ -89,33 +89,49 @@
 <main class="wrap">
   <div class="kicker">Drome for iOS</div>
   <h1>Privacy Policy</h1>
-  <p class="effective">Effective July 5, 2026</p>
+  <p class="effective">Effective July 18, 2026 - updated for optional accounts, sync, and groups</p>
 
   <div class="tldr">
-    Drome collects <b>no data</b>. There is no server, no account, no analytics, and no advertising. Everything you log stays in a local database on your device.
+    Drome is <b>local-first</b>. With no account, everything you log stays in a local database on your device and nothing leaves it. Accounts, sync, and friend groups are <b>opt-in</b> - turn them on and only the data described below goes to Drome's own server. No ads, no third-party analytics, no tracking, ever.
   </div>
 
   <h2>What Drome collects</h2>
-  <p>Nothing. Drome (bundle ID <strong>day.drome.app</strong>) does not collect, transmit, sell, or share any personal data. It has no backend server to send data to, no user accounts, no third-party analytics or advertising SDKs, and no crash-reporting service.</p>
+  <p><strong>By default, nothing.</strong> With no account, Drome (bundle ID <strong>day.drome.app</strong>) collects no data and has nothing to send anywhere. It uses no third-party analytics or advertising SDKs and no crash-reporting service - true whether or not you sign in.</p>
+  <p>Accounts, sync, and friend groups are optional. If you turn them on, Drome sends the data described below to its own server, run by Jacob Stephens. There are no third parties in that path, no advertising, and no analytics on it, and none of it is ever sold or shared.</p>
 
-  <h2>Where your data lives</h2>
+  <h2>Where your data lives (no account)</h2>
   <p>Everything you enter - water logs, workouts, reading, diet check-offs, progress photos, and challenge history - is stored in a local SQLite database on your device. The Drome home-screen widget reads and writes that same on-device database; nothing about that sharing leaves your phone.</p>
-  <p>Your device backups work the way Apple designed them: if you use iCloud Backup or an encrypted local backup, Drome's data is included in that backup under your Apple account, governed by <a href="https://www.apple.com/legal/privacy/">Apple's privacy policy</a>. Drome itself never uploads anything.</p>
+  <p>Your device backups work the way Apple designed them: if you use iCloud Backup or an encrypted local backup, Drome's data is included in that backup under your Apple account, governed by <a href="https://www.apple.com/legal/privacy/">Apple's privacy policy</a>. Without an account, Drome itself uploads nothing.</p>
+
+  <h2>Accounts and sign-in</h2>
+  <p>An account is optional and exists only to enable sync and groups. You can sign in two ways:</p>
+  <ul>
+    <li><strong>Sign in with Apple.</strong> Drome stores the opaque user identifier Apple issues for you. It does not receive your name, and never sees your Apple ID password.</li>
+    <li><strong>Email code.</strong> You enter an email address and Drome emails a six-digit sign-in code through Resend, its email provider. Drome stores that email address to identify your account.</li>
+  </ul>
+  <p>Sign-in tokens are stored on the server only as SHA-256 hashes, never in the clear.</p>
+
+  <h2>Sync (optional)</h2>
+  <p>When you turn sync on, the events you log - the same append-only journal the app keeps locally (water, workouts, reading, diet check-offs, and markers that a task was completed) plus your challenge settings - are sent to and stored on Drome's server, so your history is backed up and available on your other devices. The server database is continuously replicated to encrypted object storage (Cloudflare R2) so it survives a server failure.</p>
+  <p><strong>Progress photos are never uploaded.</strong> The app strips any photo reference before syncing and the server stores none, so sync records only that you completed the photo task, never the image or a link to it.</p>
+
+  <h2>Groups (optional)</h2>
+  <p>If you create or join a friend group, the other members can see only the display name you choose for that group, how far along you are (day number and current run), and whether you have finished each of today's tasks. They cannot see your progress photos, your workout or reading notes, your diet, any other challenge, your email, or your Apple identifier. The name you show is per-group, and your identity in one group cannot be linked to you in another. In-app nudges record only who nudged whom - never any message text.</p>
 
   <h2>Photos</h2>
-  <p>Progress photos you take or attach in Drome are stored on your device only. Drome does not upload them anywhere and accesses only the photos you explicitly choose.</p>
+  <p>Progress photos you take or attach in Drome are stored on your device only. Drome does not upload them anywhere - including when sync is on - and accesses only the photos you explicitly choose.</p>
 
   <h2>Export and backup</h2>
   <p>Drome can export your data on request. Exports are user-initiated: the file is created on your device and goes only where you choose to send or save it. Once you share an export, that copy is governed by whatever service you shared it to.</p>
 
   <h2>Data deletion</h2>
-  <p>Deleting the app deletes all of Drome's data from your device (aside from copies in device backups or exports you created yourself). There is nothing to delete on any server, because there is no server.</p>
+  <p>Deleting the app removes all of Drome's local data from your device (aside from copies in device backups or exports you created yourself). If you created an account, you can delete it from within the app; deleting your account removes your account, synced events, group memberships, and sessions from the server. If you never signed in, there is nothing on any server to delete.</p>
 
   <h2>Children</h2>
-  <p>Drome collects no data from anyone, including children.</p>
+  <p>Drome is not directed at children and collects no data from anyone, including children, who does not create an account.</p>
 
   <h2>Changes to this policy</h2>
-  <p>If a future version of Drome ever adds a feature that touches the network (for example, optional sync), this policy will be updated first and the change will be called out in the App Store release notes. The current policy always lives at <a href="https://drome.day/privacy/">drome.day/privacy</a>.</p>
+  <p>This policy is updated before any change to how Drome handles your data takes effect, and material changes are called out in the App Store release notes. The current policy always lives at <a href="https://drome.day/privacy/">drome.day/privacy</a>.</p>
 
   <h2>Contact</h2>
   <p>Questions about this policy: email <a href="mailto:jacob@stephens.page">jacob@stephens.page</a> or open an issue at <a href="https://github.com/JacobStephens2/drome/issues">github.com/JacobStephens2/drome/issues</a>.</p>
