@@ -143,8 +143,22 @@
     color: var(--ink-soft);
     letter-spacing: 0.04em;
   }
+  .ticker-track {
+    display: flex;
+    width: max-content;
+    animation: ticker-left 24s linear infinite;
+    will-change: transform;
+  }
+  .ticker-group { display: flex; flex: none; }
   .strip span { margin-right: 3.2em; }
   .strip b { color: var(--clay); font-weight: 700; }
+  @keyframes ticker-left {
+    from { transform: translateX(0); }
+    to { transform: translateX(-50%); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .ticker-track { animation: none; }
+  }
 
   /* features */
   section { padding: 76px 0 8px; }
@@ -301,7 +315,14 @@
   </div>
 
   <div class="strip" aria-hidden="true">
-    <span><b>local-first</b></span><span><b>opt-in</b> sync</span><span><b>0</b> analytics</span><span><b>0</b> ads</span><span><b>free</b></span><span><b>75</b> days</span><span><b>1</b> camel</span><span><b>local-first</b></span><span><b>opt-in</b> sync</span><span><b>0</b> analytics</span><span><b>0</b> ads</span><span><b>free</b></span><span><b>75</b> days</span><span><b>1</b> camel</span>
+    <div class="ticker-track">
+      <div class="ticker-group">
+        <span><b>local-first</b></span><span><b>opt-in</b> sync</span><span><b>0</b> analytics</span><span><b>0</b> ads</span><span><b>free</b></span><span><b>75</b> days</span><span><b>1</b> camel</span>
+      </div>
+      <div class="ticker-group">
+        <span><b>local-first</b></span><span><b>opt-in</b> sync</span><span><b>0</b> analytics</span><span><b>0</b> ads</span><span><b>free</b></span><span><b>75</b> days</span><span><b>1</b> camel</span>
+      </div>
+    </div>
   </div>
 
   <section class="wrap" id="how-it-works">
