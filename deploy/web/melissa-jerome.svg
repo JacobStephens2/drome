@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 290">
+  <title>Jerome the camel, based on Melissa's drawing, filling with water</title>
+  <style>
+    :root {
+      --sand-deep: #E9DCC3;
+      --ink: #292524;
+      --camel: #B45309;
+      --oasis: #0E7490;
+      --oasis-bright: #22D3EE;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --sand-deep: #292019;
+        --ink: #EDE3D1;
+        --oasis: #22D3EE;
+      }
+    }
+    .outline {
+      fill: none;
+      stroke: var(--camel);
+      stroke-width: 6.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .detail {
+      fill: none;
+      stroke: var(--ink);
+      stroke-width: 3.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .feature { fill: var(--ink); }
+    .water-fill { animation: fill-up 6s ease-in-out infinite; }
+    @keyframes fill-up {
+      0%, 12%  { transform: translateY(220px); }
+      68%, 88% { transform: translateY(-35px); }
+      100%     { transform: translateY(220px); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .water-fill { animation: none; transform: translateY(115px); }
+    }
+  </style>
+  <defs>
+    <clipPath id="camel-clip">
+      <path d="M79 94 C78 110 82 119 92 123 C104 129 114 122 124 106 C142 77 158 54 181 50 C215 45 246 77 261 125 C265 137 267 147 266 157 L264 171 L264 263 Q265 274 255 276 L246 276 Q237 275 238 265 L234 191 Q230 187 226 190 L228 257 Q230 267 220 270 L211 270 Q202 269 204 258 L208 187 C181 193 145 193 116 188 L114 257 Q116 266 106 269 L97 269 Q87 268 88 258 L91 184 Q87 180 83 184 L81 256 Q83 266 73 268 L63 268 Q53 267 55 256 L58 178 C44 171 38 155 39 136 L39 73 C33 71 25 70 18 66 C9 61 9 52 16 45 C25 37 38 31 52 24 L59 13 Q63 5 68 10 L78 22 C81 30 80 40 79 49 Z"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#camel-clip)">
+    <rect width="320" height="290" fill="var(--sand-deep)"/>
+    <g class="water-fill">
+      <rect x="0" y="40" width="320" height="330" fill="var(--oasis)" opacity="0.85"/>
+      <path d="M0 40 Q40 28 80 40 T160 40 T240 40 T320 40 L320 62 L0 62 Z" fill="var(--oasis-bright)" opacity="0.6"/>
+    </g>
+  </g>
+  <path class="outline" d="M79 94 C78 110 82 119 92 123 C104 129 114 122 124 106 C142 77 158 54 181 50 C215 45 246 77 261 125 C265 137 267 147 266 157 L264 171 L264 263 Q265 274 255 276 L246 276 Q237 275 238 265 L234 191 Q230 187 226 190 L228 257 Q230 267 220 270 L211 270 Q202 269 204 258 L208 187 C181 193 145 193 116 188 L114 257 Q116 266 106 269 L97 269 Q87 268 88 258 L91 184 Q87 180 83 184 L81 256 Q83 266 73 268 L63 268 Q53 267 55 256 L58 178 C44 171 38 155 39 136 L39 73 C33 71 25 70 18 66 C9 61 9 52 16 45 C25 37 38 31 52 24 L59 13 Q63 5 68 10 L78 22 C81 30 80 40 79 49 Z"/>
+  <path class="outline" d="M264 142 C280 153 282 174 287 195 C290 210 293 222 301 230 M296 224 L301 230 L299 219"/>
+  <path class="detail" d="M61 12 L69 20 L60 24 M16 55 Q27 62 40 57 Q47 54 51 47"/>
+  <circle class="feature" cx="57" cy="32" r="4.2"/>
+  <ellipse class="feature" cx="21" cy="52" rx="3.6" ry="2.5"/>
+</svg>
