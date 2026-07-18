@@ -59,6 +59,7 @@
     text-transform: uppercase;
   }
   .brand .dot { color: var(--clay); }
+  nav { display: flex; flex-shrink: 0; }
   nav a {
     color: var(--ink-soft);
     text-decoration: none;
@@ -246,7 +247,8 @@
   footer .links { display: flex; flex-direction: column; gap: 8px; font-size: 0.9rem; }
 
   @media (max-width: 760px) {
-    .hero { grid-template-columns: 1fr; padding: 56px 0 48px; text-align: left; }
+    .wrap { padding-inline: 32px; }
+    .hero { grid-template-columns: 1fr; padding-block: 56px 48px; text-align: left; }
     .jerome-stage { order: -1; }
     .grid { grid-template-columns: 1fr; }
     .promise { padding: 32px 24px; }
@@ -269,7 +271,7 @@
       <h1><span class="days">75</span> days.<br>One camel.</h1>
       <p class="lede"><strong>Drome</strong> is a free, local-first iOS tracker for 75-day challenges.</p>
       <div class="cta-row">
-        <a class="btn btn-primary" href="https://github.com/JacobStephens2/drome">View on GitHub</a>
+        <a class="btn btn-primary" href="https://testflight.apple.com/join/WrmejET1">Join on TestFlight</a>
         <span class="soon">App Store — coming soon</span>
       </div>
     </div>
