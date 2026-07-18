@@ -163,6 +163,34 @@
     color: var(--clay);
     margin-bottom: 14px;
   }
+
+  /* app flow */
+  .steps-intro { color: var(--ink-soft); max-width: 62ch; }
+  .steps-grid {
+    list-style: none;
+    margin-top: 36px;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 24px;
+  }
+  .steps-grid li { border-top: 2px solid var(--line); padding-top: 18px; }
+  .steps-grid .step-num {
+    display: block;
+    margin-bottom: 12px;
+    color: var(--clay);
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+  }
+  .steps-grid h3 {
+    margin-bottom: 7px;
+    font-size: 1.04rem;
+    font-weight: 800;
+    letter-spacing: -0.015em;
+  }
+  .steps-grid p { color: var(--ink-soft); font-size: 0.92rem; }
+
   .grid {
     margin-top: 36px;
     display: grid;
@@ -240,6 +268,7 @@
     .wrap { padding-inline: 32px; }
     .hero { grid-template-columns: 1fr; padding-block: 56px 48px; text-align: left; }
     .jerome-stage { order: -1; }
+    .steps-grid { grid-template-columns: 1fr; gap: 26px; }
     .grid { grid-template-columns: 1fr; }
     .promise { padding: 32px 24px; }
   }
@@ -274,6 +303,34 @@
   <div class="strip" aria-hidden="true">
     <span><b>local-first</b></span><span><b>opt-in</b> sync</span><span><b>0</b> analytics</span><span><b>0</b> ads</span><span><b>free</b></span><span><b>75</b> days</span><span><b>1</b> camel</span><span><b>local-first</b></span><span><b>opt-in</b> sync</span><span><b>0</b> analytics</span><span><b>0</b> ads</span><span><b>free</b></span><span><b>75</b> days</span><span><b>1</b> camel</span>
   </div>
+
+  <section class="wrap" id="how-it-works">
+    <div class="kicker">From Day 1 to Day 75</div>
+    <h2>How Drome works</h2>
+    <p class="steps-intro">Set the challenge up once, then use one honest daily board for the work.</p>
+    <ol class="steps-grid">
+      <li>
+        <span class="step-num">01</span>
+        <h3>Set up your 75</h3>
+        <p>Choose your Day 1, diet rule, water goal and container shortcuts. Already underway? Catch up earlier days in one pass.</p>
+      </li>
+      <li>
+        <span class="step-num">02</span>
+        <h3>Work the day board</h3>
+        <p>Log water, two workouts, reading, diet, no junk and a progress photo from one at-a-glance checklist.</p>
+      </li>
+      <li>
+        <span class="step-num">03</span>
+        <h3>Fill Jerome</h3>
+        <p>Drag Jerome or tap a saved container as you drink. His water level shows your progress through today’s goal.</p>
+      </li>
+      <li>
+        <span class="step-num">04</span>
+        <h3>Review and continue</h3>
+        <p>Correct logs, close the day, revisit your history, and export or share a daily card. Repeat through Day 75.</p>
+      </li>
+    </ol>
+  </section>
 
   <section class="wrap" id="features">
     <div class="kicker">Gear, not toy</div>
@@ -326,7 +383,7 @@
 
 <footer>
   <div class="wrap">
-    <p>Drome is an independent project by Jacob Stephens. Not affiliated with or endorsed by 75 HARD® or 44Seven Media. 75 HARD® is a registered trademark of 44Seven Media.<br>Jerome takes inspiration from <a href="https://www.flaticon.com/free-icons/camel" title="camel icons">Camel icons created by Freepik - Flaticon</a>.</p>
+    <p>Drome is an independent project by Jacob Stephens. Not affiliated with or endorsed by 75 HARD® or 44Seven Media. 75 HARD® is a registered trademark of 44Seven Media.</p>
     <div class="links">
       <a href="https://github.com/JacobStephens2/drome">Source on GitHub</a>
       <a href="/privacy/">Privacy policy</a>
