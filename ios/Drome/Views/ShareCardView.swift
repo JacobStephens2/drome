@@ -61,7 +61,7 @@ struct ShareCardView: View {
         HStack(spacing: DromeSpacing.s) {
             CamelMarkShape()
                 .fill(Color.dromeCamel)
-                .frame(width: 30, height: 22)
+                .frame(width: 27, height: 31)
             Text("DROME")
                 .font(.system(size: 15, weight: .black))
                 .tracking(3)
@@ -299,7 +299,7 @@ struct ShareCardView: View {
     }
 }
 
-// MARK: - Camel mark (self-contained simple vector; one hump — a dromedary)
+// MARK: - Camel mark (compact derivative of Melissa's refined Jerome)
 
 private struct CamelMarkShape: Shape {
     func path(in rect: CGRect) -> Path {
@@ -307,24 +307,58 @@ private struct CamelMarkShape: Shape {
             CGPoint(x: rect.minX + x * rect.width, y: rect.minY + y * rect.height)
         }
         var path = Path()
-        path.move(to: at(0.04, 0.62))                                        // tail root
-        path.addQuadCurve(to: at(0.16, 0.34), control: at(0.05, 0.40))       // rump
-        path.addQuadCurve(to: at(0.38, 0.16), control: at(0.24, 0.12))       // up the hump
-        path.addQuadCurve(to: at(0.58, 0.38), control: at(0.52, 0.16))       // down the hump
-        path.addQuadCurve(to: at(0.70, 0.20), control: at(0.66, 0.34))       // neck rising
-        path.addQuadCurve(to: at(0.78, 0.06), control: at(0.72, 0.10))       // toward head
-        path.addQuadCurve(to: at(0.94, 0.10), control: at(0.88, 0.00))       // head top
-        path.addQuadCurve(to: at(0.90, 0.22), control: at(0.98, 0.18))       // muzzle
-        path.addQuadCurve(to: at(0.80, 0.30), control: at(0.84, 0.26))       // jaw
-        path.addQuadCurve(to: at(0.74, 0.52), control: at(0.76, 0.38))       // neck front
-        path.addLine(to: at(0.74, 0.96))                                     // front leg
-        path.addLine(to: at(0.67, 0.96))
-        path.addLine(to: at(0.66, 0.62))
-        path.addQuadCurve(to: at(0.34, 0.62), control: at(0.50, 0.68))       // belly
-        path.addLine(to: at(0.33, 0.96))                                     // hind leg
-        path.addLine(to: at(0.26, 0.96))
-        path.addLine(to: at(0.24, 0.58))
-        path.addQuadCurve(to: at(0.04, 0.62), control: at(0.12, 0.62))       // back to tail
+        // Muzzle, forehead, and Melissa's uneven pair of ears.
+        path.move(to: at(0.04, 0.19))
+        path.addCurve(to: at(0.16, 0.09), control1: at(0.06, 0.14), control2: at(0.11, 0.11))
+        path.addQuadCurve(to: at(0.21, 0.02), control: at(0.20, 0.03))
+        path.addQuadCurve(to: at(0.23, 0.08), control: at(0.24, 0.04))
+        path.addQuadCurve(to: at(0.27, 0.02), control: at(0.27, 0.03))
+        path.addQuadCurve(to: at(0.28, 0.09), control: at(0.30, 0.05))
+        // Long neck, low shoulder dip, and one broad hump.
+        path.addCurve(to: at(0.35, 0.38), control1: at(0.32, 0.20), control2: at(0.31, 0.33))
+        path.addCurve(to: at(0.48, 0.37), control1: at(0.39, 0.41), control2: at(0.44, 0.40))
+        path.addCurve(to: at(0.62, 0.17), control1: at(0.54, 0.32), control2: at(0.56, 0.19))
+        path.addCurve(to: at(0.88, 0.48), control1: at(0.76, 0.11), control2: at(0.83, 0.28))
+        // Narrow tail and rear pair of separate, jointed legs.
+        path.addCurve(to: at(0.94, 0.76), control1: at(0.94, 0.55), control2: at(0.91, 0.69))
+        path.addLine(to: at(0.98, 0.80))
+        path.addLine(to: at(0.95, 0.79))
+        path.addLine(to: at(0.93, 0.82))
+        path.addCurve(to: at(0.90, 0.52), control1: at(0.89, 0.70), control2: at(0.94, 0.58))
+        path.addCurve(to: at(0.86, 0.74), control1: at(0.89, 0.59), control2: at(0.87, 0.67))
+        path.addQuadCurve(to: at(0.88, 0.78), control: at(0.90, 0.76))
+        path.addLine(to: at(0.88, 0.94))
+        path.addQuadCurve(to: at(0.81, 0.98), control: at(0.87, 0.99))
+        path.addQuadCurve(to: at(0.79, 0.94), control: at(0.78, 0.97))
+        path.addLine(to: at(0.80, 0.79))
+        path.addQuadCurve(to: at(0.78, 0.75), control: at(0.77, 0.77))
+        path.addLine(to: at(0.75, 0.62))
+        path.addLine(to: at(0.73, 0.75))
+        path.addQuadCurve(to: at(0.75, 0.79), control: at(0.77, 0.77))
+        path.addLine(to: at(0.74, 0.94))
+        path.addQuadCurve(to: at(0.67, 0.98), control: at(0.73, 0.99))
+        path.addQuadCurve(to: at(0.65, 0.94), control: at(0.64, 0.97))
+        path.addLine(to: at(0.67, 0.61))
+        // Belly into the front pair, keeping both gaps exterior/dry.
+        path.addCurve(to: at(0.51, 0.61), control1: at(0.62, 0.62), control2: at(0.56, 0.63))
+        path.addLine(to: at(0.52, 0.75))
+        path.addQuadCurve(to: at(0.54, 0.79), control: at(0.56, 0.77))
+        path.addLine(to: at(0.53, 0.94))
+        path.addQuadCurve(to: at(0.46, 0.98), control: at(0.52, 0.99))
+        path.addQuadCurve(to: at(0.44, 0.94), control: at(0.43, 0.97))
+        path.addLine(to: at(0.45, 0.63))
+        path.addLine(to: at(0.41, 0.75))
+        path.addQuadCurve(to: at(0.43, 0.79), control: at(0.45, 0.77))
+        path.addLine(to: at(0.41, 0.94))
+        path.addQuadCurve(to: at(0.33, 0.98), control: at(0.40, 0.99))
+        path.addQuadCurve(to: at(0.31, 0.94), control: at(0.30, 0.97))
+        path.addLine(to: at(0.34, 0.55))
+        // Chest and the underside of the neck return to the long muzzle.
+        path.addCurve(to: at(0.25, 0.42), control1: at(0.30, 0.51), control2: at(0.25, 0.47))
+        path.addLine(to: at(0.25, 0.27))
+        path.addQuadCurve(to: at(0.18, 0.21), control: at(0.22, 0.24))
+        path.addQuadCurve(to: at(0.10, 0.25), control: at(0.13, 0.26))
+        path.addQuadCurve(to: at(0.04, 0.19), control: at(0.02, 0.24))
         path.closeSubpath()
         return path
     }

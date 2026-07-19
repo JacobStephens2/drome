@@ -149,42 +149,72 @@ struct WaterProvider: TimelineProvider {
     }
 }
 
-// MARK: - Camel-fill gauge (simple silhouette, NOT the app's CamelView)
+// MARK: - Camel-fill gauge (compact Melissa derivative, NOT the app's CamelView)
 
-/// One-hump dromedary silhouette traced in a unit rect. Deliberately simple:
-/// the widget draws its own compact gauge instead of importing app views.
+/// Melissa's tall, left-facing Jerome simplified for the widget's very small
+/// canvas. The head, long neck, single hump, tail, four jointed legs, and the
+/// gaps between those legs deliberately follow the refined app artwork.
 struct CamelSilhouette: Shape {
+    static let aspectRatio: CGFloat = 31.0 / 35.0
+
     func path(in rect: CGRect) -> Path {
         func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
             CGPoint(x: rect.minX + x * rect.width, y: rect.minY + y * rect.height)
         }
         var p = Path()
-        // Start at the rump, trace clockwise.
-        p.move(to: pt(0.06, 0.58))
-        p.addQuadCurve(to: pt(0.20, 0.38), control: pt(0.06, 0.40))
-        // The single hump.
-        p.addQuadCurve(to: pt(0.40, 0.16), control: pt(0.26, 0.16))
-        p.addQuadCurve(to: pt(0.60, 0.38), control: pt(0.54, 0.16))
-        // Neck base, neck up.
-        p.addQuadCurve(to: pt(0.70, 0.34), control: pt(0.66, 0.38))
-        p.addQuadCurve(to: pt(0.80, 0.12), control: pt(0.76, 0.28))
-        // Head and muzzle.
-        p.addQuadCurve(to: pt(0.92, 0.06), control: pt(0.84, 0.04))
-        p.addQuadCurve(to: pt(0.98, 0.16), control: pt(0.99, 0.08))
-        p.addQuadCurve(to: pt(0.88, 0.24), control: pt(0.94, 0.24))
-        // Neck front down to the chest, into the front leg.
-        p.addQuadCurve(to: pt(0.78, 0.56), control: pt(0.82, 0.40))
-        p.addLine(to: pt(0.76, 0.62))
-        p.addLine(to: pt(0.74, 0.98))
-        p.addLine(to: pt(0.66, 0.98))
-        p.addLine(to: pt(0.66, 0.66))
-        // Belly across to the rear leg.
-        p.addQuadCurve(to: pt(0.28, 0.66), control: pt(0.47, 0.74))
-        p.addLine(to: pt(0.28, 0.98))
-        p.addLine(to: pt(0.20, 0.98))
-        p.addLine(to: pt(0.19, 0.64))
-        // Back up to the rump.
-        p.addQuadCurve(to: pt(0.06, 0.58), control: pt(0.10, 0.64))
+        // Muzzle, forehead, and Melissa's uneven pair of ears.
+        p.move(to: pt(0.04, 0.19))
+        p.addCurve(to: pt(0.16, 0.09), control1: pt(0.06, 0.14), control2: pt(0.11, 0.11))
+        p.addQuadCurve(to: pt(0.21, 0.02), control: pt(0.20, 0.03))
+        p.addQuadCurve(to: pt(0.23, 0.08), control: pt(0.24, 0.04))
+        p.addQuadCurve(to: pt(0.27, 0.02), control: pt(0.27, 0.03))
+        p.addQuadCurve(to: pt(0.28, 0.09), control: pt(0.30, 0.05))
+        // Long neck, low shoulder dip, and one broad hump.
+        p.addCurve(to: pt(0.35, 0.38), control1: pt(0.32, 0.20), control2: pt(0.31, 0.33))
+        p.addCurve(to: pt(0.48, 0.37), control1: pt(0.39, 0.41), control2: pt(0.44, 0.40))
+        p.addCurve(to: pt(0.62, 0.17), control1: pt(0.54, 0.32), control2: pt(0.56, 0.19))
+        p.addCurve(to: pt(0.88, 0.48), control1: pt(0.76, 0.11), control2: pt(0.83, 0.28))
+        // Narrow, fillable tail with a tiny tuft.
+        p.addCurve(to: pt(0.94, 0.76), control1: pt(0.94, 0.55), control2: pt(0.91, 0.69))
+        p.addLine(to: pt(0.98, 0.80))
+        p.addLine(to: pt(0.95, 0.79))
+        p.addLine(to: pt(0.93, 0.82))
+        p.addCurve(to: pt(0.90, 0.52), control1: pt(0.89, 0.70), control2: pt(0.94, 0.58))
+        // Rear pair: two separate, jointed legs with broad feet.
+        p.addCurve(to: pt(0.86, 0.74), control1: pt(0.89, 0.59), control2: pt(0.87, 0.67))
+        p.addQuadCurve(to: pt(0.88, 0.78), control: pt(0.90, 0.76))
+        p.addLine(to: pt(0.88, 0.94))
+        p.addQuadCurve(to: pt(0.81, 0.98), control: pt(0.87, 0.99))
+        p.addQuadCurve(to: pt(0.79, 0.94), control: pt(0.78, 0.97))
+        p.addLine(to: pt(0.80, 0.79))
+        p.addQuadCurve(to: pt(0.78, 0.75), control: pt(0.77, 0.77))
+        p.addLine(to: pt(0.75, 0.62))
+        p.addLine(to: pt(0.73, 0.75))
+        p.addQuadCurve(to: pt(0.75, 0.79), control: pt(0.77, 0.77))
+        p.addLine(to: pt(0.74, 0.94))
+        p.addQuadCurve(to: pt(0.67, 0.98), control: pt(0.73, 0.99))
+        p.addQuadCurve(to: pt(0.65, 0.94), control: pt(0.64, 0.97))
+        p.addLine(to: pt(0.67, 0.61))
+        // Belly into the front pair, keeping both gaps exterior/dry.
+        p.addCurve(to: pt(0.51, 0.61), control1: pt(0.62, 0.62), control2: pt(0.56, 0.63))
+        p.addLine(to: pt(0.52, 0.75))
+        p.addQuadCurve(to: pt(0.54, 0.79), control: pt(0.56, 0.77))
+        p.addLine(to: pt(0.53, 0.94))
+        p.addQuadCurve(to: pt(0.46, 0.98), control: pt(0.52, 0.99))
+        p.addQuadCurve(to: pt(0.44, 0.94), control: pt(0.43, 0.97))
+        p.addLine(to: pt(0.45, 0.63))
+        p.addLine(to: pt(0.41, 0.75))
+        p.addQuadCurve(to: pt(0.43, 0.79), control: pt(0.45, 0.77))
+        p.addLine(to: pt(0.41, 0.94))
+        p.addQuadCurve(to: pt(0.33, 0.98), control: pt(0.40, 0.99))
+        p.addQuadCurve(to: pt(0.31, 0.94), control: pt(0.30, 0.97))
+        p.addLine(to: pt(0.34, 0.55))
+        // Chest and the underside of the neck return to the long muzzle.
+        p.addCurve(to: pt(0.25, 0.42), control1: pt(0.30, 0.51), control2: pt(0.25, 0.47))
+        p.addLine(to: pt(0.25, 0.27))
+        p.addQuadCurve(to: pt(0.18, 0.21), control: pt(0.22, 0.24))
+        p.addQuadCurve(to: pt(0.10, 0.25), control: pt(0.13, 0.26))
+        p.addQuadCurve(to: pt(0.04, 0.19), control: pt(0.02, 0.24))
         p.closeSubpath()
         return p
     }
@@ -200,7 +230,7 @@ struct CamelFillGauge: View {
     var body: some View {
         ZStack {
             CamelSilhouette()
-                .fill(WidgetPalette.ink.opacity(0.14))
+                .fill(WidgetPalette.camel.opacity(0.16))
             CamelSilhouette()
                 .fill(WidgetPalette.oasis)
                 .mask {
@@ -214,8 +244,10 @@ struct CamelFillGauge: View {
                             ))
                     }
                 }
+            CamelSilhouette()
+                .stroke(WidgetPalette.camel, lineWidth: 1)
         }
-        .aspectRatio(1.5, contentMode: .fit)
+        .aspectRatio(CamelSilhouette.aspectRatio, contentMode: .fit)
         .accessibilityHidden(true)
     }
 }
