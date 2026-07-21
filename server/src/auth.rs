@@ -23,6 +23,7 @@ const SESSION_TTL_SECS: i64 = 30 * 24 * 3_600;
 const EMAIL_CODE_TTL_SECS: i64 = 10 * 60;
 const MAX_EMAIL_CODE_ATTEMPTS: i64 = 5;
 const EMAIL_CODE_RESEND_COOLDOWN_SECS: i64 = 30;
+const ACCOUNT_LINK_TTL_SECS: i64 = 5 * 60;
 
 /// An authenticated account, loaded by the middleware and handed to handlers
 /// via `Extension`.
@@ -83,6 +84,19 @@ pub struct EmailVerifyBody {
     pub code: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct AccountLinkRequest {
+    pub link_code: String,
+    pub email: String,
+    pub code: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AccountLinkCodeResponse {
+    pub link_code: String,
+    pub expires_at_epoch: i64,
+}
+
 // --- token helpers ---------------------------------------------------------
 
 /// A fresh 256-bit opaque token, hex-encoded.
@@ -130,6 +144,12 @@ fn verify_apple_nonce(raw: Option<&str>, claim: Option<&str>) -> Result<(), ApiE
 fn generate_email_code() -> String {
     let n: u32 = rand::thread_rng().gen_range(0..1_000_000);
     format!("{n:06}")
+}
+
+fn generate_link_code() -> String {
+    let mut bytes = [0u8; 8];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    to_hex(&bytes).to_uppercase()
 }
 
 /// Normalizes and lightly validates a login email: trimmed, lowercased, exactly
@@ -184,6 +204,11 @@ pub async fn apple_auth(
             |r| r.get(0),
         )
         .map_err(ApiError::internal)?;
+    conn.execute(
+        "INSERT OR IGNORE INTO account_identity (identity, account_id) VALUES (?1, ?2)",
+        params![identity.sub, account_id],
+    )
+    .map_err(ApiError::internal)?;
 
     let resp = issue_session(&conn, account_id, now)?;
     Ok(Json(resp))
@@ -277,6 +302,11 @@ pub async fn dev_auth(
             |r| r.get(0),
         )
         .map_err(ApiError::internal)?;
+    conn.execute(
+        "INSERT OR IGNORE INTO account_identity (identity, account_id) VALUES (?1, ?2)",
+        params![apple_sub, account_id],
+    )
+    .map_err(ApiError::internal)?;
 
     let resp = issue_session(&conn, account_id, now)?;
     Ok(Json(resp))
@@ -411,22 +441,204 @@ pub async fn email_verify(
     conn.execute("DELETE FROM email_code WHERE email = ?1", params![email])
         .map_err(ApiError::internal)?;
     let identity = format!("email:{email}");
-    conn.execute(
-        "INSERT INTO account (apple_sub, email, created_at_epoch) VALUES (?1, ?2, ?3)
-         ON CONFLICT(apple_sub) DO UPDATE SET email = excluded.email",
-        params![identity, email, now],
-    )
-    .map_err(ApiError::internal)?;
-    let account_id: i64 = conn
+    let linked: Option<i64> = conn
         .query_row(
-            "SELECT id FROM account WHERE apple_sub = ?1",
+            "SELECT account_id FROM account_identity WHERE identity = ?1",
             params![identity],
             |r| r.get(0),
         )
+        .optional()
         .map_err(ApiError::internal)?;
+    let account_id = if let Some(account_id) = linked {
+        conn.execute(
+            "UPDATE account SET email = ?1 WHERE id = ?2",
+            params![email, account_id],
+        )
+        .map_err(ApiError::internal)?;
+        account_id
+    } else {
+        conn.execute(
+            "INSERT INTO account (apple_sub, email, created_at_epoch) VALUES (?1, ?2, ?3)
+             ON CONFLICT(apple_sub) DO UPDATE SET email = excluded.email",
+            params![identity, email, now],
+        )
+        .map_err(ApiError::internal)?;
+        let account_id: i64 = conn
+            .query_row(
+                "SELECT id FROM account WHERE apple_sub = ?1",
+                params![identity],
+                |r| r.get(0),
+            )
+            .map_err(ApiError::internal)?;
+        conn.execute(
+            "INSERT OR IGNORE INTO account_identity (identity, account_id) VALUES (?1, ?2)",
+            params![identity, account_id],
+        )
+        .map_err(ApiError::internal)?;
+        account_id
+    };
 
     let resp = issue_session(&conn, account_id, now)?;
     Ok(Json(resp))
+}
+
+/// Mint a single-use attach code for this account. Only a session created in
+/// the last ten minutes may issue one; the plaintext code is returned once and
+/// only its hash is persisted.
+pub async fn issue_account_link_code(
+    State(state): State<AppState>,
+    Extension(account): Extension<Account>,
+) -> Result<Json<AccountLinkCodeResponse>, ApiError> {
+    let now = state.now_epoch();
+    let conn = state.db.lock().map_err(|_| ApiError::internal("db lock"))?;
+    let recent: bool = conn
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM session
+             WHERE account_id = ?1 AND created_at_epoch > ?2 AND expires_at_epoch > ?3",
+            params![account.id, now - 10 * 60, now],
+            |row| row.get(0),
+        )
+        .map_err(ApiError::internal)?;
+    if !recent {
+        return Err(ApiError::unauthorized(
+            "recent_auth_required",
+            "sign in again before linking a new device",
+        ));
+    }
+    let link_code = generate_link_code();
+    let expires_at = now + ACCOUNT_LINK_TTL_SECS;
+    conn.execute(
+        "DELETE FROM account_link_code WHERE account_id = ?1 OR expires_at_epoch <= ?2",
+        params![account.id, now],
+    )
+    .map_err(ApiError::internal)?;
+    conn.execute(
+        "INSERT INTO account_link_code (code_hash, account_id, expires_at_epoch, created_at_epoch)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![hash_token(&link_code), account.id, expires_at, now],
+    )
+    .map_err(ApiError::internal)?;
+    Ok(Json(AccountLinkCodeResponse {
+        link_code,
+        expires_at_epoch: expires_at,
+    }))
+}
+
+/// Attach a freshly OTP-proven email identity to the account named by the
+/// short-lived link code. This path never creates a provisional account.
+pub async fn attach_account_link(
+    State(state): State<AppState>,
+    Json(req): Json<AccountLinkRequest>,
+) -> Result<Json<AuthResponse>, ApiError> {
+    let email = normalize_email(&req.email)
+        .ok_or_else(|| ApiError::bad_request("enter a valid email address"))?;
+    let code = req.code.trim();
+    let link_code = req.link_code.trim().to_uppercase();
+    if code.is_empty() || link_code.is_empty() {
+        return Err(ApiError::bad_request(
+            "link code and email code are required",
+        ));
+    }
+    let now = state.now_epoch();
+    let mut conn = state.db.lock().map_err(|_| ApiError::internal("db lock"))?;
+    let tx = conn.transaction().map_err(ApiError::internal)?;
+
+    let target: Option<(i64, i64)> = tx
+        .query_row(
+            "SELECT account_id, expires_at_epoch FROM account_link_code WHERE code_hash = ?1",
+            params![hash_token(&link_code)],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(ApiError::internal)?;
+    let Some((account_id, link_expires)) = target else {
+        return Err(ApiError::unauthorized(
+            "bad_link_code",
+            "that link code isn't valid",
+        ));
+    };
+    if now >= link_expires {
+        tx.execute(
+            "DELETE FROM account_link_code WHERE code_hash = ?1",
+            params![hash_token(&link_code)],
+        )
+        .map_err(ApiError::internal)?;
+        tx.commit().map_err(ApiError::internal)?;
+        return Err(ApiError::unauthorized(
+            "bad_link_code",
+            "that link code expired",
+        ));
+    }
+
+    let otp: Option<(String, i64, i64)> = tx
+        .query_row(
+            "SELECT code_hash, expires_at_epoch, attempts FROM email_code WHERE email = ?1",
+            params![email],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(ApiError::internal)?;
+    let Some((otp_hash, otp_expires, attempts)) = otp else {
+        return Err(ApiError::unauthorized(
+            "bad_code",
+            "request a new email code",
+        ));
+    };
+    if now >= otp_expires || attempts >= MAX_EMAIL_CODE_ATTEMPTS {
+        tx.execute("DELETE FROM email_code WHERE email = ?1", params![email])
+            .map_err(ApiError::internal)?;
+        tx.commit().map_err(ApiError::internal)?;
+        return Err(ApiError::unauthorized(
+            "bad_code",
+            "that email code expired",
+        ));
+    }
+    if hash_token(code) != otp_hash {
+        tx.execute(
+            "UPDATE email_code SET attempts = attempts + 1 WHERE email = ?1",
+            params![email],
+        )
+        .map_err(ApiError::internal)?;
+        tx.commit().map_err(ApiError::internal)?;
+        return Err(ApiError::unauthorized("bad_code", "incorrect email code"));
+    }
+
+    let identity = format!("email:{email}");
+    let owner: Option<i64> = tx
+        .query_row(
+            "SELECT account_id FROM account_identity WHERE identity = ?1",
+            params![identity],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(ApiError::internal)?;
+    if owner.is_some_and(|owner| owner != account_id) {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "identity_already_linked",
+            "this email is its own account; use export and restore to move data",
+        ));
+    }
+    tx.execute(
+        "INSERT OR IGNORE INTO account_identity (identity, account_id) VALUES (?1, ?2)",
+        params![identity, account_id],
+    )
+    .map_err(ApiError::internal)?;
+    tx.execute(
+        "UPDATE account SET email = ?1 WHERE id = ?2",
+        params![email, account_id],
+    )
+    .map_err(ApiError::internal)?;
+    tx.execute("DELETE FROM email_code WHERE email = ?1", params![email])
+        .map_err(ApiError::internal)?;
+    tx.execute(
+        "DELETE FROM account_link_code WHERE code_hash = ?1",
+        params![hash_token(&link_code)],
+    )
+    .map_err(ApiError::internal)?;
+    let response = issue_session(&tx, account_id, now)?;
+    tx.commit().map_err(ApiError::internal)?;
+    Ok(Json(response))
 }
 
 /// Inserts a fresh session for `account_id` and returns its tokens.
@@ -595,6 +807,8 @@ pub async fn delete_account(
         "DELETE FROM nudge WHERE from_account = ?1 OR to_account = ?1",
         "DELETE FROM membership WHERE account_id = ?1",
         "DELETE FROM entitlement WHERE account_id = ?1",
+        "DELETE FROM account_link_code WHERE account_id = ?1",
+        "DELETE FROM account_identity WHERE account_id = ?1",
     ] {
         tx.execute(sql, params![account.id])
             .map_err(ApiError::internal)?;

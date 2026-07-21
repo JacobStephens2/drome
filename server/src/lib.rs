@@ -231,6 +231,7 @@ pub fn build_router(state: AppState) -> Router {
     let authed = Router::new()
         .route("/v1/entitlement", get(entitlement::get_entitlement))
         .route("/v1/account", delete(auth::delete_account))
+        .route("/v1/account/link/code", post(auth::issue_account_link_code))
         .route_layer(from_fn_with_state(state.clone(), auth::require_auth));
 
     // Anonymous token-minting endpoints: per-IP rate limited (they do real RSA
@@ -240,6 +241,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/auth/email/request", post(auth::email_request))
         .route("/v1/auth/email/verify", post(auth::email_verify))
         .route("/v1/auth/refresh", post(auth::refresh));
+    let public_link = Router::new()
+        .route("/v1/account/link", post(auth::attach_account_link))
+        .route_layer(from_fn_with_state(
+            state.clone(),
+            auth::public_auth_rate_limit,
+        ));
     // `/v1/auth/dev` is mounted ONLY when DROME_DEV_AUTH=1. In a default
     // (production) configuration the route simply does not exist, so it is
     // unreachable (404) — not merely guarded inside the handler.
@@ -257,6 +264,7 @@ pub fn build_router(state: AppState) -> Router {
 
     public
         .merge(public_auth)
+        .merge(public_link)
         .merge(authed)
         .merge(gated)
         .with_state(state)

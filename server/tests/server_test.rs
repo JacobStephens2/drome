@@ -2296,6 +2296,100 @@ async fn email_otp_request_then_verify_mints_a_working_session() {
 }
 
 #[tokio::test]
+async fn account_link_attaches_email_without_creating_a_second_account() {
+    let recorder = Arc::new(RecordingSender::default());
+    let srv = test_server_email(true, fixed_clock(1_700_000_000), recorder.clone());
+
+    json_request(
+        &srv.app,
+        "POST",
+        "/v1/auth/email/request",
+        None,
+        json!({ "email": "owner@example.com" }),
+    )
+    .await;
+    let owner_code = recorder.code_for("owner@example.com").expect("owner code");
+    let (status, owner) = json_request(
+        &srv.app,
+        "POST",
+        "/v1/auth/email/verify",
+        None,
+        json!({ "email": "owner@example.com", "code": owner_code }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let owner_id = owner["account_id"].as_i64().expect("account id");
+    let access = owner["access_token"].as_str().expect("access");
+
+    let (status, link) = json_request(
+        &srv.app,
+        "POST",
+        "/v1/account/link/code",
+        Some(access),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let link_code = link["link_code"].as_str().expect("link code");
+
+    json_request(
+        &srv.app,
+        "POST",
+        "/v1/auth/email/request",
+        None,
+        json!({ "email": "android@example.com" }),
+    )
+    .await;
+    let android_code = recorder
+        .code_for("android@example.com")
+        .expect("android code");
+    let (status, linked) = json_request(
+        &srv.app,
+        "POST",
+        "/v1/account/link",
+        None,
+        json!({ "link_code": link_code, "email": "android@example.com", "code": android_code }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(linked["account_id"], json!(owner_id));
+
+    // The attached identity signs into the original account thereafter.
+    json_request(
+        &srv.app,
+        "POST",
+        "/v1/auth/email/request",
+        None,
+        json!({ "email": "android@example.com" }),
+    )
+    .await;
+    let again = recorder
+        .code_for("android@example.com")
+        .expect("fresh code");
+    let (_, session) = json_request(
+        &srv.app,
+        "POST",
+        "/v1/auth/email/verify",
+        None,
+        json!({ "email": "android@example.com", "code": again }),
+    )
+    .await;
+    assert_eq!(session["account_id"], json!(owner_id));
+
+    let count: i64 = srv
+        .state
+        .db
+        .lock()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM account", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        count, 1,
+        "attach-first must never mint a provisional account"
+    );
+}
+
+#[tokio::test]
 async fn email_otp_wrong_code_burns_attempts_then_invalidates() {
     let recorder = Arc::new(RecordingSender::default());
     let srv = test_server_email(true, fixed_clock(1_700_000_000), recorder.clone());

@@ -20,6 +20,16 @@ xcuserdata/
 .scratch/
 ios/Frameworks/**/*.a
 
+# Android / Gradle (generated Kotlin is committed like the Swift binding;
+# native libraries and machine-local SDK paths are build products/config).
+android/.gradle/
+android/**/build/
+android/local.properties
+android/core/src/main/jniLibs/
+android/signing.properties
+*.jks
+*.keystore
+
 # OpenTofu / infra (never commit state, downloaded plugins, real tfvars, or
 # backend creds; .terraform.lock.hcl IS committed for reproducible provider pins)
 infra/.terraform/

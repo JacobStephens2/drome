@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <exclude domain="file" path="drome.sqlite" />
+    <exclude domain="file" path="drome.sqlite-wal" />
+    <exclude domain="file" path="drome.sqlite-shm" />
+    <exclude domain="file" path="photos/" />
+    <exclude domain="root" path="." />
+    <exclude domain="sharedpref" path="." />
+</full-backup-content>

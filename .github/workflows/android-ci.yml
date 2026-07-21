@@ -1,0 +1,76 @@
+name: Android
+
+on:
+  pull_request:
+    paths:
+      - "android/**"
+      - "core/**"
+      - "server/**"
+      - ".github/workflows/android-ci.yml"
+  push:
+    tags: ["android-v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+      - uses: android-actions/setup-android@v3
+      - uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r28c
+          local-cache: true
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - name: Build Rust bindings
+        env:
+          ANDROID_NDK_VERSION: 28.2.13676358
+        run: ./core/build-android-lib.sh --release
+      - name: Rust tests
+        run: cargo test --workspace
+      - name: Restore Android upload key
+        if: github.ref_type == 'tag'
+        env:
+          UPLOAD_KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
+          UPLOAD_STORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_STORE_PASSWORD }}
+          UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+          UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
+        run: |
+          test -n "$UPLOAD_KEYSTORE_BASE64"
+          test -n "$UPLOAD_STORE_PASSWORD"
+          test -n "$UPLOAD_KEY_ALIAS"
+          test -n "$UPLOAD_KEY_PASSWORD"
+          printf '%s' "$UPLOAD_KEYSTORE_BASE64" | base64 --decode > android/upload.jks
+      - name: Android tests and packages
+        working-directory: android
+        env:
+          ANDROID_UPLOAD_STORE_FILE: ${{ github.ref_type == 'tag' && 'upload.jks' || '' }}
+          ANDROID_UPLOAD_STORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_STORE_PASSWORD }}
+          ANDROID_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+          ANDROID_UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
+        run: ./gradlew test :app:verifyPaparazziDebug assembleDebug :app:bundleRelease :wear:bundleRelease
+      - name: Verify 16 KB native alignment
+        run: |
+          android/scripts/verify-native-alignment.sh android/app/build/outputs/apk/debug/app-debug.apk
+          android/scripts/verify-native-alignment.sh android/wear/build/outputs/apk/debug/wear-debug.apk
+          android/scripts/verify-native-alignment.sh android/app/build/outputs/bundle/release/app-release.aab
+          android/scripts/verify-native-alignment.sh android/wear/build/outputs/bundle/release/wear-release.aab
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drome-android-debug
+          path: |
+            android/app/build/outputs/apk/debug/*.apk
+            android/wear/build/outputs/apk/debug/*.apk
+      - uses: actions/upload-artifact@v4
+        if: github.ref_type == 'tag'
+        with:
+          name: drome-android-release
+          path: |
+            android/app/build/outputs/bundle/release/*.aab
+            android/wear/build/outputs/bundle/release/*.aab

@@ -2497,6 +2497,41 @@ fn stale_handle_log_after_reset_is_rejected_and_leaves_no_orphan() {
 }
 
 #[test]
+fn companion_water_command_uuid_is_idempotent() {
+    let (_dir, _path, store) = open_store();
+    store
+        .create_challenge(challenge_cfg(
+            RulesetKind::Flexible,
+            "2026-07-04",
+            at("2026-07-04", 8, 0),
+        ))
+        .expect("create");
+    let id = "67f6438d-8484-4959-8f4b-22d607bfe5c8".to_owned();
+    let first = store
+        .log_water_idempotent(id.clone(), 473, at("2026-07-04", 9, 0))
+        .expect("first delivery");
+    let duplicate = store
+        .log_water_idempotent(id.clone(), 473, at("2026-07-05", 9, 0))
+        .expect("duplicate delivery");
+    assert_eq!(first.event_uuid, id);
+    assert_eq!(duplicate.event_uuid, id);
+    assert_eq!(
+        store
+            .day_state("2026-07-04".into(), at("2026-07-05", 9, 1))
+            .expect("day")
+            .water_ml,
+        473
+    );
+    assert_eq!(
+        store
+            .day_state("2026-07-05".into(), at("2026-07-05", 9, 1))
+            .expect("next day")
+            .water_ml,
+        0
+    );
+}
+
+#[test]
 fn widget_logs_racing_the_reset_never_survive_the_wipe() {
     // Interleaved version of the same promise: a second handle hammers
     // log_water from another thread while the reset commits. Whatever the

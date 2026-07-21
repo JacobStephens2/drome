@@ -1,0 +1,9 @@
+<resources>
+    <style name="Theme.Drome" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#C2410C</item>
+        <item name="android:navigationBarColor">#F3EAD8</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:statusBarColor">#F3EAD8</item>
+    </style>
+</resources>

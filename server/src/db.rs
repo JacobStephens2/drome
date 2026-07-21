@@ -135,6 +135,27 @@ CREATE TABLE IF NOT EXISTS email_code (
     attempts INTEGER NOT NULL DEFAULT 0,
     created_at_epoch INTEGER NOT NULL
 );
+
+-- Provider-qualified identities allow attach-first cross-platform linking
+-- without moving or merging any challenge data. `account.apple_sub` remains
+-- the legacy canonical column during this backwards-compatible migration.
+CREATE TABLE IF NOT EXISTS account_identity (
+    identity TEXT PRIMARY KEY,
+    account_id INTEGER NOT NULL REFERENCES account(id)
+);
+
+INSERT OR IGNORE INTO account_identity (identity, account_id)
+SELECT apple_sub, id FROM account;
+
+CREATE TABLE IF NOT EXISTS account_link_code (
+    code_hash TEXT PRIMARY KEY,
+    account_id INTEGER NOT NULL REFERENCES account(id),
+    expires_at_epoch INTEGER NOT NULL,
+    created_at_epoch INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_account_identity_account ON account_identity(account_id);
+CREATE INDEX IF NOT EXISTS idx_account_link_account ON account_link_code(account_id);
 ";
 
 /// Opens the server DB (WAL, foreign keys on) and runs migrations.

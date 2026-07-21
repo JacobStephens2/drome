@@ -336,6 +336,12 @@ enum WaterOp {
     BoundedDebit(i64),
 }
 
+struct LogWriteOptions {
+    week_extra_id: Option<String>,
+    water_op: WaterOp,
+    caller_uuid: Option<String>,
+}
+
 /// Everything loaded for a projection pass.
 struct Loaded {
     challenge: Challenge,
@@ -697,6 +703,38 @@ impl DromeStore {
             effective_date,
             None,
             water_op,
+        )
+    }
+
+    /// Companion-device water command with a caller-owned UUID. Replaying the
+    /// same UUID is a successful no-op, so a Wear DataItem can be retried until
+    /// its phone ack arrives without ever double-counting the pour.
+    pub fn log_water_idempotent(
+        &self,
+        command_uuid: String,
+        ml: i64,
+        now: LocalInstant,
+    ) -> Result<LogResult, DromeError> {
+        if Uuid::parse_str(&command_uuid).is_err() {
+            return Err(DromeError::InvalidArgument(
+                "command_uuid must be a UUID".into(),
+            ));
+        }
+        if !(1..=MAX_WATER_LOG_ML).contains(&ml) {
+            return Err(DromeError::InvalidArgument(format!(
+                "water ml must be in 1..={MAX_WATER_LOG_ML}"
+            )));
+        }
+        self.log_kind_with_options(
+            events::KIND_WATER_ADD,
+            json!({ "ml": ml }),
+            now,
+            None,
+            LogWriteOptions {
+                week_extra_id: None,
+                water_op: WaterOp::ChugCheckedAdd(ml),
+                caller_uuid: Some(command_uuid),
+            },
         )
     }
 
@@ -1683,6 +1721,27 @@ impl DromeStore {
         week_extra_id: Option<String>,
         water_op: WaterOp,
     ) -> Result<LogResult, DromeError> {
+        self.log_kind_with_options(
+            kind,
+            payload,
+            now,
+            effective_date,
+            LogWriteOptions {
+                week_extra_id,
+                water_op,
+                caller_uuid: None,
+            },
+        )
+    }
+
+    fn log_kind_with_options(
+        &self,
+        kind: &str,
+        payload: serde_json::Value,
+        now: LocalInstant,
+        effective_date: Option<String>,
+        options: LogWriteOptions,
+    ) -> Result<LogResult, DromeError> {
         now.wall_secs()?;
         let mut conn = self.lock()?;
         // ONE IMMEDIATE transaction spans the precondition read (active
@@ -1697,21 +1756,65 @@ impl DromeStore {
         let loaded = load(&tx)?;
         let pre = &loaded.projection;
 
+        if let Some(uuid) = options.caller_uuid.as_deref() {
+            let existing: Option<(String, i64, i32, Option<String>, String, String)> = tx
+                .query_row(
+                    "SELECT challenge_id, logged_at_epoch, tz_offset_secs, effective_date, kind, payload
+                     FROM events WHERE uuid = ?1",
+                    [uuid],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+                )
+                .optional()?;
+            if let Some((
+                challenge_id,
+                epoch,
+                offset,
+                prior_effective_date,
+                prior_kind,
+                prior_payload,
+            )) = existing
+            {
+                if challenge_id != loaded.challenge.id
+                    || prior_kind != kind
+                    || serde_json::from_str::<serde_json::Value>(&prior_payload)? != payload
+                {
+                    return Err(DromeError::InvalidArgument(
+                        "command_uuid already belongs to a different event".into(),
+                    ));
+                }
+                let original = LocalInstant {
+                    epoch_secs: epoch,
+                    tz_offset_secs: offset,
+                };
+                let date = pre.attribute(original, prior_effective_date.as_deref())?;
+                let state = pre.day_state(date);
+                tx.commit()?;
+                return Ok(LogResult {
+                    event_uuid: uuid.to_owned(),
+                    day_state: state,
+                    day_became_complete: false,
+                    week_extra_became_complete: false,
+                    chug_warning: None,
+                    revoked_photo_refs: Vec::new(),
+                });
+            }
+        }
+
         let date = pre.attribute(now, effective_date.as_deref())?;
         let pre_day = pre.day_state(date);
         let week_idx = time::week_index(pre_day.day_index);
-        let pre_week_done = match &week_extra_id {
+        let pre_week_done = match &options.week_extra_id {
             Some(id) => pre.week_extra_done(id, week_idx)?,
             None => false,
         };
-        let chug_warning = match water_op {
+        let chug_warning = match options.water_op {
             WaterOp::ChugCheckedAdd(ml) => {
                 let trailing = water::trailing_hour_ml(pre.water_events_by_epoch(), now.epoch_secs);
                 Some(water::check_chug(trailing, ml)).filter(|check| check.warn)
             }
             WaterOp::None | WaterOp::BoundedDebit(_) => None,
         };
-        if let WaterOp::BoundedDebit(debit) = water_op {
+        if let WaterOp::BoundedDebit(debit) = options.water_op {
             // Over-correction guard: an adjustment may remove at most the
             // water currently attributed to the day. `pre_day.water_ml` is
             // already floored at 0, so this bound is against what the user
@@ -1724,19 +1827,30 @@ impl DromeStore {
             }
         }
 
-        let event_uuid = insert_event(
-            &tx,
-            &loaded.challenge.id,
-            now,
-            effective_date.as_deref(),
-            kind,
-            &payload,
-        )?;
+        let event_uuid = match options.caller_uuid {
+            Some(uuid) => insert_event_with_uuid(
+                &tx,
+                &uuid,
+                &loaded.challenge.id,
+                now,
+                effective_date.as_deref(),
+                kind,
+                &payload,
+            )?,
+            None => insert_event(
+                &tx,
+                &loaded.challenge.id,
+                now,
+                effective_date.as_deref(),
+                kind,
+                &payload,
+            )?,
+        };
 
         let post = load(&tx)?.projection;
         let post_day = post.day_state(date);
         let day_became_complete = !pre_day.core_complete && post_day.core_complete;
-        let week_extra_became_complete = match &week_extra_id {
+        let week_extra_became_complete = match &options.week_extra_id {
             Some(id) => !pre_week_done && post.week_extra_done(id, week_idx)?,
             None => false,
         };
@@ -1994,6 +2108,26 @@ fn insert_event(
     payload: &serde_json::Value,
 ) -> Result<String, DromeError> {
     let uuid = Uuid::new_v4().to_string();
+    insert_event_with_uuid(
+        conn,
+        &uuid,
+        challenge_id,
+        now,
+        effective_date,
+        kind,
+        payload,
+    )
+}
+
+fn insert_event_with_uuid(
+    conn: &Connection,
+    uuid: &str,
+    challenge_id: &str,
+    now: LocalInstant,
+    effective_date: Option<&str>,
+    kind: &str,
+    payload: &serde_json::Value,
+) -> Result<String, DromeError> {
     conn.execute(
         "INSERT INTO events (uuid, challenge_id, logged_at_epoch, tz_offset_secs,
                              effective_date, kind, payload, schema_version)
@@ -2011,5 +2145,5 @@ fn insert_event(
             events::EVENT_SCHEMA_VERSION,
         ],
     )?;
-    Ok(uuid)
+    Ok(uuid.to_owned())
 }
