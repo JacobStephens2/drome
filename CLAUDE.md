@@ -11,14 +11,16 @@ Hard rules that survive any context loss:
 - **Phase 1 = iOS local-first MVP only.** No server, no accounts, no payments, no analytics.
 - **Flexible mode is the default; purist (rules-as-written) mode is opt-in.**
 - **Never put "75 Hard" in the app name, bundle ID, or store metadata** (third-party registered trademark).
-- **This machine runs Santa in LOCKDOWN:** no `brew`, no unsigned host binaries. Rust builds happen in Docker by default; host rustup for iOS targets may need an admin allowlist first (see the brief). Docker images are per-user.
+- **Santa: no longer active (2026-07-20).** Jacob's current dev Mac does NOT run Santa — `brew`, unsigned host binaries, and freshly built tools run normally. The Santa Lockdown notes below and in decisions.md describe the previous machine and bind again only if work returns to a managed Mac.
 - The repo is **private**. Stack: Rust core (UniFFI) + native SwiftUI, monorepo (`core/`, `ios/`).
 
 Build & contracts:
 
 - **`docs/ARCHITECTURE.md` pins the Phase 1 contracts** (event schema, day attribution,
   core API, Swift facade, design tokens, file ownership). Read it before writing code.
-- **Santa + cargo on this machine:** Santa Lockdown kills freshly-built host binaries,
+- **Santa + cargo (HISTORICAL — current Mac runs no Santa, see above; the repo's
+  target-dir pinning stays because it is harmless and keeps the tree portable to any
+  future managed machine):** Santa Lockdown kills freshly-built host binaries,
   but the Lockdown profile (updated by Jacob 2026-07-04) allowlists execution from THIS
   repo's `core/target/(debug|release)/` — so plain `cargo test`/`build`/`clippy` work
   normally in `core/` with the default target dir (verified). Do NOT set a custom
