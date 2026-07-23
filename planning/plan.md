@@ -90,7 +90,7 @@ The focus is the server-side core: accounts, sync, and friend groups. Watch and 
 
 ## Phase 4: Android
 
-- **Android (native Kotlin) + Wear OS**, reusing the shared core — the research identifies Android as the market's biggest open lane, mixed-platform groups need it, and interest beyond the iOS circle is plausible (the source's own guess).
+- **Android (native Kotlin) + Wear OS**, reusing the shared core — the research identifies Android as the market's biggest open lane, mixed-platform groups need it, and interest beyond the iOS circle is plausible (the source's own guess). Detailed build plan: `../docs/ANDROID.md` (module layout, UniFFI Kotlin bindings, auth dependency, milestones).
 
 Deliberately not planned: public feeds, leaderboards, calorie tracking, verification theater. (Full rationale in the research doc's anti-features section.)
 
