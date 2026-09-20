@@ -66,6 +66,9 @@ done
 
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$ARM_CLANG"
 export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$X64_CLANG"
+# cargo does not inherit NDK r28's 16 KB page default; pass it explicitly.
+export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384"
+export CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384"
 export CC_aarch64_linux_android="$ARM_CLANG"
 export CC_x86_64_linux_android="$X64_CLANG"
 export AR_aarch64_linux_android="$LLVM_AR"

@@ -5,3 +5,11 @@
 # out-of-repo path or freshly built binaries will be SIGKILLed. See CLAUDE.md.
 [build]
 target-dir = "core/target"
+
+# NDK r28 aligns 16 KB pages for ndk-build/CMake, not for cargo invoking
+# clang as the linker. Play rejects AABs whose ELF LOAD segments are 4 KB.
+[target.aarch64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+
+[target.x86_64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
