@@ -108,6 +108,13 @@ projections never sync, they recompute.
   (`expires_at_epoch > now`) — an expired or unknown refresh token gets the same 401,
   so the TTL is a real bound and a leaked refresh token is not a permanent
   credential. No passwords, ever.
+- **New-account notification** (docs/specs.md "Accounts"): the first time an `apple_sub`
+  or `email:<addr>` identity is seen (Apple or email-OTP sign-in — never the dev route), the
+  server best-effort emails the operator that a new account was created, with the account's
+  email when known. Recipient is env `DROME_SIGNUP_NOTIFY_TO` (default `jacob@stephens.page`;
+  empty disables it). Fired AFTER the session is issued and the DB lock dropped, and any
+  delivery error is logged not surfaced — so it can never delay or fail someone's sign-in.
+  Delivery rides the same Resend sender as OTP codes; with `RESEND_API_KEY` unset it only logs.
 - Deleting an account (App Store requirement): `DELETE /v1/account` wipes account rows,
   events, memberships server-side. Local data untouched.
 - **Local dev auth (never production)**: real Apple identity tokens can't be minted
