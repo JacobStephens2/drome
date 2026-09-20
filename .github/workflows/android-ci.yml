@@ -20,7 +20,11 @@ jobs:
           distribution: temurin
           java-version: "21"
           cache: gradle
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4
+        with:
+          # Google stopped serving the legacy `tools` package; v3 installs it by
+          # default and the job dies with "Failed to find package 'tools'".
+          packages: platform-tools
       - uses: nttld/setup-ndk@v1
         with:
           ndk-version: r28c
