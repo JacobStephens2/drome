@@ -11,14 +11,16 @@ Hard rules that survive any context loss:
 - **Phase 1 = iOS local-first MVP only.** No server, no accounts, no payments, no analytics.
 - **Flexible mode is the default; purist (rules-as-written) mode is opt-in.**
 - **Never put "75 Hard" in the app name, bundle ID, or store metadata** (third-party registered trademark).
-- **This machine runs Santa in LOCKDOWN:** no `brew`, no unsigned host binaries. Rust builds happen in Docker by default; host rustup for iOS targets may need an admin allowlist first (see the brief). Docker images are per-user.
+- **Santa: no longer active (2026-07-20).** Jacob's current dev Mac does NOT run Santa — `brew`, unsigned host binaries, and freshly built tools run normally. The Santa Lockdown notes below and in decisions.md describe the previous machine and bind again only if work returns to a managed Mac.
 - The repo is **private**. Stack: Rust core (UniFFI) + native SwiftUI, monorepo (`core/`, `ios/`).
 
 Build & contracts:
 
 - **`docs/ARCHITECTURE.md` pins the Phase 1 contracts** (event schema, day attribution,
   core API, Swift facade, design tokens, file ownership). Read it before writing code.
-- **Santa + cargo on this machine:** Santa Lockdown kills freshly-built host binaries,
+- **Santa + cargo (HISTORICAL — current Mac runs no Santa, see above; the repo's
+  target-dir pinning stays because it is harmless and keeps the tree portable to any
+  future managed machine):** Santa Lockdown kills freshly-built host binaries,
   but the Lockdown profile (updated by Jacob 2026-07-04) allowlists execution from THIS
   repo's `core/target/(debug|release)/` — so plain `cargo test`/`build`/`clippy` work
   normally in `core/` with the default target dir (verified). Do NOT set a custom
@@ -46,3 +48,17 @@ Build & contracts:
 - DEBUG launch arg `-drome-demo-seed`: when the store has no challenge, seeds the demo fixture (Day 14 mid-challenge) through the real client.
 - DEBUG launch arg `-drome-screen <water|workout|reading|history|settings|share>`: presents that screen on launch, for screenshots.
 - Bundle IDs: `day.drome.app` / `day.drome.app.widget`; App Group `group.day.drome.app`.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues on `JacobStephens2/drome`, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical triage roles, each label string equal to its name (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context — one `CONTEXT.md` plus `docs/adr/` at the repo root (created lazily). See `docs/agents/domain.md`.

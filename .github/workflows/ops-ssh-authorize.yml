@@ -1,0 +1,87 @@
+name: ops-ssh-authorize
+
+# One-shot / rare ops: use the deploy user's CI key to append a public key to
+# deploy@'s authorized_keys on the droplet. Does not create a jacob Unix user —
+# stephens.page connects as deploy@drome.day with its own key.
+#
+# Safe to re-run (idempotent). Keys added here are NOT in cloud-init — a droplet
+# recreate (ForceNew user_data) will drop them unless also baked into
+# deploy_user_public_key via OpenTofu.
+
+on:
+  workflow_dispatch:
+    inputs:
+      public_key:
+        description: "Full OpenSSH public key line to authorize for deploy@"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  authorize:
+    runs-on: ubuntu-latest
+    environment: deploy
+    steps:
+      - name: SSH key + known_hosts
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_HOST_KEY: ${{ secrets.DEPLOY_SSH_HOST_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/id_deploy"
+          chmod 600 "$HOME/.ssh/id_deploy"
+          KH="$HOME/.ssh/known_hosts"
+          if [ -n "${DEPLOY_SSH_HOST_KEY:-}" ]; then
+            printf '%s\n' "$DEPLOY_SSH_HOST_KEY" > "$KH"
+            chmod 644 "$KH"
+            echo "SSH_OPTS=-i $HOME/.ssh/id_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$KH" >> "$GITHUB_ENV"
+          else
+            echo "::warning::DEPLOY_SSH_HOST_KEY unset — trust-on-first-use"
+            ssh-keyscan -H "$DEPLOY_HOST" >> "$KH" 2>/dev/null || true
+            echo "SSH_OPTS=-i $HOME/.ssh/id_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$KH" >> "$GITHUB_ENV"
+          fi
+          echo "DEPLOY_HOST=$DEPLOY_HOST" >> "$GITHUB_ENV"
+          echo "DEPLOY_USER=${{ vars.DEPLOY_USER }}" >> "$GITHUB_ENV"
+
+      - name: Append public key to deploy authorized_keys
+        env:
+          PUBLIC_KEY: ${{ inputs.public_key }}
+        run: |
+          set -euo pipefail
+          # Validate shape: type + base64 blob (optional comment).
+          case "$PUBLIC_KEY" in
+            ssh-ed25519\ *|ssh-rsa\ *|ecdsa-sha2-nistp256\ *|ecdsa-sha2-nistp384\ *|ecdsa-sha2-nistp521\ *|sk-ssh-ed25519@openssh.com\ *|sk-ecdsa-sha2-nistp256@openssh.com\ *) ;;
+            *)
+              echo "::error::public_key must be a single OpenSSH public key line"
+              exit 1
+              ;;
+          esac
+          KEY_B64=$(printf '%s' "$PUBLIC_KEY" | base64 -w0)
+          # shellcheck disable=SC2086
+          ssh $SSH_OPTS "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            env KEY_B64="$KEY_B64" bash -s <<'REMOTE'
+          set -euo pipefail
+          KEY=$(printf '%s' "$KEY_B64" | base64 -d)
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          touch "$HOME/.ssh/authorized_keys"
+          chmod 600 "$HOME/.ssh/authorized_keys"
+          # Match on the key material (field 2), ignore comment drift.
+          blob=$(printf '%s' "$KEY" | awk '{print $2}')
+          if [ -z "$blob" ]; then
+            echo "could not parse key blob" >&2
+            exit 1
+          fi
+          if awk -v b="$blob" '$2 == b { found=1 } END { exit !found }' "$HOME/.ssh/authorized_keys"; then
+            echo "key already present for $(whoami)@$(hostname)"
+          else
+            printf '%s\n' "$KEY" >> "$HOME/.ssh/authorized_keys"
+            echo "key added for $(whoami)@$(hostname)"
+          fi
+          # Fingerprints only — never dump full authorized_keys to CI logs.
+          ssh-keygen -lf "$HOME/.ssh/authorized_keys" || true
+          REMOTE

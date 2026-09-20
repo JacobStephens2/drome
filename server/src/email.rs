@@ -66,7 +66,14 @@ impl ResendSender {
     /// sender delivers so the auth header / endpoint / error handling live in
     /// one place. The provider's response is opaque to the client; on any error
     /// we surface `err_msg` and never leak Resend's body.
-    fn post(&self, to: &str, subject: &str, text: &str, html: &str, err_msg: &'static str) -> Result<(), ApiError> {
+    fn post(
+        &self,
+        to: &str,
+        subject: &str,
+        text: &str,
+        html: &str,
+        err_msg: &'static str,
+    ) -> Result<(), ApiError> {
         let result = ureq::post("https://api.resend.com/emails")
             .set("Authorization", &format!("Bearer {}", self.api_key))
             .send_json(serde_json::json!({
@@ -98,7 +105,13 @@ impl EmailSender for ResendSender {
                  If you didn't request it, you can ignore this email.</p>\
              </div>"
         );
-        self.post(to, &subject, &text, &html, "couldn't send the code — try again")
+        self.post(
+            to,
+            &subject,
+            &text,
+            &html,
+            "couldn't send the code — try again",
+        )
     }
 
     fn send_signup_notification(
@@ -115,6 +128,12 @@ impl EmailSender for ResendSender {
                <p><strong>Email:</strong> {who}</p>\
              </div>"
         );
-        self.post(to, &subject, &text, &html, "couldn't send signup notification")
+        self.post(
+            to,
+            &subject,
+            &text,
+            &html,
+            "couldn't send signup notification",
+        )
     }
 }

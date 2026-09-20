@@ -1,0 +1,3 @@
+-keep class day.drome.core.generated.** { *; }
+-keep class com.sun.jna.** { *; }
+-dontwarn com.sun.jna.**

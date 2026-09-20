@@ -30,3 +30,11 @@ WaterLogEntry = "UniWaterLogEntry"
 ChugCheck = "UniChugCheck"
 DromeError = "UniDromeError"
 WireEvent = "UniWireEvent"
+
+# Android bindings live in their own Kotlin package, so unlike Swift they do
+# not collide with the hand-written facade models. Keep the generated package
+# lowercase and stable: JNA resolves the native `drome_core` library at runtime.
+[bindings.kotlin]
+package_name = "day.drome.core.generated"
+android = true
+kotlin_target_version = "2.2"

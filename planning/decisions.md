@@ -53,3 +53,10 @@ Product principle (2026-07-07, confirmed by Jacob):
   shaming" (no partial-credit celebration, no streak freezes), and why post-onboarding
   start-date editing ("Change start day" in Settings) is the right call despite renumbering
   days. Exception: genuine safety features stay — e.g. the water anti-chug guard.
+
+Environment (2026-07-20, per Jacob):
+- **Jacob's current dev Mac does NOT run Santa.** The Lockdown constraints recorded above
+  (allowlisted `core/target/`, SHA-pinned tofu + providers, no brew / no unsigned host
+  binaries) were real on the machine used 2026-07-04..07 and stay recorded as history;
+  they no longer bind day-to-day work. The repo's workspace target-dir pinning stays —
+  harmless, and keeps the tree portable to any future managed machine.

@@ -12,7 +12,7 @@ source is in the repo root (`../`).
 | File / dir | What it is |
 |---|---|
 | [plan.md](plan.md) | The full plan: product thesis, two modes, MVP scope, phases, tech stack, IaC, GitOps, legal. |
-| [decisions.md](decisions.md) | **Canonical short decision log** — name, domain, hosting, GitOps, auth, phase order. |
+| [decisions.md](JacobStephens2/drome/planning/decisions.md) | **Canonical short decision log** — name, domain, hosting, GitOps, auth, phase order. |
 | [drome-specs.md](drome-specs.md) | Assorted product spec notes (water/Jerome UI, task toggles, reset flow). |
 | [phase-1-build-brief.md](phase-1-build-brief.md) | The Phase 1 build brief — scope, machine constraints, check-in points. |
 | [My sister and her 75 Hard app problem.md](My%20sister%20and%20her%2075%20Hard%20app%20problem.md) | The primary user's observed needs — the design tiebreaker. |

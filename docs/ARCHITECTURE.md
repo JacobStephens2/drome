@@ -231,7 +231,8 @@ the FFI boundary.
   - Type: system font; headers `.black` weight with tight tracking ("gear, not toy");
     counters use monospaced digits. Generous tap targets (44pt+); one-hand reach.
   - `CamelView(fill: Double, celebrating: Bool)` lives in `Drome/Views/CamelView.swift`
-    behind a stable API — placeholder art now, easy to swap when Jacob approves direction.
+    behind a stable API. Its visible outline is Melissa's refined Jerome vector trace;
+    the animated SwiftUI water layers use the matching accepted alpha silhouette.
 - **Widget** (`DromeWidget/`): WidgetKit + AppIntents. `LogWaterIntent(presetId)` opens
   the store at the shared path, logs, reloads timelines. Widget shows camel fill +
   preset buttons (interactive, iOS 17). App and widget communicate only through the

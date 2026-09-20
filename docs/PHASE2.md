@@ -19,8 +19,9 @@ Dev process (plan.md, decided): local loop = `cargo run -p drome-server` with a 
 file beside it, iOS simulator pointed at `http://localhost:8080`; NO local Docker (Apple
 Silicon vs amd64 target); CI is the only image builder; Litestream is a production
 sidecar only; deploy dry-runs to the stephens.page droplet; the IaC droplet is the real
-target. `tofu` is NOT runnable on this Mac (unsigned binary, Santa) — infra validation
-happens in CI only; author locally, validate in the PR loop.
+target. (Historical note: `tofu` was originally CI-only under Santa, then locally
+allowlisted 2026-07-05; as of 2026-07-20 Jacob's Mac runs no Santa at all — tofu and
+providers run locally without ceremony. CI remains the apply path.)
 
 ## Sync protocol (the heart — same event-sourcing spine as Phase 1)
 
