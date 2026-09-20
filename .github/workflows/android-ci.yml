@@ -20,7 +20,11 @@ jobs:
           distribution: temurin
           java-version: "21"
           cache: gradle
-      - uses: android-actions/setup-android@v3
+      # v3 installs the legacy `tools` package by default; Google stopped
+      # serving it, so sdkmanager exits 1. v4.0.2+ installs platform-tools.
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
       - uses: nttld/setup-ndk@v1
         with:
           ndk-version: r28c
