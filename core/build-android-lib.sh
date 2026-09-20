@@ -70,6 +70,11 @@ export CC_aarch64_linux_android="$ARM_CLANG"
 export CC_x86_64_linux_android="$X64_CLANG"
 export AR_aarch64_linux_android="$LLVM_AR"
 export AR_x86_64_linux_android="$LLVM_AR"
+# NDK r28+ 16 KB defaults apply to CMake/ndk-build, not cargo driving
+# clang as the linker. Play requires 16 KB ELF alignment on 64-bit ABIs.
+PAGE_RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,-z,common-page-size=16384"
+export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="$PAGE_RUSTFLAGS"
+export CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS="$PAGE_RUSTFLAGS"
 
 for target in "$ARM_TARGET" "$X64_TARGET"; do
     echo "==> cargo build --lib --target $target ($PROFILE)"
@@ -107,6 +112,22 @@ echo "==> copying native libraries"
 mkdir -p "$JNI_ROOT/arm64-v8a" "$JNI_ROOT/x86_64"
 cp -f "$ARM_LIB" "$JNI_ROOT/arm64-v8a/libdrome_core.so"
 cp -f "$X64_LIB" "$JNI_ROOT/x86_64/libdrome_core.so"
+
+READELF="$(find "$PREBUILT_DIR" -name llvm-readelf -print -quit)"
+if [ -z "$READELF" ]; then
+    echo "error: llvm-readelf not found under $PREBUILT_DIR" >&2
+    exit 1
+fi
+echo "==> checking 16 KB ELF alignment"
+for library in "$JNI_ROOT/arm64-v8a/libdrome_core.so" "$JNI_ROOT/x86_64/libdrome_core.so"; do
+    while read -r alignment; do
+        value=$((alignment))
+        if (( value < 16384 )); then
+            echo "error: $library LOAD alignment $alignment (< 0x4000)" >&2
+            exit 1
+        fi
+    done < <("$READELF" -lW "$library" | awk '$1 == "LOAD" { print $NF }')
+done
 
 echo "==> done"
 echo "    $GENERATED_FILE"
