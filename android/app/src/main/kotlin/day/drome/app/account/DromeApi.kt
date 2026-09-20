@@ -24,6 +24,16 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.IOException
+
+sealed class DromeApiException(message: String) : Exception(message) {
+    class Offline(detail: String) : DromeApiException(detail)
+    class Unauthorized(val code: String, detail: String) : DromeApiException(detail)
+    class NotEntitled(detail: String) : DromeApiException(detail)
+    class Client(val status: Int, val code: String, detail: String) : DromeApiException(detail)
+    class Server(val status: Int, val code: String, detail: String) : DromeApiException(detail)
+    class Decoding(detail: String) : DromeApiException(detail)
+}
 
 class DromeApi(
     private val baseUrl: String,
@@ -106,13 +116,33 @@ class DromeApi(
     )
 
     private suspend fun execute(request: Request) = withContext(Dispatchers.IO) {
-        client.newCall(request).execute().use { response ->
-            val text = response.body?.string().orEmpty()
-            if (!response.isSuccessful) {
-                val message = runCatching { json.parseToJsonElement(text).jsonObject["message"]?.jsonPrimitive?.content }.getOrNull()
-                error(message ?: "Drome server returned ${response.code}")
+        val response = try {
+            client.newCall(request).execute()
+        } catch (error: IOException) {
+            throw DromeApiException.Offline(error.message ?: "Couldn't reach the server.")
+        }
+        response.use {
+            val text = it.body?.string().orEmpty()
+            if (!it.isSuccessful) throw mapHttpError(it.code, text)
+            if (text.isBlank()) JsonObject(emptyMap()) else {
+                try {
+                    json.parseToJsonElement(text)
+                } catch (error: Exception) {
+                    throw DromeApiException.Decoding(error.message ?: "decode failed")
+                }
             }
-            if (text.isBlank()) JsonObject(emptyMap()) else json.parseToJsonElement(text)
+        }
+    }
+
+    private fun mapHttpError(status: Int, text: String): DromeApiException {
+        val parsed = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull()
+        val code = parsed?.get("error")?.jsonPrimitive?.contentOrNull ?: "http_$status"
+        val message = parsed?.get("message")?.jsonPrimitive?.contentOrNull ?: "Request failed ($status)."
+        return when {
+            status == 401 || code == "invalid_grant" -> DromeApiException.Unauthorized(code, message)
+            status == 402 -> DromeApiException.NotEntitled(message)
+            status in 400..499 -> DromeApiException.Client(status, code, message)
+            else -> DromeApiException.Server(status, code, message)
         }
     }
 
