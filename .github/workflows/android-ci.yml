@@ -15,6 +15,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Free runner disk
+        run: |
+          # ubuntu-latest is tight once NDK + two Android targets + Gradle
+          # release bundles land; drop unused hosted-tool caches first.
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/powershell \
+            /usr/share/swift /opt/hostedtoolcache/CodeQL
+          sudo docker system prune -af
+          df -h
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -38,6 +46,11 @@ jobs:
         run: ./core/build-android-lib.sh --release
       - name: Rust tests
         run: cargo test --workspace
+      - name: Drop Rust target dir
+        run: |
+          # .so files are already copied into android/core/src/main/jniLibs.
+          cargo clean
+          df -h
       - name: Restore Android upload key
         if: github.ref_type == 'tag'
         env:
