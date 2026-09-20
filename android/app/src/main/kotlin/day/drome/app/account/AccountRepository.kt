@@ -1,13 +1,14 @@
 package day.drome.app.account
 
 import day.drome.core.AccessTokenProvider
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.time.Instant
 
 class AccountRepository(
     private val api: DromeApi,
-    private val vault: TokenVault,
+    private val vault: SessionStore,
 ) : AccessTokenProvider {
     private val refreshGate = Mutex()
 
@@ -33,10 +34,18 @@ class AccountRepository(
     override suspend fun validAccessToken(): String? = refreshGate.withLock {
         val current = vault.read() ?: return@withLock null
         if (current.expiresAtEpoch > Instant.now().epochSecond + 60) return@withLock current.accessToken
-        runCatching { api.refresh(current.refreshToken) }
-            .onSuccess { vault.replace(it) }
-            .onFailure { vault.clear() }
-            .getOrNull()?.accessToken
+        try {
+            val rotated = api.refresh(current.refreshToken)
+            vault.replace(rotated)
+            rotated.accessToken
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: DromeApiException.Unauthorized) {
+            vault.clear()
+            null
+        } catch (_: Exception) {
+            null
+        }
     }
 
     suspend fun signOut() = vault.clear()

@@ -20,15 +20,21 @@ data class SessionTokens(
     val expiresAtEpoch: Long,
 )
 
+interface SessionStore {
+    suspend fun read(): SessionTokens?
+    suspend fun replace(tokens: SessionTokens)
+    suspend fun clear()
+}
+
 /** Direct Keystore + AES/GCM storage; no deprecated security-crypto wrapper. */
-class TokenVault(context: Context) {
+class TokenVault(context: Context) : SessionStore {
     private val file = File(context.noBackupFilesDir, "session.v1")
     private val gate = Mutex()
     private val alias = "day.drome.app.session.v1"
 
-    suspend fun read(): SessionTokens? = gate.withLock { readUnlocked() }
+    override suspend fun read(): SessionTokens? = gate.withLock { readUnlocked() }
 
-    suspend fun replace(tokens: SessionTokens) = gate.withLock {
+    override suspend fun replace(tokens: SessionTokens) = gate.withLock {
         val json = JSONObject()
             .put("account_id", tokens.accountId)
             .put("access_token", tokens.accessToken)
@@ -52,7 +58,7 @@ class TokenVault(context: Context) {
         }
     }
 
-    suspend fun clear() = gate.withLock { cleanSignOutUnlocked() }
+    override suspend fun clear() = gate.withLock { cleanSignOutUnlocked() }
 
     private fun readUnlocked(): SessionTokens? {
         if (!file.exists()) return null
