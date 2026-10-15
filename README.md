@@ -62,6 +62,12 @@ cargo run -p drome-server             # local server on :8080
 See [`android/README.md`](android/README.md) for Android and [`infra/README.md`](infra/README.md)
 for bootstrapping the production stack.
 
+## License
+
+[MIT](LICENSE). The vendored agent skills under `.agents/`, `.claude/`, and `.grok/` come
+from [mattpocock/skills](https://github.com/mattpocock/skills) and carry that project's own
+license.
+
 ---
 
 Not affiliated with or endorsed by 75 HARD® or 44Seven Media. 75 HARD® is a registered
