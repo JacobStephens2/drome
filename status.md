@@ -1,6 +1,6 @@
 # Drome — Project Status
 
-_Last updated: 2026-07-07 · repo `github.com/JacobStephens2/drome` (private) · **server LIVE at https://drome.day**_
+_Last updated: 2026-07-07 · repo `github.com/JacobStephens2/drome` · **server LIVE at https://drome.day**_
 
 Drome is a free, local-first iOS tracker for 75-day challenges, built for my sister and her
 group. The app, domain (`drome.day`), and mascot are all "Drome"; the camel is named

@@ -12,7 +12,7 @@ Hard rules that survive any context loss:
 - **Flexible mode is the default; purist (rules-as-written) mode is opt-in.**
 - **Never put "75 Hard" in the app name, bundle ID, or store metadata** (third-party registered trademark).
 - **Santa: no longer active (2026-07-20).** Jacob's current dev Mac does NOT run Santa — `brew`, unsigned host binaries, and freshly built tools run normally. The Santa Lockdown notes below and in decisions.md describe the previous machine and bind again only if work returns to a managed Mac.
-- The repo is **private**. Stack: Rust core (UniFFI) + native SwiftUI, monorepo (`core/`, `ios/`).
+- The repo is **public** — never commit personal data or secrets. Stack: Rust core (UniFFI) + native SwiftUI, monorepo (`core/`, `ios/`).
 
 Build & contracts:
 

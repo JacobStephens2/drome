@@ -12,7 +12,7 @@ Hard rules that survive any context loss:
 - **Flexible mode is the default; purist (rules-as-written) mode is opt-in.**
 - **Never put "75 Hard" in the app name, bundle ID, or store metadata** (third-party registered trademark).
 - **This machine runs Santa in LOCKDOWN:** no `brew`, no unsigned host binaries. Rust builds happen in Docker by default; host rustup for iOS targets may need an admin allowlist first (see the brief). Docker images are per-user.
-- The repo is **private**. Stack: Rust core (UniFFI) + native SwiftUI, monorepo (`core/`, `ios/`).
+- The repo is **public** — never commit personal data or secrets. Stack: Rust core (UniFFI) + native SwiftUI, monorepo (`core/`, `ios/`).
 
 Build & contracts:
 
