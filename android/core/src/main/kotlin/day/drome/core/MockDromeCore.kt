@@ -3,7 +3,7 @@ package day.drome.core
 import java.util.UUID
 
 /** Deterministic demo fixture used by previews and JVM ViewModel tests. */
-class MockDromeCore : DromeCoreClient {
+open class MockDromeCore : DromeCoreClient {
     private var challenge: Challenge? = Challenge(
         id = "demo-fixture",
         createdAt = LocalInstant(1_750_464_000, -14_400),
@@ -91,9 +91,18 @@ class MockDromeCore : DromeCoreClient {
     override suspend fun exportCsv() = "date,day_index\n${day.date},14\n"
     override suspend fun importJson(snapshot: String) = Unit
     override suspend fun resetAllData() { challenge = null }
-    override suspend fun prepareSync(context: String, limit: Int) = CoreSyncPreparation(0, "mock-device", 0, emptyList(), "{}")
-    override suspend fun applySync(context: String, expectedResetEpoch: Long, ackedUuids: List<String>, remoteEvents: List<WireEvent>, newServerSeq: Long, configJson: String, winnerChallengeId: String?) =
-        CoreSyncApplication(PullResult(SyncOutcome.APPLIED, remoteEvents.size.toUInt()), SyncOutcome.APPLIED)
+    open override suspend fun prepareSync(context: String, limit: Int) = CoreSyncPreparation(0, "mock-device", 0, emptyList(), "{}")
+    open override suspend fun applySync(
+        context: String,
+        expectedResetEpoch: Long,
+        ackedUuids: List<String>,
+        remoteEvents: List<WireEvent>,
+        newServerSeq: Long,
+        configJson: String,
+        winnerChallengeId: String?,
+    ) = SyncApplyResult(SyncOutcome.APPLIED, 0u)
+
+    open override fun syncFollowUp(pushedCount: Int, pushLimit: Int, more: Boolean, outcome: SyncOutcome) = false
     override fun close() = Unit
 
     private fun result(state: DayState) = LogResult(UUID.randomUUID().toString(), state, false, false, null, emptyList())

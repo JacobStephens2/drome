@@ -6,8 +6,8 @@
 use std::sync::Arc;
 
 use drome_core::{
-    BackfilledDay, DromeStore, LocalInstant, NewChallenge, RulesetKind, SyncOutcome, WireEvent,
-    JOB_EXTRA_ID,
+    sync_follow_up, BackfilledDay, DromeError, DromeStore, LocalInstant, NewChallenge, RulesetKind,
+    SyncApplyResult, SyncOutcome, SyncPreparation, SyncRoundResponse, WireEvent, JOB_EXTRA_ID,
 };
 use tempfile::TempDir;
 
@@ -98,28 +98,70 @@ fn log_mixed_day(store: &DromeStore) {
         .expect("extra2");
 }
 
+fn prepare(store: &DromeStore, limit: u32) -> SyncPreparation {
+    store
+        .prepare_sync_round(CTX.into(), limit)
+        .expect("prepare")
+}
+
+fn apply(
+    store: &DromeStore,
+    epoch: i64,
+    acked: Vec<String>,
+    config_json: &str,
+    winner: Option<&str>,
+    events: Vec<WireEvent>,
+    seq: i64,
+) -> Result<SyncApplyResult, DromeError> {
+    store.apply_sync_response(
+        CTX.into(),
+        epoch,
+        SyncRoundResponse {
+            acked_uuids: acked,
+            config_json: config_json.into(),
+            winner_challenge_id: winner.map(str::to_owned),
+            events,
+            new_last_server_seq: seq,
+        },
+    )
+}
+
+/// Merge `config_json` and `events` into `store`, leaving its cursor put.
+fn merge_in(store: &DromeStore, config_json: &str, events: Vec<WireEvent>) -> SyncApplyResult {
+    let snap = prepare(store, 0);
+    let result = apply(
+        store,
+        snap.reset_epoch,
+        Vec::new(),
+        config_json,
+        None,
+        events,
+        snap.last_server_seq,
+    )
+    .expect("merge");
+    assert_eq!(result.outcome, SyncOutcome::Applied);
+    result
+}
+
 /// Server-less one-way sync: push A's config + pending events into B, then
 /// ack A locally (as a real server would after accepting them).
 fn push(from: &DromeStore, to: &DromeStore) -> Vec<WireEvent> {
-    // Each store gates its own tail writes on its own reset epoch; no reset
-    // runs in these tests, so the captured epoch always still matches.
-    let config = from.export_config_state().expect("export config");
-    let to_epoch = to.current_reset_epoch().expect("to epoch");
-    assert_eq!(
-        to.apply_remote_config(config, to_epoch)
-            .expect("apply config"),
-        SyncOutcome::Applied
-    );
-    let pending = from.pending_events(CTX.into(), 10_000).expect("pending");
-    to.apply_remote_events(pending.clone())
-        .expect("apply events");
-    let uuids: Vec<String> = pending.iter().map(|e| e.uuid.clone()).collect();
-    let from_epoch = from.current_reset_epoch().expect("from epoch");
-    assert_eq!(
-        from.ack_pushed(CTX.into(), uuids, from_epoch).expect("ack"),
-        SyncOutcome::Applied
-    );
-    pending
+    let from_snap = prepare(from, 10_000);
+    let merged = merge_in(to, &from_snap.config_json, from_snap.pending.clone());
+    assert_eq!(merged.inserted as usize, from_snap.pending.len());
+    let uuids: Vec<String> = from_snap.pending.iter().map(|e| e.uuid.clone()).collect();
+    let acked = apply(
+        from,
+        from_snap.reset_epoch,
+        uuids,
+        "{}",
+        None,
+        Vec::new(),
+        from_snap.last_server_seq,
+    )
+    .expect("ack");
+    assert_eq!(acked.outcome, SyncOutcome::Applied);
+    from_snap.pending
 }
 
 #[test]
@@ -127,34 +169,60 @@ fn pending_events_then_ack_advances_the_watermark() {
     let (_da, a) = store_a();
     log_mixed_day(&a);
 
-    let first = a.pending_events(CTX.into(), 10_000).expect("pending");
-    assert!(!first.is_empty());
-    // A limit caps the batch; the events are oldest-first (stable id order).
-    let capped = a.pending_events(CTX.into(), 3).expect("capped");
-    assert_eq!(capped.len(), 3);
-    assert_eq!(capped[0], first[0]);
-
-    // Nothing acked yet: still fully pending.
+    let first = prepare(&a, 10_000);
+    assert!(!first.pending.is_empty());
+    assert!(!first.device_id.is_empty());
     assert_eq!(
-        a.pending_events(CTX.into(), 10_000).expect("still").len(),
-        first.len()
+        prepare(&a, 0).pending.len(),
+        0,
+        "a limit of 0 returns no events"
+    );
+    // A limit caps the batch; the events are oldest-first (stable id order).
+    let capped = prepare(&a, 3);
+    assert_eq!(capped.pending.len(), 3);
+    assert_eq!(capped.pending[0], first.pending[0]);
+    assert_eq!(
+        capped.device_id, first.device_id,
+        "device id is minted once"
     );
 
+    // Nothing acked yet: still fully pending.
+    assert_eq!(prepare(&a, 10_000).pending.len(), first.pending.len());
+
     // Ack the first two; only the tail remains pending.
-    let epoch = a.current_reset_epoch().expect("epoch");
-    let acked: Vec<String> = first.iter().take(2).map(|e| e.uuid.clone()).collect();
-    a.ack_pushed(CTX.into(), acked, epoch).expect("ack");
-    let after = a.pending_events(CTX.into(), 10_000).expect("after");
-    assert_eq!(after.len(), first.len() - 2);
-    assert_eq!(after[0], first[2]);
+    let acked: Vec<String> = first
+        .pending
+        .iter()
+        .take(2)
+        .map(|e| e.uuid.clone())
+        .collect();
+    apply(
+        &a,
+        first.reset_epoch,
+        acked,
+        "{}",
+        None,
+        Vec::new(),
+        first.last_server_seq,
+    )
+    .expect("ack");
+    let after = prepare(&a, 10_000);
+    assert_eq!(after.pending.len(), first.pending.len() - 2);
+    assert_eq!(after.pending[0], first.pending[2]);
 
     // Ack the rest: nothing pending.
-    let rest: Vec<String> = first.iter().map(|e| e.uuid.clone()).collect();
-    a.ack_pushed(CTX.into(), rest, epoch).expect("ack rest");
-    assert!(a
-        .pending_events(CTX.into(), 10_000)
-        .expect("empty")
-        .is_empty());
+    let rest: Vec<String> = first.pending.iter().map(|e| e.uuid.clone()).collect();
+    apply(
+        &a,
+        first.reset_epoch,
+        rest,
+        "{}",
+        None,
+        Vec::new(),
+        after.last_server_seq,
+    )
+    .expect("ack rest");
+    assert!(prepare(&a, 10_000).pending.is_empty());
 }
 
 #[test]
@@ -162,20 +230,58 @@ fn apply_remote_events_is_idempotent_on_replay() {
     let (_da, a) = store_a();
     log_mixed_day(&a);
     let (_db, b) = open_store();
-    b.apply_remote_config(a.export_config_state().expect("cfg"), epoch(&b))
-        .expect("apply cfg");
+    let from = prepare(&a, 10_000);
+    merge_in(&b, &from.config_json, Vec::new());
 
-    let batch = a.pending_events(CTX.into(), 10_000).expect("pending");
-    let n1 = b.apply_remote_events(batch.clone()).expect("apply1");
-    assert_eq!(n1 as usize, batch.len());
-    // Re-applying the exact batch inserts nothing (dedup by uuid).
-    let n2 = b.apply_remote_events(batch.clone()).expect("apply2");
-    assert_eq!(n2, 0);
-    // A partial replay (subset) is also a no-op.
-    let n3 = b
-        .apply_remote_events(batch[..batch.len() / 2].to_vec())
-        .expect("apply3");
-    assert_eq!(n3, 0);
+    let batch = from.pending;
+    let snap = prepare(&b, 0);
+    let n1 = apply(
+        &b,
+        snap.reset_epoch,
+        Vec::new(),
+        "{}",
+        None,
+        batch.clone(),
+        7,
+    )
+    .expect("apply1");
+    assert_eq!(n1.outcome, SyncOutcome::Applied);
+    assert_eq!(n1.inserted as usize, batch.len());
+    assert_eq!(prepare(&b, 0).last_server_seq, 7);
+    // Re-applying the exact batch inserts nothing (dedup by uuid) but still
+    // assigns the cursor, including downward.
+    let n2 = apply(
+        &b,
+        snap.reset_epoch,
+        Vec::new(),
+        "{}",
+        None,
+        batch.clone(),
+        4,
+    )
+    .expect("apply2");
+    assert_eq!(n2.inserted, 0);
+    assert_eq!(
+        prepare(&b, 0).last_server_seq,
+        4,
+        "cursor is assigned, not raised"
+    );
+    // A partial replay (subset) is also a no-op. An empty pull still moves
+    // the cursor.
+    let n3 = apply(
+        &b,
+        snap.reset_epoch,
+        Vec::new(),
+        "{}",
+        None,
+        batch[..batch.len() / 2].to_vec(),
+        9,
+    )
+    .expect("apply3");
+    assert_eq!(n3.inserted, 0);
+    let n4 = apply(&b, snap.reset_epoch, Vec::new(), "{}", None, Vec::new(), 11).expect("empty");
+    assert_eq!(n4.inserted, 0);
+    assert_eq!(prepare(&b, 0).last_server_seq, 11);
 }
 
 #[test]
@@ -188,15 +294,12 @@ fn remote_origin_events_are_never_re_pushed() {
     push(&a, &b);
     // B has applied all of A's events but must not echo them back: they are
     // remote-origin. B's own pending set is empty.
-    assert!(b
-        .pending_events(CTX.into(), 10_000)
-        .expect("b pending")
-        .is_empty());
+    assert!(prepare(&b, 10_000).pending.is_empty());
 
     // B logs something new of its own; only THAT is pending on B.
     b.log_water(500, at("2026-07-05", 8, 0), None)
         .expect("b water");
-    let b_pending = b.pending_events(CTX.into(), 10_000).expect("b pending2");
+    let b_pending = prepare(&b, 10_000).pending;
     assert_eq!(b_pending.len(), 1);
     assert_eq!(b_pending[0].kind, "water_add");
 }
@@ -211,7 +314,7 @@ fn photo_ref_is_stripped_on_the_wire_but_intact_locally() {
     )
     .expect("photo");
 
-    let pending = a.pending_events(CTX.into(), 10_000).expect("pending");
+    let pending = prepare(&a, 10_000).pending;
     let photo = pending
         .iter()
         .find(|e| e.kind == "photo_done")
@@ -322,8 +425,8 @@ fn config_lww_resolves_both_directions() {
     // Bring both stores to a shared challenge.
     let (_da, a) = store_a();
     let (_db, b) = open_store();
-    b.apply_remote_config(a.export_config_state().expect("cfg"), epoch(&b))
-        .expect("apply cfg");
+    let shared = prepare(&a, 0).config_json;
+    merge_in(&b, &shared, Vec::new());
 
     // A edits the book earlier; B edits it later. B must win everywhere.
     a.set_current_book("Book A".into(), at("2026-07-04", 10, 0))
@@ -331,13 +434,23 @@ fn config_lww_resolves_both_directions() {
     b.set_current_book("Book B".into(), at("2026-07-04", 11, 0))
         .expect("b book");
 
-    // B applies A's (older) config: keeps "Book B".
-    b.apply_remote_config(a.export_config_state().expect("a cfg"), epoch(&b))
-        .expect("b apply a");
+    // B applies A's (older) config: keeps "Book B". A blank winner is a merge,
+    // not an adopt.
+    let a_cfg = prepare(&a, 0).config_json;
+    let b_snap = prepare(&b, 0);
+    apply(
+        &b,
+        b_snap.reset_epoch,
+        Vec::new(),
+        &a_cfg,
+        Some(""),
+        Vec::new(),
+        b_snap.last_server_seq,
+    )
+    .expect("b apply a");
     assert_eq!(book(&b), "Book B");
     // A applies B's (newer) config: adopts "Book B".
-    a.apply_remote_config(b.export_config_state().expect("b cfg"), epoch(&a))
-        .expect("a apply b");
+    merge_in(&a, &prepare(&b, 0).config_json, Vec::new());
     assert_eq!(book(&a), "Book B");
 
     // Presets is an independent slot: A sets presets after the book race; a
@@ -352,8 +465,7 @@ fn config_lww_resolves_both_directions() {
         at("2026-07-04", 12, 0),
     )
     .expect("a presets");
-    b.apply_remote_config(a.export_config_state().expect("a cfg2"), epoch(&b))
-        .expect("b apply presets");
+    merge_in(&b, &prepare(&a, 0).config_json, Vec::new());
     let b_presets = b.container_presets().expect("b presets");
     assert_eq!(b_presets.len(), 1);
     assert_eq!(b_presets[0].id, "bottle");
@@ -362,22 +474,39 @@ fn config_lww_resolves_both_directions() {
 }
 
 #[test]
-fn last_server_seq_get_set_round_trips() {
+fn last_server_seq_is_assigned_per_context() {
     let (_da, a) = store_a();
-    let e = epoch(&a);
-    assert_eq!(a.last_server_seq(CTX.into()).expect("initial"), 0);
-    assert_eq!(
-        a.set_last_server_seq(CTX.into(), 42, e).expect("set"),
-        SyncOutcome::Applied
-    );
-    assert_eq!(a.last_server_seq(CTX.into()).expect("after"), 42);
+    let snap = prepare(&a, 0);
+    assert_eq!(snap.last_server_seq, 0);
+    assert_eq!(snap.reset_epoch, 0);
+    let primed = apply(&a, snap.reset_epoch, Vec::new(), "{}", None, Vec::new(), 42).expect("set");
+    assert_eq!(primed.outcome, SyncOutcome::Applied);
+    assert_eq!(primed.inserted, 0);
+    assert_eq!(prepare(&a, 0).last_server_seq, 42);
     // A different context keeps its own cursor.
-    assert_eq!(a.last_server_seq("acct-2".into()).expect("other"), 0);
     assert_eq!(
-        a.set_last_server_seq(CTX.into(), 100, e).expect("set2"),
-        SyncOutcome::Applied
+        a.prepare_sync_round("acct-2".into(), 0)
+            .expect("other")
+            .last_server_seq,
+        0
     );
-    assert_eq!(a.last_server_seq(CTX.into()).expect("after2"), 100);
+    apply(
+        &a,
+        snap.reset_epoch,
+        Vec::new(),
+        "{}",
+        None,
+        Vec::new(),
+        100,
+    )
+    .expect("set2");
+    assert_eq!(prepare(&a, 0).last_server_seq, 100);
+    apply(&a, snap.reset_epoch, Vec::new(), "{}", None, Vec::new(), 5).expect("rewind");
+    assert_eq!(
+        prepare(&a, 0).last_server_seq,
+        5,
+        "the cursor is assigned, including downward"
+    );
 }
 
 #[test]
@@ -387,7 +516,7 @@ fn adopt_active_challenge_overrides_newer_local_stamp() {
     a.create_challenge(challenge_cfg("2026-06-21", at("2026-07-04", 10, 0)))
         .expect("winner");
     let winner_id = a.active_challenge().unwrap().unwrap().id;
-    let winner_config = a.export_config_state().expect("winner cfg");
+    let winner_config = prepare(&a, 0).config_json;
 
     // Loser challenge created LATER (newer stamp) on a separate store.
     let (_db, b) = open_store();
@@ -399,8 +528,17 @@ fn adopt_active_challenge_overrides_newer_local_stamp() {
     // Plain LWW config apply CANNOT dislodge the newer local challenge: the
     // winner slot loses last-writer-wins and is skipped. This is precisely the
     // permanent split-brain the server's conflict signal exists to break.
-    b.apply_remote_config(winner_config.clone(), epoch(&b))
-        .expect("lww apply");
+    let lww = prepare(&b, 0);
+    apply(
+        &b,
+        lww.reset_epoch,
+        Vec::new(),
+        &winner_config,
+        None,
+        Vec::new(),
+        lww.last_server_seq,
+    )
+    .expect("lww apply");
     assert_eq!(
         b.active_challenge().unwrap().unwrap().id,
         loser_id,
@@ -409,49 +547,91 @@ fn adopt_active_challenge_overrides_newer_local_stamp() {
 
     // Force-adopt (what the client does on active_challenge_conflict): the
     // loser adopts the winner regardless of stamp and archives its own.
-    b.adopt_active_challenge(winner_config, winner_id.clone())
-        .expect("adopt");
+    let adopt_snap = prepare(&b, 0);
+    apply(
+        &b,
+        adopt_snap.reset_epoch,
+        Vec::new(),
+        &winner_config,
+        Some(&winner_id),
+        Vec::new(),
+        adopt_snap.last_server_seq,
+    )
+    .expect("adopt");
     let active = b.active_challenge().unwrap().unwrap();
     assert_eq!(active.id, winner_id);
     assert!(active.active);
 
     // Idempotent: adopting again is a no-op.
-    b.adopt_active_challenge(a.export_config_state().expect("cfg2"), winner_id.clone())
-        .expect("adopt2");
+    let again = prepare(&b, 0);
+    apply(
+        &b,
+        again.reset_epoch,
+        Vec::new(),
+        &prepare(&a, 0).config_json,
+        Some(&winner_id),
+        Vec::new(),
+        again.last_server_seq,
+    )
+    .expect("adopt2");
     assert_eq!(b.active_challenge().unwrap().unwrap().id, winner_id);
+
+    // An unknown winner with an empty config block does not archive the
+    // challenge this store actually holds.
+    let (_dc, c) = store_a();
+    let kept = c.active_challenge().unwrap().unwrap().id;
+    let c_snap = prepare(&c, 0);
+    apply(
+        &c,
+        c_snap.reset_epoch,
+        Vec::new(),
+        "{}",
+        Some("unknown-winner"),
+        Vec::new(),
+        c_snap.last_server_seq,
+    )
+    .expect("unknown winner");
+    assert_eq!(c.active_challenge().unwrap().unwrap().id, kept);
 }
 
 #[test]
-fn apply_pull_batch_applies_events_and_advances_cursor_atomically() {
+fn pulled_events_and_cursor_land_together() {
     let (_da, a) = store_a();
     log_mixed_day(&a);
     let (_db, b) = open_store();
-    b.apply_remote_config(a.export_config_state().expect("cfg"), epoch(&b))
-        .expect("apply cfg");
+    let from = prepare(&a, 10_000);
+    merge_in(&b, &from.config_json, Vec::new());
 
-    let batch = a.pending_events(CTX.into(), 10_000).expect("pending");
-    assert_eq!(b.last_server_seq(CTX.into()).expect("seq0"), 0);
+    let batch = from.pending;
+    assert_eq!(prepare(&b, 0).last_server_seq, 0);
 
-    // One call applies the batch AND advances the cursor (same transaction).
-    let pulled = b
-        .apply_pull_batch(CTX.into(), batch.clone(), 7, epoch(&b))
-        .expect("batch");
+    // One apply stores the batch AND assigns the cursor.
+    let snap = prepare(&b, 0);
+    let pulled = apply(
+        &b,
+        snap.reset_epoch,
+        Vec::new(),
+        "{}",
+        None,
+        batch.clone(),
+        7,
+    )
+    .expect("batch");
     assert_eq!(pulled.outcome, SyncOutcome::Applied);
     assert_eq!(pulled.inserted as usize, batch.len());
     assert_eq!(
-        b.last_server_seq(CTX.into()).expect("seq1"),
+        prepare(&b, 0).last_server_seq,
         7,
         "cursor advanced with the batch"
     );
 
     // Replaying the same batch inserts nothing (uuid dedup) but still moves the
-    // cursor — the two effects never come apart.
-    let pulled2 = b
-        .apply_pull_batch(CTX.into(), batch, 9, epoch(&b))
-        .expect("batch2");
+    // cursor. The two effects never come apart.
+    let snap2 = prepare(&b, 0);
+    let pulled2 = apply(&b, snap2.reset_epoch, Vec::new(), "{}", None, batch, 9).expect("batch2");
     assert_eq!(pulled2.outcome, SyncOutcome::Applied);
     assert_eq!(pulled2.inserted, 0);
-    assert_eq!(b.last_server_seq(CTX.into()).expect("seq2"), 9);
+    assert_eq!(prepare(&b, 0).last_server_seq, 9);
 }
 
 /// The full Finding-1 contract from the loser's side: after adopting the
@@ -472,8 +652,9 @@ fn loser_adopts_winner_converges_and_archives_its_original() {
         .expect("w water");
     w.log_reading("Deep Work".into(), 20, at("2026-07-04", 20, 0), None)
         .expect("w read");
-    let winner_config = w.export_config_state().expect("w cfg");
-    let winner_events = w.pending_events(CTX.into(), 10_000).expect("w pending");
+    let winner = prepare(&w, 10_000);
+    let winner_config = winner.config_json;
+    let winner_events = winner.pending;
 
     // Loser: a DIFFERENT challenge L created LATER (newer stamp) with its OWN
     // event. Keep the db path so we can prove the archived row survives.
@@ -492,12 +673,21 @@ fn loser_adopts_winner_converges_and_archives_its_original() {
         .expect("l water");
     assert_ne!(winner_id, loser_id);
 
-    // Apply the sync response for a one-active-challenge conflict: force-adopt
-    // the winner (LWW alone cannot — the loser's stamp is newer), then apply the
-    // winner's pulled events.
-    l.adopt_active_challenge(winner_config, winner_id.clone())
-        .expect("adopt");
-    l.apply_remote_events(winner_events).expect("apply winner");
+    // One apply is the whole conflict response: adopt the winner (LWW alone
+    // cannot — the loser's stamp is newer) and store the winner's events.
+    let loser_snap = prepare(&l, 0);
+    let adopted = apply(
+        &l,
+        loser_snap.reset_epoch,
+        Vec::new(),
+        &winner_config,
+        Some(&winner_id),
+        winner_events.clone(),
+        winner_events.len() as i64,
+    )
+    .expect("adopt");
+    assert_eq!(adopted.outcome, SyncOutcome::Applied);
+    assert_eq!(adopted.inserted as usize, winner_events.len());
 
     // Converged: same active challenge, and every projection matches the winner
     // — the loser's own 999 ml is NOT mixed into the winner's day (projections
@@ -555,10 +745,37 @@ fn logged_a_with_server_snapshot() -> (TempDir, Arc<DromeStore>, String, Vec<Wir
     a.log_water(2_000, at(day, 8, 0), None).expect("water");
     a.log_reading("Deep Work".into(), 20, at(day, 20, 0), None)
         .expect("read");
-    let config = a.export_config_state().expect("server config");
-    let events = a.pending_events(CTX.into(), 10_000).expect("server events");
-    let max_seq = events.len() as i64;
-    (dir, a, config, events, max_seq)
+    let snap = prepare(&a, 10_000);
+    let max_seq = snap.pending.len() as i64;
+    (dir, a, snap.config_json, snap.pending, max_seq)
+}
+
+fn prime_cursor(store: &DromeStore, seq: i64) {
+    let snap = prepare(store, 0);
+    let primed = apply(
+        store,
+        snap.reset_epoch,
+        Vec::new(),
+        "{}",
+        None,
+        Vec::new(),
+        seq,
+    )
+    .expect("prime cursor");
+    assert_eq!(primed.outcome, SyncOutcome::Applied);
+}
+
+fn bad_wire_event() -> WireEvent {
+    WireEvent {
+        uuid: "not-a-real-event".into(),
+        challenge_id: "not-a-challenge".into(),
+        logged_at_epoch: 0,
+        tz_offset_secs: 0,
+        effective_date: None,
+        kind: "not-a-kind".into(),
+        payload_json: "NOT JSON".into(),
+        schema_version: 1,
+    }
 }
 
 /// Models drome-server's active-challenge pull: return the account's events
@@ -578,9 +795,9 @@ fn server_pull(events: &[WireEvent], max_seq: i64, cursor: i64) -> Vec<WireEvent
 /// round-trip must invalidate the round-trip's stale tail writes, and a clean
 /// sync afterwards must recover the full server-held history.
 ///
-/// Without the epoch gate this FAILS: the stale `apply_pull_batch(ctx, [], 2)`
-/// drags the pull cursor to 2, so the next clean pull (`server_seq > 2`) returns
-/// nothing and the day is silently, permanently empty. (Confirmed by making
+/// Without the epoch gate this FAILS: the stale apply drags the pull cursor
+/// to 2, so the next clean pull (`server_seq > 2`) returns nothing and the
+/// day is silently, permanently empty. (Confirmed by making
 /// `bump_reset_epoch` a no-op: the cursor-stays-0 assertion trips and the day
 /// comes back empty.)
 #[test]
@@ -591,11 +808,7 @@ fn reset_epoch_invalidates_stale_round_trip_tail_then_clean_sync_recovers() {
     assert_eq!(max_seq, 2, "A pushed exactly its two logged events");
 
     // A has already synced through seq 2 — its cursor mirrors the server max.
-    assert_eq!(
-        a.set_last_server_seq(CTX.into(), max_seq, epoch(&a))
-            .expect("prime cursor"),
-        SyncOutcome::Applied
-    );
+    prime_cursor(&a, max_seq);
 
     // The truth we must not lose.
     let pre_day = a.day_state(day.into(), now).expect("pre day");
@@ -604,61 +817,74 @@ fn reset_epoch_invalidates_stale_round_trip_tail_then_clean_sync_recovers() {
     assert_eq!(pre_day.reading_pages, 20);
 
     // 1. A sync round-trip begins and captures the epoch in effect NOW.
-    let captured = a.current_reset_epoch().expect("capture epoch");
-    // 2. The POST completes; its tail — ack + config + pull-cursor advance to 2
-    //    (an EMPTY pull batch: A's own events are self-echoes, so the server
-    //    returned nothing) — is held in memory, about to be applied.
+    let captured = prepare(&a, 0);
+    let winner_id = {
+        let block: serde_json::Value = serde_json::from_str(&config).expect("config");
+        block["challenge"]["challenge"]["id"]
+            .as_str()
+            .expect("winner id")
+            .to_owned()
+    };
     let tail_uuids: Vec<String> = events.iter().map(|e| e.uuid.clone()).collect();
 
-    // 3. Before the tail lands, the user taps "Start over".
+    // 2. Before the tail lands, the user taps "Start over".
     a.reset_all_data().expect("reset");
     assert!(a.active_challenge().expect("q").is_none());
-    assert_eq!(a.last_server_seq(CTX.into()).expect("cursor zeroed"), 0);
+    assert_eq!(prepare(&a, 10_000).last_server_seq, 0);
+    assert!(prepare(&a, 10_000).pending.is_empty());
 
-    // 4. The stale tail now lands carrying the PRE-reset epoch: every write is
-    //    a no-op — the reset bumped the epoch out from under it.
-    assert_eq!(
-        a.ack_pushed(CTX.into(), tail_uuids, captured).expect("ack"),
-        SyncOutcome::StaleReset
-    );
-    assert_eq!(
-        a.apply_remote_config(config.clone(), captured)
-            .expect("cfg"),
-        SyncOutcome::StaleReset
-    );
-    let stale = a
-        .apply_pull_batch(CTX.into(), Vec::new(), max_seq, captured)
-        .expect("stale pull");
+    // 3. A malformed payload on the stale epoch is not an error.
+    let malformed = apply(
+        &a,
+        captured.reset_epoch,
+        tail_uuids.clone(),
+        "NOT JSON",
+        Some(&winner_id),
+        vec![bad_wire_event()],
+        max_seq,
+    )
+    .expect("stale malformed payload is not an error");
+    assert_eq!(malformed.outcome, SyncOutcome::StaleReset);
+    assert_eq!(malformed.inserted, 0);
+
+    // 4. The real stale tail names the winner and carries the events. It
+    //    still writes nothing: no challenge, no cursor, no log.
+    let stale = apply(
+        &a,
+        captured.reset_epoch,
+        tail_uuids,
+        &config,
+        Some(&winner_id),
+        events.clone(),
+        max_seq,
+    )
+    .expect("stale tail");
     assert_eq!(stale.outcome, SyncOutcome::StaleReset);
     assert_eq!(stale.inserted, 0);
-    // THE FIX: the stale tail did NOT resurrect the pre-reset pull cursor.
+    assert!(a.active_challenge().expect("q").is_none());
+    let after_stale = prepare(&a, 10_000);
     assert_eq!(
-        a.last_server_seq(CTX.into()).expect("cursor after stale"),
-        0,
+        after_stale.last_server_seq, 0,
         "stale tail must not drag the cursor forward past the reset"
     );
+    assert!(after_stale.pending.is_empty());
+    assert_ne!(after_stale.reset_epoch, captured.reset_epoch);
 
-    // 5. A clean sync starts fresh (post-reset epoch), pulls from cursor 0, and
-    //    recovers everything the server still holds.
-    let fresh = a.current_reset_epoch().expect("fresh epoch");
-    assert_ne!(fresh, captured, "reset bumped the epoch");
-    assert_eq!(
-        a.apply_remote_config(config, fresh).expect("clean cfg"),
-        SyncOutcome::Applied
-    );
-    let cursor = a.last_server_seq(CTX.into()).expect("cursor");
-    let recovered = a
-        .apply_pull_batch(
-            CTX.into(),
-            server_pull(&events, max_seq, cursor),
-            max_seq,
-            fresh,
-        )
-        .expect("clean pull");
+    // 5. A fresh prepare and apply restores the server-held day.
+    let fresh = prepare(&a, 0);
+    let recovered = apply(
+        &a,
+        fresh.reset_epoch,
+        Vec::new(),
+        &config,
+        None,
+        server_pull(&events, max_seq, fresh.last_server_seq),
+        max_seq,
+    )
+    .expect("clean pull");
     assert_eq!(recovered.outcome, SyncOutcome::Applied);
     assert_eq!(recovered.inserted, 2, "both events re-pulled and applied");
 
-    // History fully recovered: identical day + summary, never an empty day.
     assert_eq!(a.day_state(day.into(), now).expect("post day"), pre_day);
     assert_eq!(a.summary(now).expect("post summary"), pre_summary);
 }
@@ -671,53 +897,70 @@ fn two_resets_in_a_row_still_recover() {
     let now = at("2026-07-04", 22, 0);
     let day = "2026-07-04";
     let (_da, a, config, events, max_seq) = logged_a_with_server_snapshot();
-    a.set_last_server_seq(CTX.into(), max_seq, epoch(&a))
-        .expect("prime cursor");
+    prime_cursor(&a, max_seq);
     let pre_day = a.day_state(day.into(), now).expect("pre day");
 
-    let before_first = a.current_reset_epoch().expect("e0");
+    let before_first = prepare(&a, 0).reset_epoch;
     a.reset_all_data().expect("reset 1");
-    let between = a.current_reset_epoch().expect("e1");
+    let between = prepare(&a, 0).reset_epoch;
     a.reset_all_data().expect("reset 2");
-    let after_second = a.current_reset_epoch().expect("e2");
+    let after_second = prepare(&a, 0).reset_epoch;
     assert!(
         before_first < between && between < after_second,
         "reset epoch is strictly monotonic across resets"
     );
-    assert_eq!(a.last_server_seq(CTX.into()).expect("cursor"), 0);
+    assert_eq!(prepare(&a, 0).last_server_seq, 0);
 
     // A tail captured before the FIRST reset AND one captured between the two
-    // are both stale now.
+    // are both stale now, even when each names a winner and carries events.
+    let winner_id = events[0].challenge_id.clone();
     assert_eq!(
-        a.apply_pull_batch(CTX.into(), Vec::new(), max_seq, before_first)
-            .expect("stale-0")
-            .outcome,
+        apply(
+            &a,
+            before_first,
+            Vec::new(),
+            &config,
+            Some(&winner_id),
+            events.clone(),
+            max_seq,
+        )
+        .expect("stale-0")
+        .outcome,
         SyncOutcome::StaleReset
     );
     assert_eq!(
-        a.apply_pull_batch(CTX.into(), Vec::new(), max_seq, between)
-            .expect("stale-1")
-            .outcome,
+        apply(
+            &a,
+            between,
+            Vec::new(),
+            &config,
+            Some(&winner_id),
+            events.clone(),
+            max_seq,
+        )
+        .expect("stale-1")
+        .outcome,
         SyncOutcome::StaleReset
     );
     assert_eq!(
-        a.last_server_seq(CTX.into()).expect("cursor still 0"),
+        prepare(&a, 10_000).last_server_seq,
         0,
         "neither stale tail moved the cursor"
     );
+    assert!(a.active_challenge().expect("q").is_none());
 
     // Clean sync at the current epoch recovers the full history.
-    let fresh = a.current_reset_epoch().expect("fresh");
-    a.apply_remote_config(config, fresh).expect("clean cfg");
-    let cursor = a.last_server_seq(CTX.into()).expect("cursor");
-    let recovered = a
-        .apply_pull_batch(
-            CTX.into(),
-            server_pull(&events, max_seq, cursor),
-            max_seq,
-            fresh,
-        )
-        .expect("clean pull");
+    let fresh = prepare(&a, 0);
+    let recovered = apply(
+        &a,
+        fresh.reset_epoch,
+        Vec::new(),
+        &config,
+        None,
+        server_pull(&events, max_seq, fresh.last_server_seq),
+        max_seq,
+    )
+    .expect("clean pull");
     assert_eq!(recovered.outcome, SyncOutcome::Applied);
     assert_eq!(recovered.inserted, 2);
     assert_eq!(a.day_state(day.into(), now).expect("post day"), pre_day);
@@ -731,39 +974,77 @@ fn reset_with_no_in_flight_round_trip_recovers() {
     let now = at("2026-07-04", 22, 0);
     let day = "2026-07-04";
     let (_da, a, config, events, max_seq) = logged_a_with_server_snapshot();
-    a.set_last_server_seq(CTX.into(), max_seq, epoch(&a))
-        .expect("prime cursor");
+    prime_cursor(&a, max_seq);
     let pre_day = a.day_state(day.into(), now).expect("pre day");
     let pre_summary = a.summary(now).expect("pre summary");
+    let device_before = prepare(&a, 0).device_id;
 
     a.reset_all_data().expect("reset");
     assert!(a.active_challenge().expect("q").is_none());
 
     // Straight into a clean sync at the fresh epoch — no stale tail at all.
-    let fresh = a.current_reset_epoch().expect("fresh");
-    assert_eq!(
-        a.apply_remote_config(config, fresh).expect("cfg"),
-        SyncOutcome::Applied
+    let fresh = prepare(&a, 0);
+    assert_ne!(
+        fresh.device_id, device_before,
+        "reset re-mints the device id"
     );
-    let cursor = a.last_server_seq(CTX.into()).expect("cursor");
-    let recovered = a
-        .apply_pull_batch(
-            CTX.into(),
-            server_pull(&events, max_seq, cursor),
-            max_seq,
-            fresh,
-        )
-        .expect("pull");
+    let recovered = apply(
+        &a,
+        fresh.reset_epoch,
+        Vec::new(),
+        &config,
+        None,
+        server_pull(&events, max_seq, fresh.last_server_seq),
+        max_seq,
+    )
+    .expect("pull");
     assert_eq!(recovered.outcome, SyncOutcome::Applied);
     assert_eq!(recovered.inserted, 2);
     assert_eq!(a.day_state(day.into(), now).expect("post day"), pre_day);
     assert_eq!(a.summary(now).expect("post summary"), pre_summary);
 }
 
-/// A store's current reset epoch (0 until its first reset) — the value a sync
-/// round-trip captures at its start and threads into its tail writes.
-fn epoch(store: &DromeStore) -> i64 {
-    store.current_reset_epoch().expect("reset epoch")
+#[test]
+fn malformed_config_on_a_live_epoch_does_not_advance_the_push_watermark() {
+    let (_da, a) = store_a();
+    log_mixed_day(&a);
+    let before = prepare(&a, 10_000);
+    let uuids: Vec<String> = before.pending.iter().map(|e| e.uuid.clone()).collect();
+    let mut block: serde_json::Value =
+        serde_json::from_str(&before.config_json).expect("config json");
+    block["challenge"]["challenge"]["start_date"] = serde_json::json!("NOT-A-DATE");
+
+    apply(
+        &a,
+        before.reset_epoch,
+        uuids,
+        &block.to_string(),
+        None,
+        Vec::new(),
+        9,
+    )
+    .expect_err("malformed config is an error on a live epoch");
+
+    let after = prepare(&a, 10_000);
+    assert_eq!(after.pending.len(), before.pending.len());
+    assert_eq!(after.pending[0].uuid, before.pending[0].uuid);
+    assert_eq!(after.last_server_seq, 0);
+    assert_eq!(
+        a.active_challenge().unwrap().unwrap().start_date,
+        "2026-06-21"
+    );
+}
+
+#[test]
+fn follow_up_is_stale_or_a_full_batch_or_more() {
+    assert!(sync_follow_up(0, 500, false, SyncOutcome::StaleReset));
+    assert!(sync_follow_up(500, 500, false, SyncOutcome::Applied));
+    assert!(sync_follow_up(3, 500, true, SyncOutcome::Applied));
+    assert!(
+        !sync_follow_up(499, 500, false, SyncOutcome::Applied),
+        "a short applied batch does not continue, winner or not"
+    );
+    assert!(!sync_follow_up(0, 500, false, SyncOutcome::Applied));
 }
 
 fn book(store: &DromeStore) -> String {

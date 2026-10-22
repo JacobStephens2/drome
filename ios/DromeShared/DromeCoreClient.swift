@@ -152,77 +152,52 @@ protocol DromeCoreClient: AnyObject, Sendable {
     //
     // Sync is idempotent event exchange (docs/PHASE2.md). `context` is the
     // opaque account identifier the watermark state is keyed by (independent
-    // push/pull cursors per account). These are consumed by the iOS
-    // SyncEngine built in the next stage; views never call them.
+    // push/pull cursors per account). The engine prepares a round, posts it,
+    // and applies the response. Views never call these.
 
-    /// This store's stable device id (config-LWW tiebreak; sent with sync
-    /// requests so the server can label event provenance).
-    func deviceId() throws -> String
-    /// This store's current reset generation (docs/PHASE2.md, sync/reset epoch
-    /// invariant). The SyncEngine reads this ONCE at the start of a round-trip
-    /// and threads it into every cursor-or-state-mutating tail write below; a
-    /// local "Start over" (`resetAllData`) between the capture and the tail
-    /// bumps the epoch, so those writes NO-OP (`.staleReset`) instead of
-    /// resurrecting the pre-reset pull cursor — the fix for the reset/sync
-    /// data-loss race. A never-reset store reads 0.
-    func currentResetEpoch() throws -> Int64
-    /// Local events past `context`'s synced-through watermark (oldest first,
-    /// capped at `limit`), serialized for the wire. Remote-origin events are
-    /// never returned; `photo_done` payloads are stripped of `photoRef`.
-    func pendingEvents(context: String, limit: UInt32) throws -> [WireEvent]
-    /// Advances `context`'s push watermark past every acked uuid.
-    /// `expectedResetEpoch` is the epoch captured at the round-trip's start;
-    /// returns `.staleReset` (a NO-OP, not an error) when a reset ran since.
+    /// Reset epoch, device id, pull cursor, pending events, and config JSON,
+    /// read in one core transaction. The device id is minted here on first use.
+    /// `limit` caps the pending batch; the core does not clamp it.
+    func prepareSyncRound(context: String, limit: UInt32) throws -> SyncPreparation
+
+    /// Ack, adopt or merge, and pull, in one core transaction gated on the
+    /// epoch `prepareSyncRound` returned. A stale epoch writes nothing.
+    /// A winner id adopts that challenge; nil or a blank id merges.
     @discardableResult
-    func ackPushed(context: String, uuids: [String], expectedResetEpoch: Int64) throws
-        -> SyncOutcome
-    /// Idempotently upserts pulled events (uuids already present, including
-    /// revoked, are skipped; inserted rows are marked remote-origin so they
-    /// are never pushed back). Returns the number actually inserted.
-    @discardableResult
-    func applyRemoteEvents(_ events: [WireEvent]) throws -> UInt32
-    /// This store's config block (challenge settings, presets, extras) with
-    /// per-slot LWW stamps, as JSON — the `config` half of a sync round-trip.
-    func exportConfigState() throws -> String
-    /// Merges a remote config block (JSON from `exportConfigState`) per-slot
-    /// last-writer-wins on `(updatedAt, deviceId)`. `expectedResetEpoch` is the
-    /// epoch captured at the round-trip's start; returns `.staleReset` (a
-    /// NO-OP) when a reset ran since, rather than re-materializing wiped config.
-    @discardableResult
-    func applyRemoteConfig(_ blockJson: String, expectedResetEpoch: Int64) throws -> SyncOutcome
-    /// Adopts the server-declared winner of a one-active-challenge conflict.
-    /// Call this INSTEAD of `applyRemoteConfig` when a sync response carries an
-    /// `active_challenge_conflict`: `blockJson` is that response's `config` (the
-    /// winner's slots) and `winnerChallengeId` its `winner_challenge_id`. Unlike
-    /// the LWW merge, it force-adopts the winner even when this device's local
-    /// challenge stamp is newer, and archives the loser locally — without it a
-    /// device that lost the race keeps its own active challenge forever (a
-    /// split-brain the server cannot resolve). Idempotent.
-    func adoptActiveChallenge(blockJson: String, winnerChallengeId: String) throws
-    /// `context`'s pull cursor (highest applied `server_seq`; 0 if never
-    /// pulled).
-    func lastServerSeq(context: String) throws -> Int64
-    /// Advances `context`'s pull cursor after applying a pull batch.
-    /// `expectedResetEpoch` is the epoch captured at the round-trip's start;
-    /// returns `.staleReset` (a NO-OP) when a reset ran since.
-    @discardableResult
-    func setLastServerSeq(context: String, seq: Int64, expectedResetEpoch: Int64) throws
-        -> SyncOutcome
-    /// Applies a pulled batch AND advances `context`'s pull cursor in ONE core
-    /// transaction. Prefer this over separate `applyRemoteEvents` +
-    /// `setLastServerSeq`: bundling both writes means the cursor can never
-    /// outrun the durably-applied events, so a crash between the two can't
-    /// silently drop events. `expectedResetEpoch` is the epoch captured at the
-    /// round-trip's start; when a reset ran since, the WHOLE batch is dropped
-    /// and the result is `{ .staleReset, inserted: 0 }`. Otherwise the result
-    /// is `{ .applied, inserted: <count> }`.
-    @discardableResult
-    func applyPullBatch(
+    func applySyncResponse(
         context: String,
+        expectedResetEpoch: Int64,
+        ackedUuids: [String],
+        configJSON: String,
+        winnerChallengeId: String?,
         events: [WireEvent],
-        newLastServerSeq: Int64,
-        expectedResetEpoch: Int64
-    ) throws -> PullResult
+        newLastServerSeq: Int64
+    ) throws -> SyncApplyResult
+
+    /// The only continuation decision. Production forwards to the core.
+    /// The preview mock returns false and does not encode the policy.
+    func syncFollowUp(
+        pushedCount: UInt32,
+        pushLimit: UInt32,
+        more: Bool,
+        outcome: SyncOutcome
+    ) -> Bool
+}
+
+/// The request half of one sync round-trip, in facade terms.
+struct SyncPreparation: Equatable, Sendable {
+    var resetEpoch: Int64
+    var deviceId: String
+    var lastServerSeq: Int64
+    var events: [WireEvent]
+    var configJSON: String
+}
+
+/// Whether one applied response stored new pulled events. `inserted` is 0
+/// when the round was stale or every pulled uuid was already present.
+struct SyncApplyResult: Equatable, Sendable {
+    var outcome: SyncOutcome
+    var inserted: UInt32
 }
 
 // MARK: - Convenience overloads (today-attributed logging)

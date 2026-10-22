@@ -7,7 +7,7 @@
 # renamed types; views use the Models.swift ones.
 #
 # Non-colliding names (DromeStore, LocalInstant, Cadence, RulesetKind,
-# ShareCardWorkout) keep their Rust names.
+# ShareCardWorkout, SyncRoundResponse) keep their Rust names.
 
 [bindings.swift.rename]
 Challenge = "UniChallenge"
@@ -30,6 +30,8 @@ WaterLogEntry = "UniWaterLogEntry"
 ChugCheck = "UniChugCheck"
 DromeError = "UniDromeError"
 WireEvent = "UniWireEvent"
+SyncPreparation = "UniSyncPreparation"
+SyncApplyResult = "UniSyncApplyResult"
 
 # Android bindings live in their own Kotlin package, so unlike Swift they do
 # not collide with the hand-written facade models. Keep the generated package

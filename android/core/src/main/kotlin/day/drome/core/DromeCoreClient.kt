@@ -57,5 +57,11 @@ interface DromeCoreClient : AutoCloseable {
         newServerSeq: Long,
         configJson: String,
         winnerChallengeId: String? = null,
-    ): CoreSyncApplication
+    ): SyncApplyResult
+
+    /**
+     * The only continuation decision. Production forwards to the core.
+     * The preview mock returns false and does not encode the policy.
+     */
+    fun syncFollowUp(pushedCount: Int, pushLimit: Int, more: Boolean, outcome: SyncOutcome): Boolean
 }

@@ -92,14 +92,18 @@ CREATE TABLE IF NOT EXISTS config_meta (
     device_id TEXT NOT NULL
 );
 
--- Monotonic reset generation (docs/PHASE2.md, sync/reset epoch invariant).
+-- Monotonic reset generation (docs/PHASE2.md, sync/reset epoch invariant;
+-- docs/adr/0001-sync-round-trip-tail.md).
 -- A single row that reset_all_data INCREMENTS and, unlike every other sync
 -- table, NEVER wipes: it must survive the wipe so a sync round-trip captured
--- before the reset can be told its tail writes are stale. Every cursor-or-
--- state-mutating sync call carries the epoch in effect when its round-trip
--- began and no-ops when this counter has moved on — that is what stops a
--- stale in-flight round-trip from resurrecting a pre-reset pull cursor and
--- silently stranding the account's server-held history.
+-- before the reset can be told its tail is stale. prepare_sync_round reads
+-- this epoch in the same transaction as the rest of the request snapshot.
+-- apply_sync_response checks it before any write and, when it has moved,
+-- writes nothing: not the push watermark, not an adopt, not the pull cursor.
+-- That is what stops a stale in-flight round-trip from resurrecting a
+-- pre-reset pull cursor and silently stranding the account's server-held
+-- history. Inside a live epoch the tail order is ack, then adopt-or-merge,
+-- then the pull.
 CREATE TABLE IF NOT EXISTS sync_epoch (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     epoch INTEGER NOT NULL DEFAULT 0

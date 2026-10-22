@@ -39,13 +39,56 @@ pub enum SyncOutcome {
     StaleReset,
 }
 
-/// The result of `apply_pull_batch`: whether the batch applied and, when it
-/// did, how many events were newly inserted (0 on `StaleReset`, and also 0
-/// when every pulled event was already present by uuid).
+/// The snapshot one sync round-trip is built from. Read in one immediate
+/// transaction, so a log or a reset cannot tear the request apart.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SyncPreparation {
+    pub reset_epoch: i64,
+    pub device_id: String,
+    pub last_server_seq: i64,
+    pub pending: Vec<WireEvent>,
+    pub config_json: String,
+}
+
+/// One sync response, as the store applies it. `config_json` is the config
+/// block the server already returns. A winner id adopts that challenge;
+/// `None` or a blank id merges last-writer-wins instead. The store does not
+/// learn the HTTP conflict object's field names.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SyncRoundResponse {
+    pub acked_uuids: Vec<String>,
+    pub config_json: String,
+    pub winner_challenge_id: Option<String>,
+    pub events: Vec<WireEvent>,
+    pub new_last_server_seq: i64,
+}
+
+/// The result of applying one sync response. `inserted` counts pulled events
+/// newly stored (0 on `StaleReset`, and also 0 when every pulled uuid was
+/// already present). Replaces the old pull-batch record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record, Serialize, Deserialize)]
-pub struct PullResult {
+pub struct SyncApplyResult {
     pub outcome: SyncOutcome,
     pub inserted: u32,
+}
+
+/// Whether the phone should run another sync round-trip.
+///
+/// True when the outcome is stale (the reset threw this round out), or when
+/// the round applied and the push batch was full (`pushed_count >= push_limit`)
+/// or the server set `more`. A winner being adopted is not an input: that
+/// config and its events are already in this response.
+#[uniffi::export]
+pub fn sync_follow_up(
+    pushed_count: u32,
+    push_limit: u32,
+    more: bool,
+    outcome: SyncOutcome,
+) -> bool {
+    match outcome {
+        SyncOutcome::StaleReset => true,
+        SyncOutcome::Applied => more || pushed_count >= push_limit,
+    }
 }
 
 /// Sanity cap for wire identifiers (uuids, challenge ids, device ids).
@@ -96,8 +139,8 @@ pub struct ConfigExtrasSlot {
 
 /// The config block exchanged in a sync round-trip. Slots are independent:
 /// each merges last-writer-wins on `(updated_at_epoch, device_id)`.
-/// Crosses the FFI as a JSON string (`DromeStore::export_config_state` /
-/// `apply_remote_config`); the server parses the same struct via serde.
+/// Crosses the FFI as a JSON string on `SyncPreparation` / `SyncRoundResponse`;
+/// the server parses the same struct via serde.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ConfigBlock {
     #[serde(default)]
@@ -608,19 +651,7 @@ fn apply_presets_slot_inner(
     if !challenge_exists(conn, &slot.challenge_id)? {
         return Ok(()); // Unknown challenge: retry after it syncs.
     }
-    for p in &slot.presets {
-        if p.id.trim().is_empty() || p.name.trim().is_empty() {
-            return Err(DromeError::InvalidArgument(
-                "preset id and name must be non-empty".into(),
-            ));
-        }
-        if !(1..=crate::api::MAX_WATER_LOG_ML).contains(&p.ml) {
-            return Err(DromeError::InvalidArgument(format!(
-                "preset ml must be in 1..={}",
-                crate::api::MAX_WATER_LOG_ML
-            )));
-        }
-    }
+    validate_preset_rows(&slot.presets)?;
     conn.execute(
         "DELETE FROM container_presets WHERE challenge_id = ?1",
         params![slot.challenge_id],
@@ -647,13 +678,7 @@ fn apply_extras_slot_inner(conn: &Connection, slot: &ConfigExtrasSlot, force: bo
     if !challenge_exists(conn, &slot.challenge_id)? {
         return Ok(()); // Unknown challenge: retry after it syncs.
     }
-    for x in &slot.extras {
-        if x.id.trim().is_empty() || x.name.trim().is_empty() {
-            return Err(DromeError::InvalidArgument(
-                "extra id and name must be non-empty".into(),
-            ));
-        }
-    }
+    validate_extra_rows(&slot.extras)?;
     conn.execute(
         "DELETE FROM extra_defs WHERE challenge_id = ?1",
         params![slot.challenge_id],
@@ -732,13 +757,13 @@ fn ensure_state_row(conn: &Connection, context: &str) -> Result<()> {
 // Reset epoch (the sync/reset atomicity invariant — docs/PHASE2.md)
 // ---------------------------------------------------------------------------
 
-/// This store's current reset generation. A sync round-trip captures this at
-/// the start (via `DromeStore::current_reset_epoch`) and threads it back into
-/// its tail writes; those writes no-op when it no longer matches, because a
-/// `reset_all_data` bumped it mid-round-trip. Defaults to 0 for a store
-/// opened before this table existed (treated as never-reset). Caller reads
-/// under the same lock as the mutation it guards, so the check is atomic with
-/// the write (no reset can slip in between).
+/// This store's current reset generation. `prepare_sync_round` reads it in
+/// the same transaction as the rest of the request snapshot, and
+/// `apply_sync_response` no-ops the whole tail when it no longer matches,
+/// because a `reset_all_data` bumped it during the network hop. Defaults to 0
+/// for a store opened before this table existed (treated as never-reset).
+/// Caller reads under the same lock as the mutation it guards, so the check
+/// is atomic with the write (no reset can slip in between).
 pub(crate) fn current_reset_epoch(conn: &Connection) -> Result<i64> {
     conn.query_row("SELECT epoch FROM sync_epoch WHERE id = 1", [], |r| {
         r.get(0)
@@ -772,4 +797,131 @@ pub(crate) fn reset_gate(conn: &Connection, expected_epoch: i64) -> Result<SyncO
     } else {
         Ok(SyncOutcome::StaleReset)
     }
+}
+
+fn validate_preset_rows(presets: &[ContainerPreset]) -> Result<()> {
+    for p in presets {
+        if p.id.trim().is_empty() || p.name.trim().is_empty() {
+            return Err(DromeError::InvalidArgument(
+                "preset id and name must be non-empty".into(),
+            ));
+        }
+        if !(1..=crate::api::MAX_WATER_LOG_ML).contains(&p.ml) {
+            return Err(DromeError::InvalidArgument(format!(
+                "preset ml must be in 1..={}",
+                crate::api::MAX_WATER_LOG_ML
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_extra_rows(extras: &[ExtraDef]) -> Result<()> {
+    for x in extras {
+        if x.id.trim().is_empty() || x.name.trim().is_empty() {
+            return Err(DromeError::InvalidArgument(
+                "extra id and name must be non-empty".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Field checks a config block must pass before any tail write. An unknown
+/// challenge is not an error here: the merge skips that slot, same as apply.
+pub(crate) fn validate_config_block(block: &ConfigBlock) -> Result<()> {
+    if let Some(slot) = &block.challenge {
+        validate_wire_id(&slot.device_id, "device id")?;
+        validate_wire_id(&slot.challenge.id, "challenge id")?;
+        validate_challenge_slot(slot)?;
+    }
+    if let Some(slot) = &block.presets {
+        validate_wire_id(&slot.device_id, "device id")?;
+        validate_wire_id(&slot.challenge_id, "challenge id")?;
+        validate_preset_rows(&slot.presets)?;
+    }
+    if let Some(slot) = &block.extras {
+        validate_wire_id(&slot.device_id, "device id")?;
+        validate_wire_id(&slot.challenge_id, "challenge id")?;
+        validate_extra_rows(&slot.extras)?;
+    }
+    Ok(())
+}
+
+fn normalize_winner(raw: Option<&str>) -> Result<Option<String>> {
+    match raw {
+        None => Ok(None),
+        Some(id) if id.trim().is_empty() => Ok(None),
+        Some(id) => {
+            validate_wire_id(id, "winner challenge id")?;
+            Ok(Some(id.to_owned()))
+        }
+    }
+}
+
+/// Reset epoch, device id, pull cursor, pending events, and config JSON.
+/// The device id is minted here on first use, so this is a write transaction.
+/// Caller holds an immediate transaction and commits it.
+pub(crate) fn prepare_sync_round(
+    conn: &Connection,
+    context: &str,
+    limit: u32,
+) -> Result<SyncPreparation> {
+    let reset_epoch = current_reset_epoch(conn)?;
+    let device_id = ensure_device_id(conn)?;
+    let last_server_seq = get_last_server_seq(conn, context)?;
+    let pending = pending_events(conn, context, limit)?;
+    let config_json = serde_json::to_string(&export_config_block(conn)?)?;
+    Ok(SyncPreparation {
+        reset_epoch,
+        device_id,
+        last_server_seq,
+        pending,
+        config_json,
+    })
+}
+
+/// Apply one sync response inside the caller's write transaction.
+///
+/// The epoch is checked before any write and before payload validation. A
+/// stale epoch returns `StaleReset` and leaves the transaction untouched,
+/// even when the payload is malformed. A live epoch validates config and
+/// pulled events before ack; a bad payload returns an error with nothing
+/// written (the caller rolls the transaction back). A valid payload then
+/// acks, adopts or merges, inserts the pulled events, and assigns the cursor.
+pub(crate) fn apply_sync_response(
+    conn: &Connection,
+    context: &str,
+    expected_reset_epoch: i64,
+    response: &SyncRoundResponse,
+) -> Result<SyncApplyResult> {
+    if reset_gate(conn, expected_reset_epoch)? == SyncOutcome::StaleReset {
+        return Ok(SyncApplyResult {
+            outcome: SyncOutcome::StaleReset,
+            inserted: 0,
+        });
+    }
+    let block: ConfigBlock = serde_json::from_str(&response.config_json)?;
+    validate_config_block(&block)?;
+    for event in &response.events {
+        validate_wire_event(event)?;
+    }
+    if response.new_last_server_seq < 0 {
+        return Err(DromeError::InvalidArgument(
+            "last_server_seq must be >= 0".into(),
+        ));
+    }
+    let winner = normalize_winner(response.winner_challenge_id.as_deref())?;
+    ack_pushed(conn, context, &response.acked_uuids)?;
+    if let Some(id) = winner.as_deref() {
+        adopt_active_challenge(conn, &block, id)?;
+    } else {
+        apply_remote_config_block(conn, &block)?;
+    }
+    let inserted = apply_remote_events(conn, &response.events)?;
+    set_last_server_seq(conn, context, response.new_last_server_seq)?;
+    Ok(SyncApplyResult {
+        outcome: SyncOutcome::Applied,
+        inserted,
+    })
 }

@@ -1011,10 +1011,10 @@ impl DromeStore {
                 continue;
             }
             match &kind {
-                RevocableTask::Extra { id } => {
-                    if &e.payload_as::<events::ExtraDonePayload>()?.extra_id != id {
-                        continue;
-                    }
+                RevocableTask::Extra { id }
+                    if &e.payload_as::<events::ExtraDonePayload>()?.extra_id != id =>
+                {
+                    continue;
                 }
                 RevocableTask::Photo => {
                     if let Some(r) = e.payload_as::<events::PhotoDonePayload>()?.photo_ref {
@@ -1479,10 +1479,9 @@ impl DromeStore {
         // Bump the reset generation in the SAME transaction as the wipe (the
         // sync_epoch row is deliberately NOT among the DELETEs above — it must
         // outlive the wipe). Any sync round-trip that captured the old epoch
-        // now finds its tail writes stale: set_last_server_seq /
-        // apply_pull_batch / ack_pushed / apply_remote_config become no-ops,
-        // so a stale round-trip can never resurrect the pre-reset pull cursor
-        // and strand the account's server-held history (docs/PHASE2.md).
+        // now finds apply_sync_response stale: it writes nothing, so a stale
+        // round-trip can never resurrect the pre-reset pull cursor or install
+        // the account's challenge onto the wiped store (docs/PHASE2.md).
         sync::bump_reset_epoch(&tx)?;
         tx.execute_batch(db::APPEND_ONLY_TRIGGERS_SQL)?;
         tx.commit()?;
@@ -1497,209 +1496,46 @@ impl DromeStore {
     // accounts keeps independent push/pull cursors. Sync is idempotent event
     // exchange; the projections never sync and recompute on every read.
 
-    /// This store's stable device id (the config-LWW tiebreak; also sent with
-    /// sync requests so the server can label event provenance). Minted once
-    /// and persisted on first use.
-    pub fn device_id(&self) -> Result<String, DromeError> {
-        let mut conn = self.lock()?;
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let id = sync::ensure_device_id(&tx)?;
-        tx.commit()?;
-        Ok(id)
-    }
-
-    /// Local events past `context`'s `synced_through` watermark, oldest first,
-    /// capped at `limit`, serialized for the wire. Remote-origin events are
-    /// never returned (they came FROM the server); `photo_done` payloads have
-    /// `photo_ref` stripped at this boundary (the local rows keep theirs).
-    pub fn pending_events(
+    /// The request half of a sync round-trip: reset epoch, device id, pull
+    /// cursor, pending events, and config JSON, read in one immediate
+    /// transaction. The device id is minted here on first use. `limit` caps
+    /// the pending batch and is not clamped; `0` returns no events.
+    /// `photo_done` payloads have `photo_ref` stripped on the way out.
+    pub fn prepare_sync_round(
         &self,
         context: String,
         limit: u32,
-    ) -> Result<Vec<sync::WireEvent>, DromeError> {
-        let conn = self.lock()?;
-        sync::pending_events(&conn, &context, limit)
+    ) -> Result<sync::SyncPreparation, DromeError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let prepared = sync::prepare_sync_round(&tx, &context, limit)?;
+        tx.commit()?;
+        Ok(prepared)
     }
 
-    /// Advances `context`'s push watermark past every acked uuid this store
-    /// holds (the new `synced_through` is the max of their local rowids, never
-    /// moving backwards). Unknown uuids are ignored.
-    ///
-    /// `expected_reset_epoch` is the reset generation the round-trip captured
-    /// at its start (from `current_reset_epoch`). If a `reset_all_data` ran
-    /// since, this is a stale in-flight write: it NO-OPs and returns
-    /// `StaleReset` (not an error), so a re-minted post-reset store's
-    /// watermark is never dragged forward by a round-trip the reset invalidated
-    /// (docs/PHASE2.md, sync/reset epoch invariant).
-    pub fn ack_pushed(
+    /// The tail of a sync round-trip, in one immediate transaction: check
+    /// `expected_reset_epoch` (the epoch `prepare_sync_round` returned), then
+    /// ack, adopt or merge, then insert the pulled events and assign the
+    /// cursor. A stale epoch writes nothing and returns `StaleReset`, and does
+    /// not reject a malformed payload. A live epoch validates config and
+    /// pulled events before any write; a bad payload returns an error and
+    /// commits nothing. `inserted` counts newly stored pulled events. The
+    /// cursor is assigned to `new_last_server_seq`, including downward and
+    /// including a response with no events. A winner id adopts that challenge;
+    /// no winner id, or a blank one, merges (docs/PHASE2.md).
+    pub fn apply_sync_response(
         &self,
         context: String,
-        uuids: Vec<String>,
         expected_reset_epoch: i64,
-    ) -> Result<sync::SyncOutcome, DromeError> {
+        response: sync::SyncRoundResponse,
+    ) -> Result<sync::SyncApplyResult, DromeError> {
         let mut conn = self.lock()?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if sync::reset_gate(&tx, expected_reset_epoch)? == sync::SyncOutcome::StaleReset {
-            return Ok(sync::SyncOutcome::StaleReset);
+        let result = sync::apply_sync_response(&tx, &context, expected_reset_epoch, &response)?;
+        if result.outcome == sync::SyncOutcome::Applied {
+            tx.commit()?;
         }
-        sync::ack_pushed(&tx, &context, &uuids)?;
-        tx.commit()?;
-        Ok(sync::SyncOutcome::Applied)
-    }
-
-    /// Idempotent upsert of pulled events: uuids already present (including
-    /// revoked ones) are skipped, so replays and self-echoes are no-ops.
-    /// Inserted rows are marked remote-origin so `pending_events` never pushes
-    /// them back. The whole batch validates first and applies atomically.
-    /// Returns the number of events actually inserted.
-    pub fn apply_remote_events(&self, events: Vec<sync::WireEvent>) -> Result<u32, DromeError> {
-        let mut conn = self.lock()?;
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let inserted = sync::apply_remote_events(&tx, &events)?;
-        tx.commit()?;
-        Ok(inserted)
-    }
-
-    /// This store's current config block (challenge settings, presets, extras)
-    /// with per-slot LWW stamps, as JSON — the `config` half of a sync
-    /// round-trip. Empty (`{}`) when no challenge is active.
-    pub fn export_config_state(&self) -> Result<String, DromeError> {
-        let mut conn = self.lock()?;
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let block = sync::export_config_block(&tx)?;
-        tx.commit()?;
-        serde_json::to_string(&block).map_err(DromeError::from)
-    }
-
-    /// Merges a remote config block (JSON from `export_config_state`) per-slot
-    /// last-writer-wins on `(updated_at, device_id)`. A winning slot replaces
-    /// the local config wholesale and adopts the remote stamp so the merge
-    /// converges. Slots for a challenge this store has not seen are skipped
-    /// (they land on a later sync, after the challenge arrives).
-    ///
-    /// `expected_reset_epoch` is the reset generation captured at the round-
-    /// trip's start. A stale block (a `reset_all_data` ran since) NO-OPs and
-    /// returns `StaleReset` rather than re-materializing the wiped challenge
-    /// config on a store the user just started over (docs/PHASE2.md).
-    pub fn apply_remote_config(
-        &self,
-        block_json: String,
-        expected_reset_epoch: i64,
-    ) -> Result<sync::SyncOutcome, DromeError> {
-        let block: sync::ConfigBlock = serde_json::from_str(&block_json)?;
-        let mut conn = self.lock()?;
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if sync::reset_gate(&tx, expected_reset_epoch)? == sync::SyncOutcome::StaleReset {
-            return Ok(sync::SyncOutcome::StaleReset);
-        }
-        sync::apply_remote_config_block(&tx, &block)?;
-        tx.commit()?;
-        Ok(sync::SyncOutcome::Applied)
-    }
-
-    /// Adopt the server-declared winner of a one-active-challenge conflict.
-    /// Call this INSTEAD of `apply_remote_config` when a sync response carries
-    /// `active_challenge_conflict`: `block_json` is that response's `config`
-    /// (the winner's slots) and `winner_challenge_id` its
-    /// `winner_challenge_id`. Unlike the LWW merge, this force-adopts the
-    /// winner's challenge/presets/extras even when the loser's local challenge
-    /// stamp is newer, and archives the loser locally — without it a loser
-    /// whose challenge was created later keeps its own active challenge forever
-    /// (a permanent split-brain the server cannot resolve). Idempotent.
-    pub fn adopt_active_challenge(
-        &self,
-        block_json: String,
-        winner_challenge_id: String,
-    ) -> Result<(), DromeError> {
-        let block: sync::ConfigBlock = serde_json::from_str(&block_json)?;
-        let mut conn = self.lock()?;
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        sync::adopt_active_challenge(&tx, &block, &winner_challenge_id)?;
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// This store's current reset generation (docs/PHASE2.md, sync/reset epoch
-    /// invariant). The SyncEngine reads this ONCE at the start of a sync
-    /// round-trip and passes it back into every cursor-or-state-mutating tail
-    /// write (`ack_pushed`, `apply_remote_config`, `set_last_server_seq`,
-    /// `apply_pull_batch`); a `reset_all_data` between the capture and the tail
-    /// bumps the epoch, so those writes NO-OP (return `StaleReset`) instead of
-    /// resurrecting pre-reset sync state. A never-reset store reads 0.
-    pub fn current_reset_epoch(&self) -> Result<i64, DromeError> {
-        let conn = self.lock()?;
-        sync::current_reset_epoch(&conn)
-    }
-
-    /// `context`'s pull cursor (the highest `server_seq` this store has
-    /// applied). 0 when the context has never pulled.
-    pub fn last_server_seq(&self, context: String) -> Result<i64, DromeError> {
-        let conn = self.lock()?;
-        sync::get_last_server_seq(&conn, &context)
-    }
-
-    /// Advances `context`'s pull cursor after applying a pull batch.
-    ///
-    /// `expected_reset_epoch` is the reset generation captured at the round-
-    /// trip's start; a stale advance (a `reset_all_data` ran since) NO-OPs and
-    /// returns `StaleReset`. This is the exact write the data-loss race turned
-    /// on: without the gate, a stale round-trip re-created `sync_state` with a
-    /// pre-reset `last_server_seq`, so later clean pulls (`server_seq > cursor`)
-    /// skipped the account's own re-pullable history forever (docs/PHASE2.md).
-    pub fn set_last_server_seq(
-        &self,
-        context: String,
-        seq: i64,
-        expected_reset_epoch: i64,
-    ) -> Result<sync::SyncOutcome, DromeError> {
-        let mut conn = self.lock()?;
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if sync::reset_gate(&tx, expected_reset_epoch)? == sync::SyncOutcome::StaleReset {
-            return Ok(sync::SyncOutcome::StaleReset);
-        }
-        sync::set_last_server_seq(&tx, &context, seq)?;
-        tx.commit()?;
-        Ok(sync::SyncOutcome::Applied)
-    }
-
-    /// Applies a pulled batch AND advances `context`'s pull cursor in ONE
-    /// transaction, returning the number of events inserted. Prefer this over
-    /// separate `apply_remote_events` + `set_last_server_seq` calls: it makes
-    /// crash-safety a property of the CORE, not of client call ordering. If the
-    /// cursor were advanced in its own transaction, a crash between the two
-    /// calls could leave the cursor PAST events that were never durably applied
-    /// — the next pull would start after them and silently drop them. Bundling
-    /// both writes means the cursor can never outrun the applied events.
-    ///
-    /// `expected_reset_epoch` is the reset generation captured at the round-
-    /// trip's start. When a `reset_all_data` ran since, the WHOLE batch is
-    /// dropped — neither the events nor the cursor advance land — and the call
-    /// returns `{ StaleReset, inserted: 0 }`. This is the invariant that closes
-    /// the reset/sync data-loss race: a re-minted post-reset store re-pulls its
-    /// history from `server_seq > 0` on the next clean sync, and no stale tail
-    /// can silently push the cursor past it (docs/PHASE2.md).
-    pub fn apply_pull_batch(
-        &self,
-        context: String,
-        events: Vec<sync::WireEvent>,
-        new_last_server_seq: i64,
-        expected_reset_epoch: i64,
-    ) -> Result<sync::PullResult, DromeError> {
-        let mut conn = self.lock()?;
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if sync::reset_gate(&tx, expected_reset_epoch)? == sync::SyncOutcome::StaleReset {
-            return Ok(sync::PullResult {
-                outcome: sync::SyncOutcome::StaleReset,
-                inserted: 0,
-            });
-        }
-        let inserted = sync::apply_remote_events(&tx, &events)?;
-        sync::set_last_server_seq(&tx, &context, new_last_server_seq)?;
-        tx.commit()?;
-        Ok(sync::PullResult {
-            outcome: sync::SyncOutcome::Applied,
-            inserted,
-        })
+        Ok(result)
     }
 }
 
