@@ -2389,6 +2389,82 @@ async fn account_link_attaches_email_without_creating_a_second_account() {
     );
 }
 
+/// A link code follows the bearer that authenticated this request. Another
+/// session on the same account, created inside the ten-minute window, must
+/// not authorize an older bearer.
+#[tokio::test]
+async fn link_code_requires_the_authenticating_session_be_recent() {
+    use std::sync::atomic::{AtomicI64, Ordering};
+
+    let recorder = Arc::new(RecordingSender::default());
+    let secs = Arc::new(AtomicI64::new(1_700_000_000));
+    let secs_read = secs.clone();
+    let clock: Clock = Arc::new(move || secs_read.load(Ordering::SeqCst));
+    let srv = test_server_email(true, clock, recorder);
+
+    let (status, older) = json_request(
+        &srv.app,
+        "POST",
+        "/v1/auth/apple",
+        None,
+        json!({ "identity_token": valid_token("link-window-user") }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "older sign-in failed: {older}");
+    let older_access = older["access_token"]
+        .as_str()
+        .expect("older access token")
+        .to_owned();
+
+    // Eleven minutes later the first session is outside the ten-minute window.
+    secs.store(1_700_000_000 + 11 * 60, Ordering::SeqCst);
+
+    let (status, newer) = json_request(
+        &srv.app,
+        "POST",
+        "/v1/auth/apple",
+        None,
+        json!({ "identity_token": valid_token("link-window-user") }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "newer sign-in failed: {newer}");
+    let newer_access = newer["access_token"]
+        .as_str()
+        .expect("newer access token")
+        .to_owned();
+
+    let (status, denied) = json_request(
+        &srv.app,
+        "POST",
+        "/v1/account/link/code",
+        Some(&older_access),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(denied["error"], json!("recent_auth_required"));
+
+    let (status, issued) = json_request(
+        &srv.app,
+        "POST",
+        "/v1/account/link/code",
+        Some(&newer_access),
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "recent session was refused: {issued}"
+    );
+    assert!(
+        issued["link_code"]
+            .as_str()
+            .is_some_and(|code| !code.is_empty()),
+        "a session created inside the window still receives a link code"
+    );
+}
+
 #[tokio::test]
 async fn email_otp_wrong_code_burns_attempts_then_invalidates() {
     let recorder = Arc::new(RecordingSender::default());
