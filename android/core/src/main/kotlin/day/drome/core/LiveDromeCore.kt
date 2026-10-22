@@ -2,6 +2,8 @@ package day.drome.core
 
 import day.drome.core.generated.DromeStore
 import day.drome.core.generated.NewChallenge
+import day.drome.core.generated.SyncRoundResponse
+import day.drome.core.generated.syncFollowUp as coreSyncFollowUp
 import kotlinx.coroutines.ExecutorCoroutineDispatcher
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.withContext
@@ -113,12 +115,13 @@ class LiveDromeCore private constructor(
     override suspend fun resetAllData() = call { it.resetAllData() }
 
     override suspend fun prepareSync(context: String, limit: Int): CoreSyncPreparation = call {
+        val prepared = it.prepareSyncRound(context, limit.toUInt())
         CoreSyncPreparation(
-            resetEpoch = it.currentResetEpoch(),
-            deviceId = it.deviceId(),
-            lastServerSeq = it.lastServerSeq(context),
-            events = it.pendingEvents(context, limit.coerceIn(1, 5_000).toUInt()),
-            configJson = it.exportConfigState(),
+            resetEpoch = prepared.resetEpoch,
+            deviceId = prepared.deviceId,
+            lastServerSeq = prepared.lastServerSeq,
+            events = prepared.pending,
+            configJson = prepared.configJson,
         )
     }
 
@@ -130,25 +133,22 @@ class LiveDromeCore private constructor(
         newServerSeq: Long,
         configJson: String,
         winnerChallengeId: String?,
-    ): CoreSyncApplication = call {
-        val pushOutcome = it.ackPushed(context, ackedUuids, expectedResetEpoch)
-        if (pushOutcome == SyncOutcome.STALE_RESET) {
-            return@call CoreSyncApplication(
-                pull = PullResult(SyncOutcome.STALE_RESET, 0u),
-                config = SyncOutcome.STALE_RESET,
-            )
-        }
-        val pull = it.applyPullBatch(context, remoteEvents, newServerSeq, expectedResetEpoch)
-        val config = if (pull.outcome == SyncOutcome.STALE_RESET) {
-            SyncOutcome.STALE_RESET
-        } else if (winnerChallengeId != null) {
-            it.adoptActiveChallenge(configJson, winnerChallengeId)
-            SyncOutcome.APPLIED
-        } else {
-            it.applyRemoteConfig(configJson, expectedResetEpoch)
-        }
-        CoreSyncApplication(pull, config)
+    ): SyncApplyResult = call {
+        it.applySyncResponse(
+            context,
+            expectedResetEpoch,
+            SyncRoundResponse(
+                ackedUuids = ackedUuids,
+                configJson = configJson,
+                winnerChallengeId = winnerChallengeId,
+                events = remoteEvents,
+                newLastServerSeq = newServerSeq,
+            ),
+        )
     }
+
+    override fun syncFollowUp(pushedCount: Int, pushLimit: Int, more: Boolean, outcome: SyncOutcome): Boolean =
+        coreSyncFollowUp(pushedCount.toUInt(), pushLimit.toUInt(), more, outcome)
 
     override fun close() {
         store.close()

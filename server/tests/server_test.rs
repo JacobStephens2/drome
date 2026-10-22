@@ -14,7 +14,8 @@ use common::{
     AUDIENCE, ISSUER,
 };
 use drome_core::{
-    BackfilledDay, DromeStore, LocalInstant, NewChallenge, RulesetKind, WireEvent, JOB_EXTRA_ID,
+    BackfilledDay, DromeStore, LocalInstant, NewChallenge, RulesetKind, SyncRoundResponse,
+    WireEvent, JOB_EXTRA_ID,
 };
 use drome_server::Clock;
 use serde_json::{json, Value};
@@ -105,51 +106,43 @@ fn log_mixed_day(store: &DromeStore) {
 /// the parsed response (so tests can inspect conflicts etc.). Mirrors what the
 /// iOS SyncEngine will do: gather pending + config, POST, apply the response.
 async fn sync(app: &axum::Router, token: &str, store: &DromeStore) -> Value {
-    // Capture the reset epoch at the START of the round-trip (as the iOS
-    // SyncEngine will): every tail write below carries it, so a local "Start
-    // over" mid-round-trip makes those writes no-op instead of resurrecting
-    // pre-reset sync state (docs/PHASE2.md, sync/reset epoch invariant).
-    let reset_epoch = store.current_reset_epoch().expect("reset epoch");
-    let device_id = store.device_id().expect("device id");
-    let last = store.last_server_seq(CTX.into()).expect("last seq");
-    let pending = store.pending_events(CTX.into(), 10_000).expect("pending");
-    let config: Value =
-        serde_json::from_str(&store.export_config_state().expect("config")).expect("config json");
+    // One prepare, one POST, one apply. The store owns ack, adopt-or-merge,
+    // and the pull in a single transaction (docs/PHASE2.md).
+    let prepared = store
+        .prepare_sync_round(CTX.into(), 10_000)
+        .expect("prepare");
+    let config: Value = serde_json::from_str(&prepared.config_json).expect("config json");
 
     let body = json!({
-        "device_id": device_id,
-        "last_server_seq": last,
-        "events": serde_json::to_value(&pending).expect("events json"),
+        "device_id": prepared.device_id,
+        "last_server_seq": prepared.last_server_seq,
+        "events": serde_json::to_value(&prepared.pending).expect("events json"),
         "config": config,
     });
     let (status, resp) = json_request(app, "POST", "/v1/sync", Some(token), body).await;
     assert_eq!(status, StatusCode::OK, "sync failed: {resp}");
 
-    // Apply the response exactly as a client would: ack pushed, adopt config,
-    // apply pulled events + advance the cursor atomically.
     let acked: Vec<String> = serde_json::from_value(resp["acked_uuids"].clone()).expect("acked");
-    store
-        .ack_pushed(CTX.into(), acked, reset_epoch)
-        .expect("ack");
-    // On a one-active-challenge conflict the server's winner is authoritative:
-    // force-adopt it (LWW cannot, when the loser's local stamp is newer).
-    // Otherwise merge config by LWW.
-    let config_json = resp["config"].to_string();
-    if let Some(winner) = resp["active_challenge_conflict"]["winner_challenge_id"].as_str() {
-        store
-            .adopt_active_challenge(config_json, winner.to_owned())
-            .expect("adopt winner");
-    } else {
-        store
-            .apply_remote_config(config_json, reset_epoch)
-            .expect("apply config");
-    }
     let events: Vec<WireEvent> =
         serde_json::from_value(resp["events"].clone()).expect("pulled events");
     let new_last = resp["new_last_server_seq"].as_i64().expect("new seq");
+    let winner = resp["active_challenge_conflict"]["winner_challenge_id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned);
     store
-        .apply_pull_batch(CTX.into(), events, new_last, reset_epoch)
-        .expect("apply pull batch");
+        .apply_sync_response(
+            CTX.into(),
+            prepared.reset_epoch,
+            SyncRoundResponse {
+                acked_uuids: acked,
+                config_json: resp["config"].to_string(),
+                winner_challenge_id: winner,
+                events,
+                new_last_server_seq: new_last,
+            },
+        )
+        .expect("apply sync response");
     resp
 }
 
@@ -710,9 +703,10 @@ async fn replay_of_the_same_batch_is_a_no_op() {
     log_mixed_day(&a.store);
 
     // Capture A's first pending batch BEFORE syncing.
-    let device_id = a.store.device_id().unwrap();
-    let batch = a.store.pending_events(CTX.into(), 10_000).unwrap();
-    let config: Value = serde_json::from_str(&a.store.export_config_state().unwrap()).unwrap();
+    let prepared = a.store.prepare_sync_round(CTX.into(), 10_000).unwrap();
+    let device_id = prepared.device_id;
+    let batch = prepared.pending;
+    let config: Value = serde_json::from_str(&prepared.config_json).unwrap();
     sync(&srv.app, &token, &a.store).await;
 
     let count_after_first: i64 = {
@@ -965,8 +959,9 @@ async fn reset_device_recovers_its_own_history() {
     assert!(a.store.active_challenge().unwrap().is_none());
     assert_eq!(
         a.store
-            .pending_events(CTX.into(), 10_000)
-            .expect("pending")
+            .prepare_sync_round(CTX.into(), 10_000)
+            .expect("prepare")
+            .pending
             .len(),
         0,
         "reset leaves an empty local log"
@@ -2046,8 +2041,13 @@ async fn sync_rejects_malformed_challenge_config() {
     c.store
         .create_challenge(challenge_cfg("2026-06-21", at("2026-07-04", 9, 0)))
         .expect("create");
-    let mut config: Value =
-        serde_json::from_str(&c.store.export_config_state().expect("cfg")).expect("cfg json");
+    let mut config: Value = serde_json::from_str(
+        &c.store
+            .prepare_sync_round(CTX.into(), 0)
+            .expect("prepare")
+            .config_json,
+    )
+    .expect("cfg json");
     config["challenge"]["challenge"]["start_date"] = json!("NOT-A-REAL-DATE");
 
     let (status, _b) = json_request(

@@ -2,29 +2,25 @@
 //  SyncEngine.swift
 //  Drome
 //
-//  Drives ONE sync round-trip against the core facade, exactly per the
-//  reset-epoch invariant (docs/PHASE2.md "Reset epoch"). The engine only moves
-//  JSON over the network and stamps status — all rules, dedup, LWW, and the
-//  reset gate live in the Rust core.
+//  Drives sync round-trips against the core facade (docs/PHASE2.md "Reset
+//  epoch"). The engine only moves JSON over the network and stamps status.
+//  Prepare, the tail, and the follow-up predicate live in the Rust core.
 //
-//  Round-trip control flow (the whole point of this file):
-//    1. Capture currentResetEpoch() ONCE at the start.
-//    2. Gather pendingEvents + exportConfigState + lastServerSeq (+ deviceId).
-//    3. POST /v1/sync  ← the ONLY await between the epoch capture and the tail.
-//    4. Apply the response through the epoch-gated tail writes:
-//         ackPushed(epoch) → applyRemoteConfig(epoch) [or adoptActiveChallenge
-//         on conflict] → applyPullBatch(epoch).
-//       If ANY returns .staleReset (a "Start over" landed mid-round-trip),
-//       ABORT cleanly — advance nothing — and reschedule. Because the tail runs
-//       with no await between its steps on the main actor, once ackPushed
-//       confirms the epoch still matches, no reset can interleave before the
-//       remaining writes, so the (ungated-by-design) conflict adoption is safe.
+//  Round-trip control flow:
+//    1. prepareSyncRound reads the epoch, device id, cursor, pending events,
+//       and config in one store transaction.
+//    2. POST /v1/sync. This is the only await between prepare and apply, so a
+//       "Start over" can only interleave here.
+//    3. applySyncResponse commits the tail, or writes nothing if the epoch
+//       moved. The store checks the epoch before it validates the payload.
+//    4. syncFollowUp is the only continuation decision. True schedules another
+//       debounced round. Adopting a winner does not, by itself.
 //    5. On 401, refresh once and retry; if refresh is also rejected, sign out
 //       locally (local data untouched) and surface it.
 //
 //  Scheduling is opportunistic: a debounced trigger after logs and on
 //  foreground, serialized so two round-trips can never overlap, and never
-//  blocking the UI.
+//  blocking the UI. There is no numeric cap; the debounce yields the CPU.
 //
 
 import Foundation
@@ -215,111 +211,76 @@ final class SyncEngine {
 
     // MARK: - The round-trip (reset-epoch invariant)
 
-    private enum RoundTripOutcome {
-        case completed(insertedEvents: UInt32, conflict: Bool, moreToPush: Bool, moreToPull: Bool)
-        /// A reset landed mid-round-trip; the tail no-oped. Nothing advanced.
-        case staleReset
+    private struct RoundTripOutcome {
+        var outcome: SyncOutcome
+        var conflict: Bool
+        /// The core predicate. The only reason to schedule another round.
+        var followUp: Bool
     }
 
     private func roundTrip(accessToken: String) async throws -> RoundTripOutcome {
-        // 1. Capture the reset epoch ONCE (threaded into every tail write below).
-        let epoch = try client.currentResetEpoch()
-        let deviceId = try client.deviceId()
-        let lastSeq = try client.lastServerSeq(context: context)
-        let pending = try client.pendingEvents(context: context, limit: pushBatchLimit)
-        let configJSON = try client.exportConfigState()
+        let prepared = try client.prepareSyncRound(context: context, limit: pushBatchLimit)
 
-        // 2. Network round-trip — the ONLY await between the epoch capture and
-        //    the tail, so a "Start over" can only interleave HERE.
+        // The only await between prepare and apply, so a "Start over" can
+        // only interleave here. Apply then no-ops the whole tail.
         let response = try await api.sync(
             SyncRequest(
-                deviceId: deviceId,
-                lastServerSeq: lastSeq,
-                events: pending,
-                configJSON: configJSON
+                deviceId: prepared.deviceId,
+                lastServerSeq: prepared.lastServerSeq,
+                events: prepared.events,
+                configJSON: prepared.configJSON
             ),
             accessToken: accessToken
         )
 
-        // 3. Tail writes — each gated on the captured epoch. No await from here
-        //    to the end: once ackPushed confirms the epoch, no reset can slip in
-        //    before the remaining writes (see file header).
-        if try client.ackPushed(
+        let applied = try client.applySyncResponse(
             context: context,
-            uuids: response.ackedUuids,
-            expectedResetEpoch: epoch
-        ) == .staleReset {
-            return .staleReset
-        }
-
-        let hadConflict = response.activeChallengeConflict != nil
-        if let conflict = response.activeChallengeConflict {
-            // The one-active-challenge race: force-adopt the server-declared
-            // winner (plain LWW can't — the loser's stamp may be newer). This
-            // archives the local challenge and adopts the winner regardless.
-            try client.adoptActiveChallenge(
-                blockJson: response.configJSON,
-                winnerChallengeId: conflict.winnerChallengeId
-            )
-        } else if try client.applyRemoteConfig(
-            response.configJSON,
-            expectedResetEpoch: epoch
-        ) == .staleReset {
-            return .staleReset
-        }
-
-        let pull = try client.applyPullBatch(
-            context: context,
+            expectedResetEpoch: prepared.resetEpoch,
+            ackedUuids: response.ackedUuids,
+            configJSON: response.configJSON,
+            winnerChallengeId: response.activeChallengeConflict?.winnerChallengeId,
             events: response.events,
-            newLastServerSeq: response.newLastServerSeq,
-            expectedResetEpoch: epoch
+            newLastServerSeq: response.newLastServerSeq
         )
-        if pull.outcome == .staleReset {
-            return .staleReset
-        }
-
-        // A full push batch means more may be queued behind it — drain across
-        // round-trips so a large backlog (e.g. a months-later fresh sign-in)
-        // isn't stranded above the per-round-trip cap.
-        let moreToPush = pending.count >= Int(pushBatchLimit)
-        return .completed(
-            insertedEvents: pull.inserted,
-            conflict: hadConflict,
-            moreToPush: moreToPush,
-            moreToPull: response.moreToPull
+        let followUp = client.syncFollowUp(
+            pushedCount: UInt32(prepared.events.count),
+            pushLimit: pushBatchLimit,
+            more: response.moreToPull,
+            outcome: applied.outcome
+        )
+        return RoundTripOutcome(
+            outcome: applied.outcome,
+            conflict: response.activeChallengeConflict != nil,
+            followUp: followUp
         )
     }
 
     private func settle(_ outcome: RoundTripOutcome) {
-        switch outcome {
+        switch outcome.outcome {
         case .staleReset:
-            // The round-trip aborted cleanly (nothing applied). A fresh sync
-            // starts at cursor 0 and recovers full history — schedule it.
+            // Nothing was written. A fresh prepare recovers at cursor 0.
             status = .idle
-            triggerSync()
-        case .completed(_, let conflict, let moreToPush, let moreToPull):
-            // `insertedEvents` is deliberately ignored: a config-only pull
-            // changes local state with zero inserts, so the refresh below is
-            // unconditional (see comment).
+        case .applied:
+            // Refresh even when `inserted` is 0. A config-only pull changes
+            // local state without storing a new event.
             lastSyncedAt = Date()
             status = .idle
-            if conflict {
+            if outcome.conflict {
                 pendingConflict = true
                 // Surface the board swap where it's visible, not only in the
-                // Account screen banner.
+                // Account screen banner. Adoption itself does not schedule
+                // another round; the winner and its events landed together.
                 appModel?.noteConflictAdopted()
             }
-            // Re-project on EVERY completed round-trip: a config-only pull (a
+            // Re-project on EVERY applied round-trip: a config-only pull (a
             // synced challenge/book/extras/presets change carries no events, so
             // inserted == 0) must not stay invisible — otherwise a fresh device
             // can sit on onboarding until an unrelated refresh, and a running
             // board can show stale config after another device edits it.
             appModel?.refreshAfterSync()
-            // Converge after adopting a winner (pull its events/cursor), keep
-            // draining a large push backlog, or fetch the next capped pull batch.
-            if conflict || moreToPush || moreToPull {
-                triggerSync()
-            }
+        }
+        if outcome.followUp {
+            triggerSync()
         }
     }
 }

@@ -30,6 +30,9 @@ WaterLogEntry = "UniWaterLogEntry"
 ChugCheck = "UniChugCheck"
 DromeError = "UniDromeError"
 WireEvent = "UniWireEvent"
+SyncPreparation = "UniSyncPreparation"
+SyncApplyResult = "UniSyncApplyResult"
+SyncRoundResponse = "UniSyncRoundResponse"
 
 # Android bindings live in their own Kotlin package, so unlike Swift they do
 # not collide with the hand-written facade models. Keep the generated package

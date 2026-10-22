@@ -675,17 +675,11 @@ internal object IntegrityCheckingUniffiLib {
         uniffiCheckContractApiVersion(this)
         uniffiCheckApiChecksums(this)
     }
-    external fun uniffi_drome_core_checksum_method_dromestore_ack_pushed(
+    external fun uniffi_drome_core_checksum_func_sync_follow_up(
     ): Int
     external fun uniffi_drome_core_checksum_method_dromestore_active_challenge(
     ): Int
-    external fun uniffi_drome_core_checksum_method_dromestore_adopt_active_challenge(
-    ): Int
-    external fun uniffi_drome_core_checksum_method_dromestore_apply_pull_batch(
-    ): Int
-    external fun uniffi_drome_core_checksum_method_dromestore_apply_remote_config(
-    ): Int
-    external fun uniffi_drome_core_checksum_method_dromestore_apply_remote_events(
+    external fun uniffi_drome_core_checksum_method_dromestore_apply_sync_response(
     ): Int
     external fun uniffi_drome_core_checksum_method_dromestore_backfill_days(
     ): Int
@@ -699,13 +693,7 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_drome_core_checksum_method_dromestore_create_challenge(
     ): Int
-    external fun uniffi_drome_core_checksum_method_dromestore_current_reset_epoch(
-    ): Int
     external fun uniffi_drome_core_checksum_method_dromestore_day_state(
-    ): Int
-    external fun uniffi_drome_core_checksum_method_dromestore_device_id(
-    ): Int
-    external fun uniffi_drome_core_checksum_method_dromestore_export_config_state(
     ): Int
     external fun uniffi_drome_core_checksum_method_dromestore_export_csv(
     ): Int
@@ -714,8 +702,6 @@ internal object IntegrityCheckingUniffiLib {
     external fun uniffi_drome_core_checksum_method_dromestore_extra_defs(
     ): Int
     external fun uniffi_drome_core_checksum_method_dromestore_import_json(
-    ): Int
-    external fun uniffi_drome_core_checksum_method_dromestore_last_server_seq(
     ): Int
     external fun uniffi_drome_core_checksum_method_dromestore_log_diet_ok(
     ): Int
@@ -735,7 +721,7 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_drome_core_checksum_method_dromestore_log_workout(
     ): Int
-    external fun uniffi_drome_core_checksum_method_dromestore_pending_events(
+    external fun uniffi_drome_core_checksum_method_dromestore_prepare_sync_round(
     ): Int
     external fun uniffi_drome_core_checksum_method_dromestore_reset_all_data(
     ): Int
@@ -750,8 +736,6 @@ internal object IntegrityCheckingUniffiLib {
     external fun uniffi_drome_core_checksum_method_dromestore_set_diet_description(
     ): Int
     external fun uniffi_drome_core_checksum_method_dromestore_set_extra_enabled(
-    ): Int
-    external fun uniffi_drome_core_checksum_method_dromestore_set_last_server_seq(
     ): Int
     external fun uniffi_drome_core_checksum_method_dromestore_set_start_date(
     ): Int
@@ -797,18 +781,10 @@ internal object UniffiLib {
     ): Unit
     external fun uniffi_drome_core_fn_constructor_dromestore_open(`dbPath`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
-    external fun uniffi_drome_core_fn_method_dromestore_ack_pushed(`ptr`: Long,`context`: RustBuffer.ByValue,`uuids`: RustBuffer.ByValue,`expectedResetEpoch`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): RustBuffer.ByValue
     external fun uniffi_drome_core_fn_method_dromestore_active_challenge(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-    external fun uniffi_drome_core_fn_method_dromestore_adopt_active_challenge(`ptr`: Long,`blockJson`: RustBuffer.ByValue,`winnerChallengeId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-    ): Unit
-    external fun uniffi_drome_core_fn_method_dromestore_apply_pull_batch(`ptr`: Long,`context`: RustBuffer.ByValue,`events`: RustBuffer.ByValue,`newLastServerSeq`: Long,`expectedResetEpoch`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_drome_core_fn_method_dromestore_apply_sync_response(`ptr`: Long,`context`: RustBuffer.ByValue,`expectedResetEpoch`: Long,`response`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-    external fun uniffi_drome_core_fn_method_dromestore_apply_remote_config(`ptr`: Long,`blockJson`: RustBuffer.ByValue,`expectedResetEpoch`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): RustBuffer.ByValue
-    external fun uniffi_drome_core_fn_method_dromestore_apply_remote_events(`ptr`: Long,`events`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-    ): Int
     external fun uniffi_drome_core_fn_method_dromestore_backfill_days(`ptr`: Long,`days`: RustBuffer.ByValue,`now`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_drome_core_fn_method_dromestore_calendar(`ptr`: Long,`fromDate`: RustBuffer.ByValue,`toDate`: RustBuffer.ByValue,`now`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -821,13 +797,7 @@ internal object UniffiLib {
     ): RustBuffer.ByValue
     external fun uniffi_drome_core_fn_method_dromestore_create_challenge(`ptr`: Long,`cfg`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-    external fun uniffi_drome_core_fn_method_dromestore_current_reset_epoch(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Long
     external fun uniffi_drome_core_fn_method_dromestore_day_state(`ptr`: Long,`date`: RustBuffer.ByValue,`now`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-    ): RustBuffer.ByValue
-    external fun uniffi_drome_core_fn_method_dromestore_device_id(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): RustBuffer.ByValue
-    external fun uniffi_drome_core_fn_method_dromestore_export_config_state(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_drome_core_fn_method_dromestore_export_csv(`ptr`: Long,`now`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
@@ -837,8 +807,6 @@ internal object UniffiLib {
     ): RustBuffer.ByValue
     external fun uniffi_drome_core_fn_method_dromestore_import_json(`ptr`: Long,`snapshot`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
-    external fun uniffi_drome_core_fn_method_dromestore_last_server_seq(`ptr`: Long,`context`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-    ): Long
     external fun uniffi_drome_core_fn_method_dromestore_log_diet_ok(`ptr`: Long,`now`: RustBuffer.ByValue,`effectiveDate`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_drome_core_fn_method_dromestore_log_extra_done(`ptr`: Long,`extraId`: RustBuffer.ByValue,`now`: RustBuffer.ByValue,`effectiveDate`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -857,7 +825,7 @@ internal object UniffiLib {
     ): RustBuffer.ByValue
     external fun uniffi_drome_core_fn_method_dromestore_log_workout(`ptr`: Long,`durationMin`: Int,`outdoor`: Byte,`note`: RustBuffer.ByValue,`startedAt`: RustBuffer.ByValue,`now`: RustBuffer.ByValue,`effectiveDate`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-    external fun uniffi_drome_core_fn_method_dromestore_pending_events(`ptr`: Long,`context`: RustBuffer.ByValue,`limit`: Int,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_drome_core_fn_method_dromestore_prepare_sync_round(`ptr`: Long,`context`: RustBuffer.ByValue,`limit`: Int,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_drome_core_fn_method_dromestore_reset_all_data(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
@@ -873,8 +841,6 @@ internal object UniffiLib {
     ): Unit
     external fun uniffi_drome_core_fn_method_dromestore_set_extra_enabled(`ptr`: Long,`extraId`: RustBuffer.ByValue,`enabled`: Byte,`now`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
-    external fun uniffi_drome_core_fn_method_dromestore_set_last_server_seq(`ptr`: Long,`context`: RustBuffer.ByValue,`seq`: Long,`expectedResetEpoch`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): RustBuffer.ByValue
     external fun uniffi_drome_core_fn_method_dromestore_set_start_date(`ptr`: Long,`startDate`: RustBuffer.ByValue,`now`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_drome_core_fn_method_dromestore_set_waking_window(`ptr`: Long,`startMinutes`: Short,`endMinutes`: Short,`now`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -893,6 +859,8 @@ internal object UniffiLib {
     ): RustBuffer.ByValue
     external fun uniffi_drome_core_fn_method_dromestore_water_state(`ptr`: Long,`now`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
+    external fun uniffi_drome_core_fn_func_sync_follow_up(`pushedCount`: Int,`pushLimit`: Int,`more`: Byte,`outcome`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Byte
     external fun ffi_drome_core_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun ffi_drome_core_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -1012,22 +980,13 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
-    if (lib.uniffi_drome_core_checksum_method_dromestore_ack_pushed() != 15558) {
+    if (lib.uniffi_drome_core_checksum_func_sync_follow_up() != 5915) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_drome_core_checksum_method_dromestore_active_challenge() != 23275) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_drome_core_checksum_method_dromestore_adopt_active_challenge() != 1966) {
-        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    }
-    if (lib.uniffi_drome_core_checksum_method_dromestore_apply_pull_batch() != 5823) {
-        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    }
-    if (lib.uniffi_drome_core_checksum_method_dromestore_apply_remote_config() != 56301) {
-        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    }
-    if (lib.uniffi_drome_core_checksum_method_dromestore_apply_remote_events() != 27145) {
+    if (lib.uniffi_drome_core_checksum_method_dromestore_apply_sync_response() != 33375) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_drome_core_checksum_method_dromestore_backfill_days() != 23733) {
@@ -1048,16 +1007,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_drome_core_checksum_method_dromestore_create_challenge() != 15512) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_drome_core_checksum_method_dromestore_current_reset_epoch() != 13420) {
-        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    }
     if (lib.uniffi_drome_core_checksum_method_dromestore_day_state() != 35962) {
-        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    }
-    if (lib.uniffi_drome_core_checksum_method_dromestore_device_id() != 62242) {
-        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    }
-    if (lib.uniffi_drome_core_checksum_method_dromestore_export_config_state() != 57581) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_drome_core_checksum_method_dromestore_export_csv() != 51127) {
@@ -1070,9 +1020,6 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_drome_core_checksum_method_dromestore_import_json() != 11569) {
-        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    }
-    if (lib.uniffi_drome_core_checksum_method_dromestore_last_server_seq() != 30956) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_drome_core_checksum_method_dromestore_log_diet_ok() != 4118) {
@@ -1102,7 +1049,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_drome_core_checksum_method_dromestore_log_workout() != 4364) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_drome_core_checksum_method_dromestore_pending_events() != 40141) {
+    if (lib.uniffi_drome_core_checksum_method_dromestore_prepare_sync_round() != 33770) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_drome_core_checksum_method_dromestore_reset_all_data() != 64623) {
@@ -1124,9 +1071,6 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_drome_core_checksum_method_dromestore_set_extra_enabled() != 34287) {
-        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    }
-    if (lib.uniffi_drome_core_checksum_method_dromestore_set_last_server_seq() != 43219) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_drome_core_checksum_method_dromestore_set_start_date() != 22348) {
@@ -1613,77 +1557,21 @@ public object FfiConverterString: FfiConverter<String, RustBuffer.ByValue> {
 
 public interface DromeStoreInterface {
     
-    /**
-     * Advances `context`'s push watermark past every acked uuid this store
-     * holds (the new `synced_through` is the max of their local rowids, never
-     * moving backwards). Unknown uuids are ignored.
-     *
-     * `expected_reset_epoch` is the reset generation the round-trip captured
-     * at its start (from `current_reset_epoch`). If a `reset_all_data` ran
-     * since, this is a stale in-flight write: it NO-OPs and returns
-     * `StaleReset` (not an error), so a re-minted post-reset store's
-     * watermark is never dragged forward by a round-trip the reset invalidated
-     * (docs/PHASE2.md, sync/reset epoch invariant).
-     */
-    fun `ackPushed`(`context`: kotlin.String, `uuids`: List<kotlin.String>, `expectedResetEpoch`: kotlin.Long): SyncOutcome
-    
     fun `activeChallenge`(): Challenge?
     
     /**
-     * Adopt the server-declared winner of a one-active-challenge conflict.
-     * Call this INSTEAD of `apply_remote_config` when a sync response carries
-     * `active_challenge_conflict`: `block_json` is that response's `config`
-     * (the winner's slots) and `winner_challenge_id` its
-     * `winner_challenge_id`. Unlike the LWW merge, this force-adopts the
-     * winner's challenge/presets/extras even when the loser's local challenge
-     * stamp is newer, and archives the loser locally — without it a loser
-     * whose challenge was created later keeps its own active challenge forever
-     * (a permanent split-brain the server cannot resolve). Idempotent.
+     * The tail of a sync round-trip, in one immediate transaction: check
+     * `expected_reset_epoch` (the epoch `prepare_sync_round` returned), then
+     * ack, adopt or merge, then insert the pulled events and assign the
+     * cursor. A stale epoch writes nothing and returns `StaleReset`, and does
+     * not reject a malformed payload. A live epoch validates config and
+     * pulled events before any write; a bad payload returns an error and
+     * commits nothing. `inserted` counts newly stored pulled events. The
+     * cursor is assigned to `new_last_server_seq`, including downward and
+     * including a response with no events. A winner id adopts that challenge;
+     * no winner id, or a blank one, merges (docs/PHASE2.md).
      */
-    fun `adoptActiveChallenge`(`blockJson`: kotlin.String, `winnerChallengeId`: kotlin.String)
-    
-    /**
-     * Applies a pulled batch AND advances `context`'s pull cursor in ONE
-     * transaction, returning the number of events inserted. Prefer this over
-     * separate `apply_remote_events` + `set_last_server_seq` calls: it makes
-     * crash-safety a property of the CORE, not of client call ordering. If the
-     * cursor were advanced in its own transaction, a crash between the two
-     * calls could leave the cursor PAST events that were never durably applied
-     * — the next pull would start after them and silently drop them. Bundling
-     * both writes means the cursor can never outrun the applied events.
-     *
-     * `expected_reset_epoch` is the reset generation captured at the round-
-     * trip's start. When a `reset_all_data` ran since, the WHOLE batch is
-     * dropped — neither the events nor the cursor advance land — and the call
-     * returns `{ StaleReset, inserted: 0 }`. This is the invariant that closes
-     * the reset/sync data-loss race: a re-minted post-reset store re-pulls its
-     * history from `server_seq > 0` on the next clean sync, and no stale tail
-     * can silently push the cursor past it (docs/PHASE2.md).
-     */
-    fun `applyPullBatch`(`context`: kotlin.String, `events`: List<WireEvent>, `newLastServerSeq`: kotlin.Long, `expectedResetEpoch`: kotlin.Long): PullResult
-    
-    /**
-     * Merges a remote config block (JSON from `export_config_state`) per-slot
-     * last-writer-wins on `(updated_at, device_id)`. A winning slot replaces
-     * the local config wholesale and adopts the remote stamp so the merge
-     * converges. Slots for a challenge this store has not seen are skipped
-     * (they land on a later sync, after the challenge arrives).
-     *
-     * `expected_reset_epoch` is the reset generation captured at the round-
-     * trip's start. A stale block (a `reset_all_data` ran since) NO-OPs and
-     * returns `StaleReset` rather than re-materializing the wiped challenge
-     * config on a store the user just started over (docs/PHASE2.md).
-     */
-    fun `applyRemoteConfig`(`blockJson`: kotlin.String, `expectedResetEpoch`: kotlin.Long): SyncOutcome
-    
-    /**
-     * Idempotent upsert of pulled events: uuids already present (including
-     * revoked ones) are skipped, so replays and self-echoes are no-ops.
-     * Inserted rows are marked remote-origin so `pending_events` never pushes
-     * them back. The whole batch validates first and applies atomically.
-     * Returns the number of events actually inserted.
-     */
-    fun `applyRemoteEvents`(`events`: List<WireEvent>): kotlin.UInt
+    fun `applySyncResponse`(`context`: kotlin.String, `expectedResetEpoch`: kotlin.Long, `response`: SyncRoundResponse): SyncApplyResult
     
     /**
      * Inserts one `day_backfilled` event per day, all in a single transaction.
@@ -1700,32 +1588,7 @@ public interface DromeStoreInterface {
     
     fun `createChallenge`(`cfg`: NewChallenge): Challenge
     
-    /**
-     * This store's current reset generation (docs/PHASE2.md, sync/reset epoch
-     * invariant). The SyncEngine reads this ONCE at the start of a sync
-     * round-trip and passes it back into every cursor-or-state-mutating tail
-     * write (`ack_pushed`, `apply_remote_config`, `set_last_server_seq`,
-     * `apply_pull_batch`); a `reset_all_data` between the capture and the tail
-     * bumps the epoch, so those writes NO-OP (return `StaleReset`) instead of
-     * resurrecting pre-reset sync state. A never-reset store reads 0.
-     */
-    fun `currentResetEpoch`(): kotlin.Long
-    
     fun `dayState`(`date`: kotlin.String, `now`: LocalInstant): DayState
-    
-    /**
-     * This store's stable device id (the config-LWW tiebreak; also sent with
-     * sync requests so the server can label event provenance). Minted once
-     * and persisted on first use.
-     */
-    fun `deviceId`(): kotlin.String
-    
-    /**
-     * This store's current config block (challenge settings, presets, extras)
-     * with per-slot LWW stamps, as JSON — the `config` half of a sync
-     * round-trip. Empty (`{}`) when no challenge is active.
-     */
-    fun `exportConfigState`(): kotlin.String
     
     fun `exportCsv`(`now`: LocalInstant): kotlin.String
     
@@ -1740,12 +1603,6 @@ public interface DromeStoreInterface {
      * log, never read from the snapshot.
      */
     fun `importJson`(`snapshot`: kotlin.String)
-    
-    /**
-     * `context`'s pull cursor (the highest `server_seq` this store has
-     * applied). 0 when the context has never pulled.
-     */
-    fun `lastServerSeq`(`context`: kotlin.String): kotlin.Long
     
     fun `logDietOk`(`now`: LocalInstant, `effectiveDate`: kotlin.String?): LogResult
     
@@ -1783,12 +1640,13 @@ public interface DromeStoreInterface {
     fun `logWorkout`(`durationMin`: kotlin.UInt, `outdoor`: kotlin.Boolean, `note`: kotlin.String?, `startedAt`: LocalInstant?, `now`: LocalInstant, `effectiveDate`: kotlin.String?): LogResult
     
     /**
-     * Local events past `context`'s `synced_through` watermark, oldest first,
-     * capped at `limit`, serialized for the wire. Remote-origin events are
-     * never returned (they came FROM the server); `photo_done` payloads have
-     * `photo_ref` stripped at this boundary (the local rows keep theirs).
+     * The request half of a sync round-trip: reset epoch, device id, pull
+     * cursor, pending events, and config JSON, read in one immediate
+     * transaction. The device id is minted here on first use. `limit` caps
+     * the pending batch and is not clamped; `0` returns no events.
+     * `photo_done` payloads have `photo_ref` stripped on the way out.
      */
-    fun `pendingEvents`(`context`: kotlin.String, `limit`: kotlin.UInt): List<WireEvent>
+    fun `prepareSyncRound`(`context`: kotlin.String, `limit`: kotlin.UInt): SyncPreparation
     
     /**
      * Wipes EVERYTHING — challenge, events, container presets, extra defs —
@@ -1865,18 +1723,6 @@ public interface DromeStoreInterface {
      * `now` stamps the extras config-LWW slot (docs/PHASE2.md).
      */
     fun `setExtraEnabled`(`extraId`: kotlin.String, `enabled`: kotlin.Boolean, `now`: LocalInstant)
-    
-    /**
-     * Advances `context`'s pull cursor after applying a pull batch.
-     *
-     * `expected_reset_epoch` is the reset generation captured at the round-
-     * trip's start; a stale advance (a `reset_all_data` ran since) NO-OPs and
-     * returns `StaleReset`. This is the exact write the data-loss race turned
-     * on: without the gate, a stale round-trip re-created `sync_state` with a
-     * pre-reset `last_server_seq`, so later clean pulls (`server_seq > cursor`)
-     * skipped the account's own re-pullable history forever (docs/PHASE2.md).
-     */
-    fun `setLastServerSeq`(`context`: kotlin.String, `seq`: kotlin.Long, `expectedResetEpoch`: kotlin.Long): SyncOutcome
     
     /**
      * Edit the challenge's start date after the fact — e.g. the user picked
@@ -2036,35 +1882,6 @@ open class DromeStore: Disposable, AutoCloseable, DromeStoreInterface
     }
 
     
-    /**
-     * Advances `context`'s push watermark past every acked uuid this store
-     * holds (the new `synced_through` is the max of their local rowids, never
-     * moving backwards). Unknown uuids are ignored.
-     *
-     * `expected_reset_epoch` is the reset generation the round-trip captured
-     * at its start (from `current_reset_epoch`). If a `reset_all_data` ran
-     * since, this is a stale in-flight write: it NO-OPs and returns
-     * `StaleReset` (not an error), so a re-minted post-reset store's
-     * watermark is never dragged forward by a round-trip the reset invalidated
-     * (docs/PHASE2.md, sync/reset epoch invariant).
-     */
-    @Throws(DromeException::class)override fun `ackPushed`(`context`: kotlin.String, `uuids`: List<kotlin.String>, `expectedResetEpoch`: kotlin.Long): SyncOutcome {
-            return FfiConverterTypeSyncOutcome.lift(
-    callWithHandle {
-    uniffiRustCallWithError(DromeException) { _status ->
-    UniffiLib.uniffi_drome_core_fn_method_dromestore_ack_pushed(
-        it,
-        
-        FfiConverterString.lower(`context`),
-        FfiConverterSequenceString.lower(`uuids`),
-        FfiConverterLong.lower(`expectedResetEpoch`),_status)
-}
-    }
-    )
-    }
-    
-
-    
     @Throws(DromeException::class)override fun `activeChallenge`(): Challenge? {
             return FfiConverterOptionalTypeChallenge.lift(
     callWithHandle {
@@ -2080,110 +1897,27 @@ open class DromeStore: Disposable, AutoCloseable, DromeStoreInterface
 
     
     /**
-     * Adopt the server-declared winner of a one-active-challenge conflict.
-     * Call this INSTEAD of `apply_remote_config` when a sync response carries
-     * `active_challenge_conflict`: `block_json` is that response's `config`
-     * (the winner's slots) and `winner_challenge_id` its
-     * `winner_challenge_id`. Unlike the LWW merge, this force-adopts the
-     * winner's challenge/presets/extras even when the loser's local challenge
-     * stamp is newer, and archives the loser locally — without it a loser
-     * whose challenge was created later keeps its own active challenge forever
-     * (a permanent split-brain the server cannot resolve). Idempotent.
+     * The tail of a sync round-trip, in one immediate transaction: check
+     * `expected_reset_epoch` (the epoch `prepare_sync_round` returned), then
+     * ack, adopt or merge, then insert the pulled events and assign the
+     * cursor. A stale epoch writes nothing and returns `StaleReset`, and does
+     * not reject a malformed payload. A live epoch validates config and
+     * pulled events before any write; a bad payload returns an error and
+     * commits nothing. `inserted` counts newly stored pulled events. The
+     * cursor is assigned to `new_last_server_seq`, including downward and
+     * including a response with no events. A winner id adopts that challenge;
+     * no winner id, or a blank one, merges (docs/PHASE2.md).
      */
-    @Throws(DromeException::class)override fun `adoptActiveChallenge`(`blockJson`: kotlin.String, `winnerChallengeId`: kotlin.String)
-        = 
+    @Throws(DromeException::class)override fun `applySyncResponse`(`context`: kotlin.String, `expectedResetEpoch`: kotlin.Long, `response`: SyncRoundResponse): SyncApplyResult {
+            return FfiConverterTypeSyncApplyResult.lift(
     callWithHandle {
     uniffiRustCallWithError(DromeException) { _status ->
-    UniffiLib.uniffi_drome_core_fn_method_dromestore_adopt_active_challenge(
-        it,
-        
-        FfiConverterString.lower(`blockJson`),
-        FfiConverterString.lower(`winnerChallengeId`),_status)
-}
-    }
-    
-    
-
-    
-    /**
-     * Applies a pulled batch AND advances `context`'s pull cursor in ONE
-     * transaction, returning the number of events inserted. Prefer this over
-     * separate `apply_remote_events` + `set_last_server_seq` calls: it makes
-     * crash-safety a property of the CORE, not of client call ordering. If the
-     * cursor were advanced in its own transaction, a crash between the two
-     * calls could leave the cursor PAST events that were never durably applied
-     * — the next pull would start after them and silently drop them. Bundling
-     * both writes means the cursor can never outrun the applied events.
-     *
-     * `expected_reset_epoch` is the reset generation captured at the round-
-     * trip's start. When a `reset_all_data` ran since, the WHOLE batch is
-     * dropped — neither the events nor the cursor advance land — and the call
-     * returns `{ StaleReset, inserted: 0 }`. This is the invariant that closes
-     * the reset/sync data-loss race: a re-minted post-reset store re-pulls its
-     * history from `server_seq > 0` on the next clean sync, and no stale tail
-     * can silently push the cursor past it (docs/PHASE2.md).
-     */
-    @Throws(DromeException::class)override fun `applyPullBatch`(`context`: kotlin.String, `events`: List<WireEvent>, `newLastServerSeq`: kotlin.Long, `expectedResetEpoch`: kotlin.Long): PullResult {
-            return FfiConverterTypePullResult.lift(
-    callWithHandle {
-    uniffiRustCallWithError(DromeException) { _status ->
-    UniffiLib.uniffi_drome_core_fn_method_dromestore_apply_pull_batch(
+    UniffiLib.uniffi_drome_core_fn_method_dromestore_apply_sync_response(
         it,
         
         FfiConverterString.lower(`context`),
-        FfiConverterSequenceTypeWireEvent.lower(`events`),
-        FfiConverterLong.lower(`newLastServerSeq`),
-        FfiConverterLong.lower(`expectedResetEpoch`),_status)
-}
-    }
-    )
-    }
-    
-
-    
-    /**
-     * Merges a remote config block (JSON from `export_config_state`) per-slot
-     * last-writer-wins on `(updated_at, device_id)`. A winning slot replaces
-     * the local config wholesale and adopts the remote stamp so the merge
-     * converges. Slots for a challenge this store has not seen are skipped
-     * (they land on a later sync, after the challenge arrives).
-     *
-     * `expected_reset_epoch` is the reset generation captured at the round-
-     * trip's start. A stale block (a `reset_all_data` ran since) NO-OPs and
-     * returns `StaleReset` rather than re-materializing the wiped challenge
-     * config on a store the user just started over (docs/PHASE2.md).
-     */
-    @Throws(DromeException::class)override fun `applyRemoteConfig`(`blockJson`: kotlin.String, `expectedResetEpoch`: kotlin.Long): SyncOutcome {
-            return FfiConverterTypeSyncOutcome.lift(
-    callWithHandle {
-    uniffiRustCallWithError(DromeException) { _status ->
-    UniffiLib.uniffi_drome_core_fn_method_dromestore_apply_remote_config(
-        it,
-        
-        FfiConverterString.lower(`blockJson`),
-        FfiConverterLong.lower(`expectedResetEpoch`),_status)
-}
-    }
-    )
-    }
-    
-
-    
-    /**
-     * Idempotent upsert of pulled events: uuids already present (including
-     * revoked ones) are skipped, so replays and self-echoes are no-ops.
-     * Inserted rows are marked remote-origin so `pending_events` never pushes
-     * them back. The whole batch validates first and applies atomically.
-     * Returns the number of events actually inserted.
-     */
-    @Throws(DromeException::class)override fun `applyRemoteEvents`(`events`: List<WireEvent>): kotlin.UInt {
-            return FfiConverterUInt.lift(
-    callWithHandle {
-    uniffiRustCallWithError(DromeException) { _status ->
-    UniffiLib.uniffi_drome_core_fn_method_dromestore_apply_remote_events(
-        it,
-        
-        FfiConverterSequenceTypeWireEvent.lower(`events`),_status)
+        FfiConverterLong.lower(`expectedResetEpoch`),
+        FfiConverterTypeSyncRoundResponse.lower(`response`),_status)
 }
     }
     )
@@ -2287,29 +2021,6 @@ open class DromeStore: Disposable, AutoCloseable, DromeStoreInterface
     
 
     
-    /**
-     * This store's current reset generation (docs/PHASE2.md, sync/reset epoch
-     * invariant). The SyncEngine reads this ONCE at the start of a sync
-     * round-trip and passes it back into every cursor-or-state-mutating tail
-     * write (`ack_pushed`, `apply_remote_config`, `set_last_server_seq`,
-     * `apply_pull_batch`); a `reset_all_data` between the capture and the tail
-     * bumps the epoch, so those writes NO-OP (return `StaleReset`) instead of
-     * resurrecting pre-reset sync state. A never-reset store reads 0.
-     */
-    @Throws(DromeException::class)override fun `currentResetEpoch`(): kotlin.Long {
-            return FfiConverterLong.lift(
-    callWithHandle {
-    uniffiRustCallWithError(DromeException) { _status ->
-    UniffiLib.uniffi_drome_core_fn_method_dromestore_current_reset_epoch(
-        it,
-        _status)
-}
-    }
-    )
-    }
-    
-
-    
     @Throws(DromeException::class)override fun `dayState`(`date`: kotlin.String, `now`: LocalInstant): DayState {
             return FfiConverterTypeDayState.lift(
     callWithHandle {
@@ -2319,44 +2030,6 @@ open class DromeStore: Disposable, AutoCloseable, DromeStoreInterface
         
         FfiConverterString.lower(`date`),
         FfiConverterTypeLocalInstant.lower(`now`),_status)
-}
-    }
-    )
-    }
-    
-
-    
-    /**
-     * This store's stable device id (the config-LWW tiebreak; also sent with
-     * sync requests so the server can label event provenance). Minted once
-     * and persisted on first use.
-     */
-    @Throws(DromeException::class)override fun `deviceId`(): kotlin.String {
-            return FfiConverterString.lift(
-    callWithHandle {
-    uniffiRustCallWithError(DromeException) { _status ->
-    UniffiLib.uniffi_drome_core_fn_method_dromestore_device_id(
-        it,
-        _status)
-}
-    }
-    )
-    }
-    
-
-    
-    /**
-     * This store's current config block (challenge settings, presets, extras)
-     * with per-slot LWW stamps, as JSON — the `config` half of a sync
-     * round-trip. Empty (`{}`) when no challenge is active.
-     */
-    @Throws(DromeException::class)override fun `exportConfigState`(): kotlin.String {
-            return FfiConverterString.lift(
-    callWithHandle {
-    uniffiRustCallWithError(DromeException) { _status ->
-    UniffiLib.uniffi_drome_core_fn_method_dromestore_export_config_state(
-        it,
-        _status)
 }
     }
     )
@@ -2425,25 +2098,6 @@ open class DromeStore: Disposable, AutoCloseable, DromeStoreInterface
 }
     }
     
-    
-
-    
-    /**
-     * `context`'s pull cursor (the highest `server_seq` this store has
-     * applied). 0 when the context has never pulled.
-     */
-    @Throws(DromeException::class)override fun `lastServerSeq`(`context`: kotlin.String): kotlin.Long {
-            return FfiConverterLong.lift(
-    callWithHandle {
-    uniffiRustCallWithError(DromeException) { _status ->
-    UniffiLib.uniffi_drome_core_fn_method_dromestore_last_server_seq(
-        it,
-        
-        FfiConverterString.lower(`context`),_status)
-}
-    }
-    )
-    }
     
 
     
@@ -2620,16 +2274,17 @@ open class DromeStore: Disposable, AutoCloseable, DromeStoreInterface
 
     
     /**
-     * Local events past `context`'s `synced_through` watermark, oldest first,
-     * capped at `limit`, serialized for the wire. Remote-origin events are
-     * never returned (they came FROM the server); `photo_done` payloads have
-     * `photo_ref` stripped at this boundary (the local rows keep theirs).
+     * The request half of a sync round-trip: reset epoch, device id, pull
+     * cursor, pending events, and config JSON, read in one immediate
+     * transaction. The device id is minted here on first use. `limit` caps
+     * the pending batch and is not clamped; `0` returns no events.
+     * `photo_done` payloads have `photo_ref` stripped on the way out.
      */
-    @Throws(DromeException::class)override fun `pendingEvents`(`context`: kotlin.String, `limit`: kotlin.UInt): List<WireEvent> {
-            return FfiConverterSequenceTypeWireEvent.lift(
+    @Throws(DromeException::class)override fun `prepareSyncRound`(`context`: kotlin.String, `limit`: kotlin.UInt): SyncPreparation {
+            return FfiConverterTypeSyncPreparation.lift(
     callWithHandle {
     uniffiRustCallWithError(DromeException) { _status ->
-    UniffiLib.uniffi_drome_core_fn_method_dromestore_pending_events(
+    UniffiLib.uniffi_drome_core_fn_method_dromestore_prepare_sync_round(
         it,
         
         FfiConverterString.lower(`context`),
@@ -2806,33 +2461,6 @@ open class DromeStore: Disposable, AutoCloseable, DromeStoreInterface
 }
     }
     
-    
-
-    
-    /**
-     * Advances `context`'s pull cursor after applying a pull batch.
-     *
-     * `expected_reset_epoch` is the reset generation captured at the round-
-     * trip's start; a stale advance (a `reset_all_data` ran since) NO-OPs and
-     * returns `StaleReset`. This is the exact write the data-loss race turned
-     * on: without the gate, a stale round-trip re-created `sync_state` with a
-     * pre-reset `last_server_seq`, so later clean pulls (`server_seq > cursor`)
-     * skipped the account's own re-pullable history forever (docs/PHASE2.md).
-     */
-    @Throws(DromeException::class)override fun `setLastServerSeq`(`context`: kotlin.String, `seq`: kotlin.Long, `expectedResetEpoch`: kotlin.Long): SyncOutcome {
-            return FfiConverterTypeSyncOutcome.lift(
-    callWithHandle {
-    uniffiRustCallWithError(DromeException) { _status ->
-    UniffiLib.uniffi_drome_core_fn_method_dromestore_set_last_server_seq(
-        it,
-        
-        FfiConverterString.lower(`context`),
-        FfiConverterLong.lower(`seq`),
-        FfiConverterLong.lower(`expectedResetEpoch`),_status)
-}
-    }
-    )
-    }
     
 
     
@@ -3851,49 +3479,6 @@ public object FfiConverterTypeNewChallenge: FfiConverterRustBuffer<NewChallenge>
 
 
 /**
- * The result of `apply_pull_batch`: whether the batch applied and, when it
- * did, how many events were newly inserted (0 on `StaleReset`, and also 0
- * when every pulled event was already present by uuid).
- */
-data class PullResult (
-    var `outcome`: SyncOutcome
-    , 
-    var `inserted`: kotlin.UInt
-    
-){
-    
-
-    
-
-    
-    companion object
-}
-
-/**
- * @suppress
- */
-public object FfiConverterTypePullResult: FfiConverterRustBuffer<PullResult> {
-    override fun read(buf: ByteBuffer): PullResult {
-        return PullResult(
-            FfiConverterTypeSyncOutcome.read(buf),
-            FfiConverterUInt.read(buf),
-        )
-    }
-
-    override fun allocationSize(value: PullResult) = (
-            FfiConverterTypeSyncOutcome.allocationSize(value.`outcome`) +
-            FfiConverterUInt.allocationSize(value.`inserted`)
-    )
-
-    override fun write(value: PullResult, buf: ByteBuffer) {
-            FfiConverterTypeSyncOutcome.write(value.`outcome`, buf)
-            FfiConverterUInt.write(value.`inserted`, buf)
-    }
-}
-
-
-
-/**
  * Per-task revocability of a day, for the UI's toggle affordances. A flag is
  * `true` exactly when a live (non-revoked) event of that kind is attributed
  * to the date — i.e. exactly when `revoke_task` would succeed for it.
@@ -4110,6 +3695,165 @@ public object FfiConverterTypeShareCardWorkout: FfiConverterRustBuffer<ShareCard
     override fun write(value: ShareCardWorkout, buf: ByteBuffer) {
             FfiConverterUInt.write(value.`durationMin`, buf)
             FfiConverterBoolean.write(value.`outdoor`, buf)
+    }
+}
+
+
+
+/**
+ * The result of applying one sync response. `inserted` counts pulled events
+ * newly stored (0 on `StaleReset`, and also 0 when every pulled uuid was
+ * already present). Replaces the old pull-batch record.
+ */
+data class SyncApplyResult (
+    var `outcome`: SyncOutcome
+    , 
+    var `inserted`: kotlin.UInt
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeSyncApplyResult: FfiConverterRustBuffer<SyncApplyResult> {
+    override fun read(buf: ByteBuffer): SyncApplyResult {
+        return SyncApplyResult(
+            FfiConverterTypeSyncOutcome.read(buf),
+            FfiConverterUInt.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: SyncApplyResult) = (
+            FfiConverterTypeSyncOutcome.allocationSize(value.`outcome`) +
+            FfiConverterUInt.allocationSize(value.`inserted`)
+    )
+
+    override fun write(value: SyncApplyResult, buf: ByteBuffer) {
+            FfiConverterTypeSyncOutcome.write(value.`outcome`, buf)
+            FfiConverterUInt.write(value.`inserted`, buf)
+    }
+}
+
+
+
+/**
+ * The snapshot one sync round-trip is built from. Read in one immediate
+ * transaction, so a log or a reset cannot tear the request apart.
+ */
+data class SyncPreparation (
+    var `resetEpoch`: kotlin.Long
+    , 
+    var `deviceId`: kotlin.String
+    , 
+    var `lastServerSeq`: kotlin.Long
+    , 
+    var `pending`: List<WireEvent>
+    , 
+    var `configJson`: kotlin.String
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeSyncPreparation: FfiConverterRustBuffer<SyncPreparation> {
+    override fun read(buf: ByteBuffer): SyncPreparation {
+        return SyncPreparation(
+            FfiConverterLong.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterLong.read(buf),
+            FfiConverterSequenceTypeWireEvent.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: SyncPreparation) = (
+            FfiConverterLong.allocationSize(value.`resetEpoch`) +
+            FfiConverterString.allocationSize(value.`deviceId`) +
+            FfiConverterLong.allocationSize(value.`lastServerSeq`) +
+            FfiConverterSequenceTypeWireEvent.allocationSize(value.`pending`) +
+            FfiConverterString.allocationSize(value.`configJson`)
+    )
+
+    override fun write(value: SyncPreparation, buf: ByteBuffer) {
+            FfiConverterLong.write(value.`resetEpoch`, buf)
+            FfiConverterString.write(value.`deviceId`, buf)
+            FfiConverterLong.write(value.`lastServerSeq`, buf)
+            FfiConverterSequenceTypeWireEvent.write(value.`pending`, buf)
+            FfiConverterString.write(value.`configJson`, buf)
+    }
+}
+
+
+
+/**
+ * One sync response, as the store applies it. `config_json` is the config
+ * block the server already returns. A winner id adopts that challenge;
+ * `None` or a blank id merges last-writer-wins instead. The store does not
+ * learn the HTTP conflict object's field names.
+ */
+data class SyncRoundResponse (
+    var `ackedUuids`: List<kotlin.String>
+    , 
+    var `configJson`: kotlin.String
+    , 
+    var `winnerChallengeId`: kotlin.String?
+    , 
+    var `events`: List<WireEvent>
+    , 
+    var `newLastServerSeq`: kotlin.Long
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeSyncRoundResponse: FfiConverterRustBuffer<SyncRoundResponse> {
+    override fun read(buf: ByteBuffer): SyncRoundResponse {
+        return SyncRoundResponse(
+            FfiConverterSequenceString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterSequenceTypeWireEvent.read(buf),
+            FfiConverterLong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: SyncRoundResponse) = (
+            FfiConverterSequenceString.allocationSize(value.`ackedUuids`) +
+            FfiConverterString.allocationSize(value.`configJson`) +
+            FfiConverterOptionalString.allocationSize(value.`winnerChallengeId`) +
+            FfiConverterSequenceTypeWireEvent.allocationSize(value.`events`) +
+            FfiConverterLong.allocationSize(value.`newLastServerSeq`)
+    )
+
+    override fun write(value: SyncRoundResponse, buf: ByteBuffer) {
+            FfiConverterSequenceString.write(value.`ackedUuids`, buf)
+            FfiConverterString.write(value.`configJson`, buf)
+            FfiConverterOptionalString.write(value.`winnerChallengeId`, buf)
+            FfiConverterSequenceTypeWireEvent.write(value.`events`, buf)
+            FfiConverterLong.write(value.`newLastServerSeq`, buf)
     }
 }
 
@@ -5259,4 +5003,26 @@ public object FfiConverterSequenceTypeWorkoutEntry: FfiConverterRustBuffer<List<
         }
     }
 }
+        /**
+         * Whether the phone should run another sync round-trip.
+         *
+         * True when the outcome is stale (the reset threw this round out), or when
+         * the round applied and the push batch was full (`pushed_count >= push_limit`)
+         * or the server set `more`. A winner being adopted is not an input: that
+         * config and its events are already in this response.
+         */ fun `syncFollowUp`(`pushedCount`: kotlin.UInt, `pushLimit`: kotlin.UInt, `more`: kotlin.Boolean, `outcome`: SyncOutcome): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_drome_core_fn_func_sync_follow_up(
+    
+        
+        FfiConverterUInt.lower(`pushedCount`),
+        FfiConverterUInt.lower(`pushLimit`),
+        FfiConverterBoolean.lower(`more`),
+        FfiConverterTypeSyncOutcome.lower(`outcome`),_status)
+}
+    )
+    }
+    
+
 

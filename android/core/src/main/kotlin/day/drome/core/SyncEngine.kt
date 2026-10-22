@@ -30,8 +30,10 @@ fun interface AccessTokenProvider {
 }
 
 /**
- * Platform-neutral sync coordinator. HTTP and credential refresh are injected;
- * reset-epoch validation and all merge behavior stay in Rust.
+ * Platform-neutral sync coordinator. HTTP and credential refresh are injected.
+ * Prepare, the tail, and the follow-up predicate stay in Rust. This loop is
+ * the scheduling shape: at most 20 rounds, and a stale outcome prepares again
+ * instead of waiting for the next log.
  */
 class SyncEngine(
     private val core: DromeCoreClient,
@@ -43,8 +45,9 @@ class SyncEngine(
     suspend fun syncNow(context: String): Boolean = gate.withLock {
         val token = tokens.validAccessToken() ?: return@withLock false
         var rounds = 0
+        var followUp: Boolean
         do {
-            val prepared = core.prepareSync(context)
+            val prepared = core.prepareSync(context, PUSH_BATCH_LIMIT)
             val response = transport.exchange(
                 SyncNetworkRequest(
                     deviceId = prepared.deviceId,
@@ -63,11 +66,19 @@ class SyncEngine(
                 configJson = response.configJson,
                 winnerChallengeId = response.conflict?.winnerChallengeId,
             )
-            if (applied.pull.outcome == SyncOutcome.STALE_RESET || applied.config == SyncOutcome.STALE_RESET) {
-                return@withLock false
-            }
             rounds++
-        } while (response.more && rounds < 20)
+            followUp = core.syncFollowUp(
+                pushedCount = prepared.events.size,
+                pushLimit = PUSH_BATCH_LIMIT,
+                more = response.more,
+                outcome = applied.outcome,
+            )
+        } while (followUp && rounds < MAX_ROUNDS)
         true
+    }
+
+    private companion object {
+        const val PUSH_BATCH_LIMIT = 500
+        const val MAX_ROUNDS = 20
     }
 }

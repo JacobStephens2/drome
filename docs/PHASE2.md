@@ -36,10 +36,11 @@ projections never sync, they recompute.
   uuid** (replays are no-ops), assigns server_seq, acks with the uuids + new seqs.
 - **Pull**: client sends its `last_server_seq`; server returns newer events from
   *other* devices, **scoped to the account's one active challenge** (archived-loser
-  events never propagate — see below), and the client applies them idempotently
-  (skip uuids it already has) AND advances the cursor **in one core transaction**
-  (`apply_pull_batch`), so a crash can never advance the cursor past events that
-  were not durably applied. A device that ran a local "Start over"
+  events never propagate — see below). The client applies one response in a single
+  store transaction (`apply_sync_response`): ack the push, adopt or merge config,
+  then insert the pulled events and assign the cursor. A crash cannot advance the
+  cursor past events that were not stored, and a "Start over" cannot land between
+  those writes. A device that ran a local "Start over"
   (`reset_all_data`) re-mints its device id, so on its next sync the server no
   longer treats that account's server-held events as this device's self-echoes and
   returns them — the reset device recovers its full history (uuid dedup keeps the
@@ -48,22 +49,32 @@ projections never sync, they recompute.
   "Start over" and an in-flight sync round-trip must not corrupt each other. The
   store keeps a monotonic `reset_epoch` in a single-row `sync_epoch` table that is
   the ONE piece of sync state `reset_all_data` does not wipe — it *increments* it,
-  in the same transaction as the wipe. The SyncEngine reads the epoch ONCE at the
-  start of a round-trip (`current_reset_epoch`) and threads it back into every
-  cursor-or-state-**mutating** tail write — `ack_pushed`, `apply_remote_config`,
-  `set_last_server_seq`, and `apply_pull_batch`. Each of those becomes a NO-OP,
-  returning a typed `StaleReset` signal (NOT an error that breaks the flow), when
-  the captured epoch no longer equals the store's current epoch. So a
-  `reset_all_data` that lands between a round-trip's start and its tail invalidates
-  that entire tail: a stale round-trip can never re-create `sync_state` with a
-  pre-reset `last_server_seq`. Without this, a stale tail (`apply_pull_batch(ctx,
-  [], N)`) would drag the pull cursor back to `N` after the reset zeroed it, so
-  every later clean pull (`server_seq > N`) would skip the account's own
-  re-pullable history forever — silent, permanent data loss a re-sync cannot fix.
-  The happy path is unchanged (a round-trip with no interleaved reset has matching
-  epochs and applies normally); a post-reset clean sync starts fresh at cursor 0
-  and recovers full history. The epoch is purely client-side — the server neither
-  sees nor needs it.
+  in the same transaction as the wipe. `prepare_sync_round` reads that epoch, the
+  device id, the pull cursor, the pending events, and the config in one immediate
+  transaction (minting the device id there if the store does not have one yet).
+  `apply_sync_response` takes the epoch prepare returned. Inside one write
+  transaction it checks that epoch before any write and before it validates the
+  payload. If a reset has moved the epoch, the call writes nothing and returns
+  `StaleReset` (NOT an error), and a malformed payload on that path is not an
+  error: the phone discards the round and goes again. If the epoch matches, a
+  malformed config or a malformed pulled event writes nothing and returns an
+  error. If the payload is valid, the transaction acks, then adopts (when the
+  response names a winner id) or merges, then inserts the pulled events and
+  assigns the cursor, then commits. So a `reset_all_data` during the network hop
+  cannot move the cursor without the events, and cannot install the account's
+  challenge onto a store that was just wiped. Without the gate, a stale tail
+  would drag the pull cursor back to the pre-reset `last_server_seq` after the
+  reset zeroed it, so every later clean pull (`server_seq > cursor`) would skip
+  the account's own re-pullable history forever — silent, permanent data loss a
+  re-sync cannot fix. The happy path is unchanged (a round-trip with no
+  interleaved reset has matching epochs and applies normally); a post-reset clean
+  sync starts fresh at cursor 0 and recovers full history. The epoch is purely
+  client-side — the server neither sees nor needs it. Whether to run another
+  round is the pure predicate `sync_follow_up`: true when the outcome is
+  `StaleReset`, or when the round applied and the push batch was full or the
+  server set `more`. Adopting a winner does not by itself continue. The network
+  hop, token refresh, and on-screen status stay on the phone
+  (docs/adr/0001-sync-round-trip-tail.md).
 - Water totals, task states, runs: correct by construction — events merge additively,
   order-independent up to per-day recompute; per-event `logged_at`/`effective_date`
   travel with the event so attribution is identical on every device.
@@ -74,11 +85,13 @@ projections never sync, they recompute.
   challenge wins; a device pushing a *different* active challenge gets it stored
   archived (`sync_conflict` label) and the sync response carries
   `active_challenge_conflict { archived_challenge_id, winner_challenge_id }`. The
-  loser MUST adopt the winner via `adopt_active_challenge(winner_config, winner_id)`,
-  which force-archives its local challenge and adopts the winner **regardless of the
-  config LWW stamp** — plain `apply_remote_config` cannot, because a loser whose
-  challenge was created later has a newer stamp and would silently keep its own
-  forever (permanent split-brain). Loser events stay owned by the archived (loser)
+  loser MUST adopt the winner by passing that winner id into `apply_sync_response`
+  (a blank or missing id merges instead). The adopt is inside the same
+  epoch-checked transaction as the pulled events, and it force-archives the local
+  challenge and adopts the winner **regardless of the config LWW stamp** — a plain
+  merge cannot, because a loser whose challenge was created later has a newer
+  stamp and would silently keep its own forever (permanent split-brain). Loser
+  events stay owned by the archived (loser)
   challenge id: projections read only the *active* challenge's events, so they are
   never mixed into the winner's day/summary, and the server's active-challenge-scoped
   pull never propagates them to other devices. The client surfaces this honestly
@@ -86,9 +99,12 @@ projections never sync, they recompute.
 - **Photos never sync in Phase 2**: the `photo_done` event syncs WITHOUT `photo_ref`
   (stripped client-side before push; refs are meaningless off-device). Opt-in encrypted
   photo sync is a later, separate design.
-- Client engine: `core/` gains a sync module (pull-new-local-events, apply-remote-events,
-  config LWW merge, watermarks table) exposed via UniFFI; the iOS `SyncEngine` (Swift)
-  only moves JSON over URLSession and stamps time. Sync is opportunistic (foreground +
+- Client engine: `core/` owns prepare, apply, and `sync_follow_up`, exposed via
+  UniFFI. The iOS `SyncEngine` (Swift) and the Android `SyncEngine` (Kotlin) only
+  move JSON over the network and stamp time. Both use `sync_follow_up` as their
+  only continuation decision. iOS schedules another debounced round and has no
+  numeric cap; Android loops inside the call, still capped at 20 rounds. Sync is
+  opportunistic (foreground +
   after logs, debounced); local-first stays the source of truth; the app is fully
   functional signed-out (accounts are opt-in, required only for sync/groups).
 

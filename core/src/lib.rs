@@ -30,8 +30,9 @@ pub use events::EventRow;
 pub use group::{project_group_presence, GroupPresence};
 pub use rules::RulesetKind;
 pub use sync::{
-    ConfigBlock, ConfigChallengeSlot, ConfigExtrasSlot, ConfigPresetsSlot, PullResult, SyncOutcome,
-    WireEvent, SLOT_CHALLENGE, SLOT_EXTRAS, SLOT_PRESETS,
+    sync_follow_up, ConfigBlock, ConfigChallengeSlot, ConfigExtrasSlot, ConfigPresetsSlot,
+    SyncApplyResult, SyncOutcome, SyncPreparation, SyncRoundResponse, WireEvent, SLOT_CHALLENGE,
+    SLOT_EXTRAS, SLOT_PRESETS,
 };
 pub use time::LocalInstant;
 pub use water::{ChugCheck, WaterState};

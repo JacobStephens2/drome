@@ -90,14 +90,13 @@ enum DromeAPIError: Error, Equatable {
 
 // MARK: - SyncEngine-facing request / response
 
-/// One sync round-trip's payload, in core-facade terms: the pending events and
-/// the config block as its raw JSON (from `exportConfigState()`), so the engine
+/// One sync round-trip's request, taken from `prepareSyncRound`, so the engine
 /// never re-types what the core owns.
 struct SyncRequest {
     var deviceId: String
     var lastServerSeq: Int64
     var events: [WireEvent]
-    /// The config block JSON from `DromeCoreClient.exportConfigState()`.
+    /// Config JSON from that preparation.
     var configJSON: String
 }
 
@@ -106,10 +105,9 @@ struct SyncResponse {
     var events: [WireEvent]
     var newLastServerSeq: Int64
     /// True when the server capped this pull and more events remain past
-    /// `newLastServerSeq`; the engine re-triggers a round-trip to drain them.
+    /// `newLastServerSeq`. The engine passes this to `syncFollowUp`.
     var moreToPull: Bool
-    /// The account's canonical config JSON — feed to `applyRemoteConfig` (or
-    /// `adoptActiveChallenge` when `activeChallengeConflict` is set).
+    /// The account's canonical config JSON. A winner id adopts; none merges.
     var configJSON: String
     var activeChallengeConflict: ActiveChallengeConflict?
 }

@@ -361,80 +361,75 @@ final class LiveDromeCore: DromeCoreClient, @unchecked Sendable {
 
     // MARK: - DromeCoreClient: sync (Phase 2)
 
-    func deviceId() throws -> String {
-        try call { try store.deviceId() }
-    }
-
-    func currentResetEpoch() throws -> Int64 {
-        try call { try store.currentResetEpoch() }
-    }
-
-    func pendingEvents(context: String, limit: UInt32) throws -> [WireEvent] {
-        try call { try store.pendingEvents(context: context, limit: limit).map(Self.wireEvent) }
-    }
-
-    @discardableResult
-    func ackPushed(context: String, uuids: [String], expectedResetEpoch: Int64) throws
-        -> SyncOutcome
-    {
+    func prepareSyncRound(context: String, limit: UInt32) throws -> SyncPreparation {
         try call {
-            try store.ackPushed(context: context, uuids: uuids, expectedResetEpoch: expectedResetEpoch)
-        }
-    }
-
-    @discardableResult
-    func applyRemoteEvents(_ events: [WireEvent]) throws -> UInt32 {
-        try call { try store.applyRemoteEvents(events: events.map(Self.uniWireEvent)) }
-    }
-
-    func exportConfigState() throws -> String {
-        try call { try store.exportConfigState() }
-    }
-
-    @discardableResult
-    func applyRemoteConfig(_ blockJson: String, expectedResetEpoch: Int64) throws -> SyncOutcome {
-        try call {
-            try store.applyRemoteConfig(blockJson: blockJson, expectedResetEpoch: expectedResetEpoch)
-        }
-    }
-
-    func adoptActiveChallenge(blockJson: String, winnerChallengeId: String) throws {
-        try call {
-            try store.adoptActiveChallenge(blockJson: blockJson, winnerChallengeId: winnerChallengeId)
-        }
-    }
-
-    func lastServerSeq(context: String) throws -> Int64 {
-        try call { try store.lastServerSeq(context: context) }
-    }
-
-    @discardableResult
-    func setLastServerSeq(context: String, seq: Int64, expectedResetEpoch: Int64) throws
-        -> SyncOutcome
-    {
-        try call {
-            try store.setLastServerSeq(
-                context: context, seq: seq, expectedResetEpoch: expectedResetEpoch
+            let prepared = try store.prepareSyncRound(context: context, limit: limit)
+            return SyncPreparation(
+                resetEpoch: prepared.resetEpoch,
+                deviceId: prepared.deviceId,
+                lastServerSeq: prepared.lastServerSeq,
+                events: prepared.pending.map(Self.wireEvent),
+                configJSON: prepared.configJson
             )
         }
     }
 
     @discardableResult
-    func applyPullBatch(
+    func applySyncResponse(
         context: String,
+        expectedResetEpoch: Int64,
+        ackedUuids: [String],
+        configJSON: String,
+        winnerChallengeId: String?,
         events: [WireEvent],
-        newLastServerSeq: Int64,
-        expectedResetEpoch: Int64
-    ) throws -> PullResult {
+        newLastServerSeq: Int64
+    ) throws -> SyncApplyResult {
         try call {
-            try store.applyPullBatch(
+            let applied = try store.applySyncResponse(
                 context: context,
-                events: events.map(Self.uniWireEvent),
-                newLastServerSeq: newLastServerSeq,
-                expectedResetEpoch: expectedResetEpoch
+                expectedResetEpoch: expectedResetEpoch,
+                response: UniSyncRoundResponse(
+                    ackedUuids: ackedUuids,
+                    configJson: configJSON,
+                    winnerChallengeId: winnerChallengeId,
+                    events: events.map(Self.uniWireEvent),
+                    newLastServerSeq: newLastServerSeq
+                )
             )
+            return SyncApplyResult(outcome: applied.outcome, inserted: applied.inserted)
         }
     }
+
+    func syncFollowUp(
+        pushedCount: UInt32,
+        pushLimit: UInt32,
+        more: Bool,
+        outcome: SyncOutcome
+    ) -> Bool {
+        // The method name shadows the generated free function, so the
+        // forward lives at file scope.
+        rustSyncFollowUp(
+            pushedCount: pushedCount,
+            pushLimit: pushLimit,
+            more: more,
+            outcome: outcome
+        )
+    }
+}
+
+/// The generated `syncFollowUp`. File scope so it is not the method above.
+private func rustSyncFollowUp(
+    pushedCount: UInt32,
+    pushLimit: UInt32,
+    more: Bool,
+    outcome: SyncOutcome
+) -> Bool {
+    syncFollowUp(
+        pushedCount: pushedCount,
+        pushLimit: pushLimit,
+        more: more,
+        outcome: outcome
+    )
 }
 
 // MARK: - Generated <-> Models mapping

@@ -14,12 +14,12 @@ typealias DromeException = day.drome.core.generated.DromeException
 typealias ExtraDef = day.drome.core.generated.ExtraDef
 typealias LocalInstant = day.drome.core.generated.LocalInstant
 typealias LogResult = day.drome.core.generated.LogResult
-typealias PullResult = day.drome.core.generated.PullResult
 typealias RevocableTask = day.drome.core.generated.RevocableTask
 typealias RevocableTasks = day.drome.core.generated.RevocableTasks
 typealias RulesetKind = day.drome.core.generated.RulesetKind
 typealias ShareCardData = day.drome.core.generated.ShareCardData
 typealias ShareCardWorkout = day.drome.core.generated.ShareCardWorkout
+typealias SyncApplyResult = day.drome.core.generated.SyncApplyResult
 typealias SyncOutcome = day.drome.core.generated.SyncOutcome
 typealias TodayState = day.drome.core.generated.TodayState
 typealias WaterLogEntry = day.drome.core.generated.WaterLogEntry
@@ -54,11 +54,6 @@ data class CoreSyncPreparation(
     val lastServerSeq: Long,
     val events: List<WireEvent>,
     val configJson: String,
-)
-
-data class CoreSyncApplication(
-    val pull: PullResult,
-    val config: SyncOutcome,
 )
 
 object WaterUnits {
