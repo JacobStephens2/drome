@@ -799,11 +799,6 @@ final class MockDromeCore: DromeCoreClient, @unchecked Sendable {
         events.removeAll()
         closedDates.removeAll()
         goalChanges.removeAll()
-        // Mirror the core's sync/reset epoch invariant: bump the reset
-        // generation and zero the pull cursor, so any in-flight round-trip's
-        // tail writes (carrying the pre-reset epoch) are recognized as stale.
-        mockResetEpoch += 1
-        mockLastServerSeq = 0
     }
 
     func exportCsv() throws -> String {

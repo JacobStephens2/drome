@@ -631,7 +631,7 @@ public protocol DromeStoreProtocol: AnyObject, Sendable {
      * including a response with no events. A winner id adopts that challenge;
      * no winner id, or a blank one, merges (docs/PHASE2.md).
      */
-    func applySyncResponse(context: String, expectedResetEpoch: Int64, response: UniSyncRoundResponse) throws  -> UniSyncApplyResult
+    func applySyncResponse(context: String, expectedResetEpoch: Int64, response: SyncRoundResponse) throws  -> UniSyncApplyResult
     
     /**
      * Inserts one `day_backfilled` event per day, all in a single transaction.
@@ -921,14 +921,14 @@ open func activeChallenge()throws  -> UniChallenge?  {
      * including a response with no events. A winner id adopts that challenge;
      * no winner id, or a blank one, merges (docs/PHASE2.md).
      */
-open func applySyncResponse(context: String, expectedResetEpoch: Int64, response: UniSyncRoundResponse)throws  -> UniSyncApplyResult  {
+open func applySyncResponse(context: String, expectedResetEpoch: Int64, response: SyncRoundResponse)throws  -> UniSyncApplyResult  {
     return try  FfiConverterTypeUniSyncApplyResult_lift(try rustCallWithError(FfiConverterTypeUniDromeError_lift) {
         uniffiCallStatus in
     uniffi_drome_core_fn_method_dromestore_apply_sync_response(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(context),
         FfiConverterInt64.lower(expectedResetEpoch),
-        FfiConverterTypeUniSyncRoundResponse_lower(response),uniffiCallStatus
+        FfiConverterTypeSyncRoundResponse_lower(response),uniffiCallStatus
     )
 })
 }
@@ -1617,6 +1617,78 @@ public func FfiConverterTypeShareCardWorkout_lift(_ buf: RustBuffer) throws -> S
 #endif
 public func FfiConverterTypeShareCardWorkout_lower(_ value: ShareCardWorkout) -> RustBuffer {
     return FfiConverterTypeShareCardWorkout.lower(value)
+}
+
+
+/**
+ * One sync response, as the store applies it. `config_json` is the config
+ * block the server already returns. A winner id adopts that challenge;
+ * `None` or a blank id merges last-writer-wins instead. The store does not
+ * learn the HTTP conflict object's field names.
+ */
+public struct SyncRoundResponse: Equatable, Hashable {
+    public var ackedUuids: [String]
+    public var configJson: String
+    public var winnerChallengeId: String?
+    public var events: [UniWireEvent]
+    public var newLastServerSeq: Int64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(ackedUuids: [String], configJson: String, winnerChallengeId: String?, events: [UniWireEvent], newLastServerSeq: Int64) {
+        self.ackedUuids = ackedUuids
+        self.configJson = configJson
+        self.winnerChallengeId = winnerChallengeId
+        self.events = events
+        self.newLastServerSeq = newLastServerSeq
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SyncRoundResponse: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSyncRoundResponse: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SyncRoundResponse {
+        return
+            try SyncRoundResponse(
+                ackedUuids: FfiConverterSequenceString.read(from: &buf), 
+                configJson: FfiConverterString.read(from: &buf), 
+                winnerChallengeId: FfiConverterOptionString.read(from: &buf), 
+                events: FfiConverterSequenceTypeUniWireEvent.read(from: &buf), 
+                newLastServerSeq: FfiConverterInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SyncRoundResponse, into buf: inout [UInt8]) {
+        FfiConverterSequenceString.write(value.ackedUuids, into: &buf)
+        FfiConverterString.write(value.configJson, into: &buf)
+        FfiConverterOptionString.write(value.winnerChallengeId, into: &buf)
+        FfiConverterSequenceTypeUniWireEvent.write(value.events, into: &buf)
+        FfiConverterInt64.write(value.newLastServerSeq, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSyncRoundResponse_lift(_ buf: RustBuffer) throws -> SyncRoundResponse {
+    return try FfiConverterTypeSyncRoundResponse.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSyncRoundResponse_lower(_ value: SyncRoundResponse) -> RustBuffer {
+    return FfiConverterTypeSyncRoundResponse.lower(value)
 }
 
 
@@ -2825,78 +2897,6 @@ public func FfiConverterTypeUniSyncPreparation_lift(_ buf: RustBuffer) throws ->
 #endif
 public func FfiConverterTypeUniSyncPreparation_lower(_ value: UniSyncPreparation) -> RustBuffer {
     return FfiConverterTypeUniSyncPreparation.lower(value)
-}
-
-
-/**
- * One sync response, as the store applies it. `config_json` is the config
- * block the server already returns. A winner id adopts that challenge;
- * `None` or a blank id merges last-writer-wins instead. The store does not
- * learn the HTTP conflict object's field names.
- */
-public struct UniSyncRoundResponse: Equatable, Hashable {
-    public var ackedUuids: [String]
-    public var configJson: String
-    public var winnerChallengeId: String?
-    public var events: [UniWireEvent]
-    public var newLastServerSeq: Int64
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(ackedUuids: [String], configJson: String, winnerChallengeId: String?, events: [UniWireEvent], newLastServerSeq: Int64) {
-        self.ackedUuids = ackedUuids
-        self.configJson = configJson
-        self.winnerChallengeId = winnerChallengeId
-        self.events = events
-        self.newLastServerSeq = newLastServerSeq
-    }
-
-    
-
-    
-}
-
-#if compiler(>=6)
-extension UniSyncRoundResponse: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeUniSyncRoundResponse: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UniSyncRoundResponse {
-        return
-            try UniSyncRoundResponse(
-                ackedUuids: FfiConverterSequenceString.read(from: &buf), 
-                configJson: FfiConverterString.read(from: &buf), 
-                winnerChallengeId: FfiConverterOptionString.read(from: &buf), 
-                events: FfiConverterSequenceTypeUniWireEvent.read(from: &buf), 
-                newLastServerSeq: FfiConverterInt64.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: UniSyncRoundResponse, into buf: inout [UInt8]) {
-        FfiConverterSequenceString.write(value.ackedUuids, into: &buf)
-        FfiConverterString.write(value.configJson, into: &buf)
-        FfiConverterOptionString.write(value.winnerChallengeId, into: &buf)
-        FfiConverterSequenceTypeUniWireEvent.write(value.events, into: &buf)
-        FfiConverterInt64.write(value.newLastServerSeq, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeUniSyncRoundResponse_lift(_ buf: RustBuffer) throws -> UniSyncRoundResponse {
-    return try FfiConverterTypeUniSyncRoundResponse.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeUniSyncRoundResponse_lower(_ value: UniSyncRoundResponse) -> RustBuffer {
-    return FfiConverterTypeUniSyncRoundResponse.lower(value)
 }
 
 

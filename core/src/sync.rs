@@ -651,19 +651,7 @@ fn apply_presets_slot_inner(
     if !challenge_exists(conn, &slot.challenge_id)? {
         return Ok(()); // Unknown challenge: retry after it syncs.
     }
-    for p in &slot.presets {
-        if p.id.trim().is_empty() || p.name.trim().is_empty() {
-            return Err(DromeError::InvalidArgument(
-                "preset id and name must be non-empty".into(),
-            ));
-        }
-        if !(1..=crate::api::MAX_WATER_LOG_ML).contains(&p.ml) {
-            return Err(DromeError::InvalidArgument(format!(
-                "preset ml must be in 1..={}",
-                crate::api::MAX_WATER_LOG_ML
-            )));
-        }
-    }
+    validate_preset_rows(&slot.presets)?;
     conn.execute(
         "DELETE FROM container_presets WHERE challenge_id = ?1",
         params![slot.challenge_id],
@@ -690,13 +678,7 @@ fn apply_extras_slot_inner(conn: &Connection, slot: &ConfigExtrasSlot, force: bo
     if !challenge_exists(conn, &slot.challenge_id)? {
         return Ok(()); // Unknown challenge: retry after it syncs.
     }
-    for x in &slot.extras {
-        if x.id.trim().is_empty() || x.name.trim().is_empty() {
-            return Err(DromeError::InvalidArgument(
-                "extra id and name must be non-empty".into(),
-            ));
-        }
-    }
+    validate_extra_rows(&slot.extras)?;
     conn.execute(
         "DELETE FROM extra_defs WHERE challenge_id = ?1",
         params![slot.challenge_id],
@@ -817,6 +799,34 @@ pub(crate) fn reset_gate(conn: &Connection, expected_epoch: i64) -> Result<SyncO
     }
 }
 
+fn validate_preset_rows(presets: &[ContainerPreset]) -> Result<()> {
+    for p in presets {
+        if p.id.trim().is_empty() || p.name.trim().is_empty() {
+            return Err(DromeError::InvalidArgument(
+                "preset id and name must be non-empty".into(),
+            ));
+        }
+        if !(1..=crate::api::MAX_WATER_LOG_ML).contains(&p.ml) {
+            return Err(DromeError::InvalidArgument(format!(
+                "preset ml must be in 1..={}",
+                crate::api::MAX_WATER_LOG_ML
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_extra_rows(extras: &[ExtraDef]) -> Result<()> {
+    for x in extras {
+        if x.id.trim().is_empty() || x.name.trim().is_empty() {
+            return Err(DromeError::InvalidArgument(
+                "extra id and name must be non-empty".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Field checks a config block must pass before any tail write. An unknown
 /// challenge is not an error here: the merge skips that slot, same as apply.
 pub(crate) fn validate_config_block(block: &ConfigBlock) -> Result<()> {
@@ -828,30 +838,12 @@ pub(crate) fn validate_config_block(block: &ConfigBlock) -> Result<()> {
     if let Some(slot) = &block.presets {
         validate_wire_id(&slot.device_id, "device id")?;
         validate_wire_id(&slot.challenge_id, "challenge id")?;
-        for p in &slot.presets {
-            if p.id.trim().is_empty() || p.name.trim().is_empty() {
-                return Err(DromeError::InvalidArgument(
-                    "preset id and name must be non-empty".into(),
-                ));
-            }
-            if !(1..=crate::api::MAX_WATER_LOG_ML).contains(&p.ml) {
-                return Err(DromeError::InvalidArgument(format!(
-                    "preset ml must be in 1..={}",
-                    crate::api::MAX_WATER_LOG_ML
-                )));
-            }
-        }
+        validate_preset_rows(&slot.presets)?;
     }
     if let Some(slot) = &block.extras {
         validate_wire_id(&slot.device_id, "device id")?;
         validate_wire_id(&slot.challenge_id, "challenge id")?;
-        for x in &slot.extras {
-            if x.id.trim().is_empty() || x.name.trim().is_empty() {
-                return Err(DromeError::InvalidArgument(
-                    "extra id and name must be non-empty".into(),
-                ));
-            }
-        }
+        validate_extra_rows(&slot.extras)?;
     }
     Ok(())
 }

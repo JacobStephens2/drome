@@ -388,7 +388,7 @@ final class LiveDromeCore: DromeCoreClient, @unchecked Sendable {
             let applied = try store.applySyncResponse(
                 context: context,
                 expectedResetEpoch: expectedResetEpoch,
-                response: UniSyncRoundResponse(
+                response: SyncRoundResponse(
                     ackedUuids: ackedUuids,
                     configJson: configJSON,
                     winnerChallengeId: winnerChallengeId,
