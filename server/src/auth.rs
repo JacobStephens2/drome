@@ -25,6 +25,11 @@ const MAX_EMAIL_CODE_ATTEMPTS: i64 = 5;
 const EMAIL_CODE_RESEND_COOLDOWN_SECS: i64 = 30;
 const ACCOUNT_LINK_TTL_SECS: i64 = 5 * 60;
 
+/// A link code is issued only when the session that authenticated the request
+/// was created inside this window. Another session on the same account does
+/// not qualify.
+const RECENT_AUTH_WINDOW_SECS: i64 = 10 * 60;
+
 /// An authenticated account, loaded by the middleware and handed to handlers
 /// via `Extension`.
 #[derive(Debug, Clone)]
@@ -33,6 +38,13 @@ pub struct Account {
     pub apple_sub: String,
     pub email: Option<String>,
     pub active_challenge_id: Option<String>,
+}
+
+/// The session row that authenticated this request. Link-code issuance judges
+/// this session's creation time, not every session the account holds.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AuthenticatedSession {
+    created_at_epoch: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -516,29 +528,23 @@ pub async fn email_verify(
     Ok(Json(resp))
 }
 
-/// Mint a single-use attach code for this account. Only a session created in
-/// the last ten minutes may issue one; the plaintext code is returned once and
-/// only its hash is persisted.
-pub async fn issue_account_link_code(
+/// Mint a single-use attach code for this account. Only the session that
+/// authenticated this request may issue one, and only when that session was
+/// created inside the recent-auth window. The plaintext code is returned once
+/// and only its hash is persisted.
+pub(crate) async fn issue_account_link_code(
     State(state): State<AppState>,
     Extension(account): Extension<Account>,
+    Extension(session): Extension<AuthenticatedSession>,
 ) -> Result<Json<AccountLinkCodeResponse>, ApiError> {
     let now = state.now_epoch();
-    let conn = state.db.lock().map_err(|_| ApiError::internal("db lock"))?;
-    let recent: bool = conn
-        .query_row(
-            "SELECT COUNT(*) > 0 FROM session
-             WHERE account_id = ?1 AND created_at_epoch > ?2 AND expires_at_epoch > ?3",
-            params![account.id, now - 10 * 60, now],
-            |row| row.get(0),
-        )
-        .map_err(ApiError::internal)?;
-    if !recent {
+    if session.created_at_epoch <= now - RECENT_AUTH_WINDOW_SECS {
         return Err(ApiError::unauthorized(
             "recent_auth_required",
             "sign in again before linking a new device",
         ));
     }
+    let conn = state.db.lock().map_err(|_| ApiError::internal("db lock"))?;
     let link_code = generate_link_code();
     let expires_at = now + ACCOUNT_LINK_TTL_SECS;
     conn.execute(
@@ -708,7 +714,8 @@ fn issue_session(
 // --- middleware ------------------------------------------------------------
 
 /// Extracts + validates the `Authorization: Bearer` session token, loads the
-/// account, and stashes it in the request extensions for downstream handlers.
+/// account and the session that presented the token, and stashes both in the
+/// request extensions for downstream handlers.
 pub async fn require_auth(
     State(state): State<AppState>,
     mut req: Request,
@@ -716,31 +723,35 @@ pub async fn require_auth(
 ) -> Result<Response, ApiError> {
     let token = bearer_token(&req)?;
     let now = state.now_epoch();
-    let account = {
+    let (account, session) = {
         let conn = state.db.lock().map_err(|_| ApiError::internal("db lock"))?;
         let access_hash = hash_token(&token);
-        let account_id: Option<i64> = conn
+        let authenticated: Option<(i64, i64)> = conn
             .query_row(
-                "SELECT account_id FROM session
+                "SELECT account_id, created_at_epoch FROM session
                  WHERE access_hash = ?1 AND expires_at_epoch > ?2",
                 params![access_hash, now],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()
             .map_err(ApiError::internal)?;
-        let Some(account_id) = account_id else {
+        let Some((account_id, created_at_epoch)) = authenticated else {
             return Err(ApiError::unauthorized(
                 "bad_session",
                 "invalid or expired session",
             ));
         };
-        load_account(&conn, account_id)?
+        (
+            load_account(&conn, account_id)?,
+            AuthenticatedSession { created_at_epoch },
+        )
     };
 
     // Per-token rate limit (simple in-memory token bucket).
     state.check_rate_limit(&token)?;
 
     req.extensions_mut().insert(account);
+    req.extensions_mut().insert(session);
     Ok(next.run(req).await)
 }
 
