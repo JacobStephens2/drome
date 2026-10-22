@@ -29,3 +29,5 @@ jobs:
         run: node --test tests/deploy/accept-deploy-inputs.test.js tests/deploy/server-deploy-workflow.test.js
       - name: IMAGE_TAG pin
         run: bash tests/deploy/deploy_test.sh
+      - name: GHCR image contract
+        run: bash tests/deploy/ghcr_image_test.sh

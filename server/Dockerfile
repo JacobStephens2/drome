@@ -30,6 +30,11 @@ RUN cargo build --release --locked --target x86_64-unknown-linux-musl -p drome-s
 # ---- Stage 2: runtime ----
 FROM alpine:3.20 AS runtime
 
+# GHCR links this package to the repo only when the image carries this label.
+# An unlinked package is private, and this repo's GITHUB_TOKEN then cannot
+# push to that name (permission_denied: read_package).
+LABEL org.opencontainers.image.source=https://github.com/JacobStephens2/drome
+
 RUN apk add --no-cache ca-certificates curl \
     && adduser -D -u 10001 -h /home/drome drome
 

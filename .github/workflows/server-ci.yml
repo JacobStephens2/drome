@@ -27,3 +27,6 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Test
         run: cargo test
+      - name: GHCR image contract
+        working-directory: ${{ github.workspace }}
+        run: ./tests/deploy/ghcr_image_test.sh
