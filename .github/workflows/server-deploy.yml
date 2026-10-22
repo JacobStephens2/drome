@@ -30,7 +30,7 @@ on:
   workflow_dispatch:
     inputs:
       rollback_sha:
-        description: "Existing image git SHA to (re)deploy. Blank = build + deploy HEAD."
+        description: "Existing image git SHA to (re)deploy. Blank = deploy HEAD."
         required: false
         default: ""
       deploy_mode:
@@ -112,12 +112,29 @@ jobs:
       - uses: actions/checkout@v4
       - name: Image name (GHCR requires lowercase)
         run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/drome-server" >> "$GITHUB_ENV"
-      - name: Resolve image SHA (rollback input or HEAD)
-        id: img
-        run: |
-          SHA="${{ github.event.inputs.rollback_sha }}"
-          [ -z "$SHA" ] && SHA="${{ github.sha }}"
-          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+      # rollback_sha and deploy_mode are untrusted workflow_dispatch inputs.
+      # Pass them in through env and accept them in this action (not a shell):
+      # empty or a 40-hex SHA, and only normal/fresh/restore. Push does not
+      # take the inputs; an empty rollback_sha still selects HEAD.
+      - name: Accept rollback SHA and deploy mode
+        id: deploy_inputs
+        uses: actions/github-script@v9
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.sha }}
+          ROLLBACK_SHA: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.rollback_sha || '' }}
+          DEPLOY_MODE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_mode || '' }}
+        with:
+          script: |
+            const { acceptDeployInputs } = require('./deploy/accept-deploy-inputs.js');
+            const accepted = acceptDeployInputs({
+              eventName: process.env.EVENT_NAME,
+              rollbackSha: process.env.ROLLBACK_SHA,
+              deployMode: process.env.DEPLOY_MODE,
+              headSha: process.env.HEAD_SHA,
+            });
+            core.setOutput('sha', accepted.sha);
+            core.setOutput('mode', accepted.mode);
       - name: SSH key + known_hosts
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
@@ -146,16 +163,20 @@ jobs:
           fi
       - name: Deploy
         run: |
-          case "${{ github.event.inputs.deploy_mode }}" in
-            fresh)   FLAG=--fresh ;;
-            restore) FLAG=--restore ;;
-            *)       FLAG= ;;
+          case "$DEPLOY_MODE" in
+            normal)  ./deploy/deploy.sh ;;
+            fresh)   ./deploy/deploy.sh --fresh ;;
+            restore) ./deploy/deploy.sh --restore ;;
+            *)
+              echo "refusing deploy mode that was not accepted" >&2
+              exit 1
+              ;;
           esac
-          ./deploy/deploy.sh $FLAG
         env:
+          DEPLOY_MODE: ${{ steps.deploy_inputs.outputs.mode }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ vars.DEPLOY_USER }}
-          IMAGE_TAG: ${{ env.IMAGE }}:${{ steps.img.outputs.sha }}
+          IMAGE_TAG: ${{ env.IMAGE }}:${{ steps.deploy_inputs.outputs.sha }}
           GHCR_USER: ${{ github.actor }}
           GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
           ACME_EMAIL: ${{ secrets.ACME_EMAIL }}

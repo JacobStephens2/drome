@@ -1,0 +1,31 @@
+name: deploy-ci
+
+# The server-deploy input gate and the IMAGE_TAG pin. No Rust toolchain.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "deploy/**"
+      - "tests/deploy/**"
+      - ".github/workflows/server-deploy.yml"
+      - ".github/workflows/deploy-ci.yml"
+  pull_request:
+    paths:
+      - "deploy/**"
+      - "tests/deploy/**"
+      - ".github/workflows/server-deploy.yml"
+      - ".github/workflows/deploy-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Accept deploy inputs
+        run: node --test tests/deploy/accept-deploy-inputs.test.js tests/deploy/server-deploy-workflow.test.js
+      - name: IMAGE_TAG pin
+        run: bash tests/deploy/deploy_test.sh

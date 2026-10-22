@@ -63,13 +63,13 @@ while [ "$#" -gt 0 ]; do
 	shift
 done
 
-# Never ship :latest (plan.md: reference by SHA).
-case "$IMAGE_TAG" in
-*:latest)
-	echo "refusing to deploy a ':latest' tag — pin the git SHA (IMAGE_TAG=$IMAGE_TAG)" >&2
+# The tag must be a 40-hex git SHA (ghcr.io/<owner>/drome-server:<sha>).
+# Refuse anything else (:latest, a branch, a short SHA, or an extra env line)
+# before ssh writes the remote .env.
+if [[ ! "$IMAGE_TAG" =~ ^[a-zA-Z0-9][a-zA-Z0-9._/-]*:[0-9a-fA-F]{40}$ ]]; then
+	printf 'refusing to deploy: IMAGE_TAG must be an image ref pinned to a 40-hex git SHA\n' >&2
 	exit 65
-	;;
-esac
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC2086 # SSH_OPTS is an intentional word-split option list.
@@ -85,6 +85,7 @@ ssh_cmd "mkdir -p '${REMOTE_DIR}'"
 # shellcheck disable=SC2086
 rsync -az --delete \
 	--exclude '.env' --exclude '.env.template' --exclude 'deploy.sh' --exclude '*.md' \
+	--exclude 'accept-deploy-inputs.js' \
 	-e "ssh ${SSH_OPTS}" \
 	"${SCRIPT_DIR}/" "${DEPLOY_USER}@${DEPLOY_HOST}:${REMOTE_DIR}/"
 
