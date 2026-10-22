@@ -12,7 +12,7 @@
 
 services:
   drome-server:
-    image: ${IMAGE_TAG} # ghcr.io/<owner>/drome-server:<git-sha> — set by deploy.sh; NEVER :latest
+    image: ${IMAGE_TAG} # ghcr.io/<owner>/drome/drome-server:<git-sha> - set by deploy.sh; NEVER :latest
     restart: unless-stopped
     env_file: .env
     environment:

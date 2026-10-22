@@ -63,7 +63,7 @@ while [ "$#" -gt 0 ]; do
 	shift
 done
 
-# The tag must be a 40-hex git SHA (ghcr.io/<owner>/drome-server:<sha>).
+# The tag must be a 40-hex git SHA (ghcr.io/<owner>/drome/drome-server:<sha>).
 # Refuse anything else (:latest, a branch, a short SHA, or an extra env line)
 # before ssh writes the remote .env.
 if [[ ! "$IMAGE_TAG" =~ ^[a-zA-Z0-9][a-zA-Z0-9._/-]*:[0-9a-fA-F]{40}$ ]]; then
