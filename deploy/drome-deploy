@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+# Server-side deploy entry point for Drome on stephens.page.
+#
+# Installed as /usr/local/bin/drome-deploy (root-owned) and run as the
+# `drome-deploy` user (docker group). The CI key in
+# ~drome-deploy/.ssh/authorized_keys is pinned to this script:
+#
+#   restrict,command="/usr/local/bin/drome-deploy" ssh-ed25519 AAAA... drome-ci
+#
+# so that key can only ask for one of:
+#
+#   deploy <40-hex git sha> [normal|fresh|restore]   GHCR token on stdin (optional)
+#   status
+#
+# A push to main can change the server image and the static site, but it can
+# not change compose.yml, litestream.yml or .env on the host. Those live in
+# /srv/drome and are edited by hand (the repo copies in deploy/ are the source
+# to copy from). Secrets (R2, Resend) live only in /srv/drome/.env.
+#
+# Deploy steps: pull ghcr.io/jacobstephens2/drome-server:<sha> (skipped when
+# the image is already on the host), fetch deploy/web at the same commit from
+# the public repo, run the restore-before-up guard, point IMAGE_TAG at the new
+# image, `docker compose up -d`, and wait for /healthz. If the new container
+# never reports healthy, IMAGE_TAG goes back to the previous image and the
+# site files are left untouched. The site files are swapped in only after the
+# server is healthy.
+#
+# By hand on the host: sudo -u drome-deploy /usr/local/bin/drome-deploy status
+set -euo pipefail
+umask 022 # Apache (www-data) must read the site files
+
+STACK_DIR=/srv/drome
+REPO=JacobStephens2/drome
+IMAGE=ghcr.io/jacobstephens2/drome-server
+HOST_DB="$STACK_DIR/data/drome/drome-server.sqlite"
+CONTAINER_DB=/data/drome/drome-server.sqlite
+HEALTH_URL=http://127.0.0.1:8095/healthz
+
+usage() {
+	echo "usage: drome-deploy deploy <40-hex sha> [normal|fresh|restore] | drome-deploy status" >&2
+	exit 64
+}
+
+# Forced command: the client's words arrive in SSH_ORIGINAL_COMMAND. By hand:
+# the arguments.
+if [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
+	read -r -a args <<<"$SSH_ORIGINAL_COMMAND"
+else
+	args=("$@")
+fi
+[ "${#args[@]}" -ge 1 ] || usage
+
+cd "$STACK_DIR"
+
+case "${args[0]}" in
+status)
+	[ "${#args[@]}" -eq 1 ] || usage
+	sed -n 's/^IMAGE_TAG=/image: /p' .env
+	docker compose ps --format '{{.Service}}: {{.State}} ({{.Status}})'
+	exit 0
+	;;
+deploy) ;;
+*) usage ;;
+esac
+
+[ "${#args[@]}" -le 3 ] || usage
+sha="${args[1]:-}"
+mode="${args[2]:-normal}"
+if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+	echo "refusing: the sha must be 40 lowercase hex characters" >&2
+	exit 65
+fi
+case "$mode" in
+normal | fresh | restore) ;;
+*)
+	echo "refusing: mode must be normal, fresh or restore" >&2
+	exit 65
+	;;
+esac
+tag="$IMAGE:$sha"
+
+# One deploy at a time.
+exec 9>"$STACK_DIR/.deploy.lock"
+flock -n 9 || {
+	echo "refusing: another deploy is running" >&2
+	exit 75
+}
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+# Throwaway docker config so the GHCR token never persists on the host.
+export DOCKER_CONFIG="$work/docker"
+mkdir -p "$DOCKER_CONFIG"
+
+token=""
+if [ ! -t 0 ]; then
+	token="$(head -c 4096 || true)"
+	token="${token//[$'\r\n']/}"
+fi
+
+echo "==> Deploying $tag (mode=$mode)"
+
+# 1. Image.
+if docker image inspect "$tag" >/dev/null 2>&1; then
+	echo "==> Image already on this host"
+elif [ -n "$token" ]; then
+	printf '%s' "$token" | docker login ghcr.io -u drome-deploy --password-stdin >/dev/null
+	docker pull --quiet "$tag"
+	docker logout ghcr.io >/dev/null 2>&1 || true
+else
+	echo "refusing: $tag is not on this host and no GHCR token came on stdin" >&2
+	exit 66
+fi
+
+# 2. Static site from the public repo at the same commit.
+echo "==> Fetching deploy/web at $sha"
+curl -fsSL --max-time 60 "https://codeload.github.com/$REPO/tar.gz/$sha" |
+	tar -xz -C "$work" --strip-components=2 --wildcards '*/deploy/web/'
+if [ ! -s "$work/web/index.html" ]; then
+	echo "refusing: no deploy/web/index.html at $sha" >&2
+	exit 67
+fi
+
+# 3. Restore-before-up guard: a blank SQLite would start a NEW Litestream
+#    generation over the good replica in R2.
+if [ -s "$HOST_DB" ]; then
+	echo "[guard] existing DB found, normal deploy"
+elif [ "$mode" = fresh ]; then
+	echo "[guard] --fresh: accepting a brand-new empty DB"
+elif [ "$mode" = restore ]; then
+	echo "[guard] --restore: restoring the DB from R2 before starting the server"
+	docker compose run --rm --no-deps litestream restore -config /etc/litestream.yml "$CONTAINER_DB"
+	if [ ! -s "$HOST_DB" ]; then
+		echo "[guard] restore produced no DB at $HOST_DB, aborting" >&2
+		exit 1
+	fi
+else
+	echo "[guard] REFUSING: no DB at $HOST_DB and mode is normal. Use restore or fresh." >&2
+	exit 2
+fi
+
+# 4. Switch the image and wait for health; roll back on failure.
+old_tag="$(sed -n 's/^IMAGE_TAG=//p' .env)"
+set_tag() { sed -i "s|^IMAGE_TAG=.*|IMAGE_TAG=$1|" .env; }
+
+set_tag "$tag"
+docker compose up -d --remove-orphans
+
+healthy=""
+for _ in $(seq 1 18); do # ~3 minutes
+	sleep 10
+	if curl -fsS --max-time 5 "$HEALTH_URL" >/dev/null 2>&1; then
+		healthy=1
+		break
+	fi
+done
+
+if [ -z "$healthy" ]; then
+	echo "DEPLOY FAILED: $tag did not report healthy. Recent logs:" >&2
+	docker compose logs --tail 80 drome-server >&2 || true
+	if [ -n "$old_tag" ] && [ "$old_tag" != "$tag" ]; then
+		echo "==> Rolling back to $old_tag" >&2
+		set_tag "$old_tag"
+		docker compose up -d --remove-orphans >&2 || true
+	fi
+	exit 1
+fi
+
+# 5. Server is healthy: swap in the site files.
+rsync -a --delete "$work/web/" "$STACK_DIR/web/"
+echo "==> $tag is live (previous: ${old_tag:-none})"

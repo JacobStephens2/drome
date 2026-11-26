@@ -1,15 +1,28 @@
 # infra/ — Drome production infrastructure (OpenTofu)
 
-One root module. Defines the DigitalOcean droplet + volume + reserved IP +
-firewall + monitoring, and the Cloudflare drome.day zone + R2 buckets. Authored
-now; **applied at the deploy milestone** (plan.md "Server infrastructure (IaC)"
-and "GitOps"). Nothing here has been applied — no cloud credentials live in this
-repo.
+One root module. Defines the Cloudflare drome.day zone + records, the R2
+buckets and their scoped tokens, and the DigitalOcean `/healthz` uptime check.
 
 Files: `versions.tf` (pins) · `backend.tf` (encrypted R2 state) · `providers.tf`
-· `variables.tf` · `project.tf` · `network.tf` (VPC, reserved IP, firewall) ·
-`droplet.tf` · `storage.tf` (data volume) · `dns.tf` (CF zone, records, R2) ·
-`monitoring.tf` (alerts, uptime) · `outputs.tf` · `templates/cloud-init.yaml.tftpl`.
+· `variables.tf` · `locals.tf` · `dns.tf` (CF zone, records, R2) ·
+`monitoring.tf` (uptime check + alert) · `outputs.tf`.
+
+## Hosting
+
+drome.day runs on the **stephens.page** server (68.183.62.24) since 2026-11-26:
+Docker Compose in `/srv/drome` behind Apache, deployed by
+`.github/workflows/server-deploy.yml` through `deploy/drome-deploy`. That
+server is not managed here; `var.server_ipv4` only points the apex A record at
+it.
+
+The original `drome-prod` droplet and its volume, reserved IP, VPC, firewall,
+tag, admin SSH key, DO project and CPU/memory/disk alerts were removed from this
+code at the same time. The first `tofu apply` after that **destroys** whichever
+of them still exist (the volume's old `prevent_destroy` went with its block). If
+you already deleted them in the DigitalOcean dashboard, the plan just drops them
+from state. Either way, check the plan lists no `cloudflare_*` resource for
+destruction: the zone and the R2 buckets hold drome.day's DNS, the Litestream
+replica and the photos.
 
 ## Local checks (no cloud creds, no apply)
 
@@ -59,8 +72,7 @@ they are made by hand and never managed by the stack that stores state in them.
    ```
 4. **App/provider secrets.** Provide the rest as `TF_VAR_*` (or a gitignored
    `terraform.tfvars` — see `terraform.tfvars.example`): `do_token`,
-   `cloudflare_token`, `cloudflare_account_id`, `ssh_public_key`,
-   `deploy_user_public_key`, `alert_email`.
+   `cloudflare_token`, `cloudflare_account_id`, `alert_email`.
 5. **Init + apply.**
    ```sh
    tofu init -backend-config=backend.hcl
@@ -69,29 +81,24 @@ they are made by hand and never managed by the stack that stores state in them.
    ```
    (In CI this runs in the `infra` environment behind manual approval.)
 
-## After the first apply — DNS cutover (timing matters)
+## After the first apply — DNS (historical, done 2026-07)
 
-- `tofu output cloudflare_nameservers` → set THOSE two nameservers at **Porkbun**
-  (registrar stays Porkbun; Cloudflare hosts DNS). **Do the flip within 28 days**
-  of the zone being created or Cloudflare may release the free zone (plan.md).
-- The **CAA** record authorizing Let's Encrypt is created by the apply and must
-  be live **before Caddy's first boot** — `.day` is HSTS-preloaded, so cert
-  issuance is on the critical path (plan.md). Because Universal SSL adds its own
-  partner-CA CAA records, a strict LE-only lockdown is not available.
+- `tofu output cloudflare_nameservers` → those two nameservers are set at
+  **Porkbun** (registrar stays Porkbun; Cloudflare hosts DNS).
+- The **CAA** record authorizing Let's Encrypt must stay: `.day` is
+  HSTS-preloaded, so cert issuance (certbot on stephens.page) is on the critical
+  path. Because Universal SSL adds its own partner-CA CAA records, a strict
+  LE-only lockdown is not available.
 - **DNSSEC** is free: enable it in the Cloudflare dashboard (or uncomment
   `cloudflare_zone_dnssec` in `dns.tf`) and enter the one DS record at Porkbun.
-- Feed the deploy env from outputs:
+- The Litestream credentials in `/srv/drome/.env` on stephens.page come from
   `tofu output -raw litestream_r2_access_key_id`,
   `tofu output -raw litestream_r2_secret_access_key`, and the bucket names.
 
-## Recreate drills (plan.md "Recreate drills")
+## Restore drill
 
-- **Droplet recreate** (e.g. a cloud-init edit — `user_data` is ForceNew): the
-  volume, reserved IP, firewall (by tag), and DNS all survive. `tofu apply`, then
-  re-run the deploy workflow. No restore.
-- **Full from-zero** (disaster/migration): `tofu apply` builds everything;
-  cloud-init installs docker; then `litestream restore` onto the empty volume
-  **before** the deploy workflow (`deploy.sh` refuses to start over an empty data
-  dir without `--restore`/`--fresh`, so a blank SQLite never overwrites the good
-  replica). A fresh reserved IP means the A record updates (one change). This is
-  also the quarterly restore drill.
+On stephens.page, with `/srv/drome/data/drome` empty:
+`sudo -u drome-deploy /usr/local/bin/drome-deploy deploy <sha> restore` runs
+`litestream restore` from R2 before starting the server. A normal deploy refuses
+to start over an empty data dir, so a blank SQLite never starts a new Litestream
+generation over the good replica.

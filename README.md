@@ -34,7 +34,7 @@ The camel is named Jerome because she misheard "Drome," and the name stuck.
 | [`core/`](core/) | Rust rules engine shared by every client through [UniFFI](https://mozilla.github.io/uniffi-rs/): an append-only event log, projections, flexible and purist rulesets, waking-hours day boundaries, and water pacing. Day-boundary math is property-tested. |
 | [`ios/`](ios/) | Native SwiftUI app and an interactive WidgetKit water quick-add widget. The views handle presentation and OS integration, and the logic lives in the core. |
 | [`server/`](server/) | Rust/Axum `drome-server`: Sign in with Apple and email sign-in, event sync, and friend groups. SQLite, replicated with Litestream. |
-| [`infra/`](infra/), [`deploy/`](deploy/) | OpenTofu for a DigitalOcean droplet and Cloudflare DNS/R2, a Caddy + Litestream compose stack, and push-based GitOps deploys from GitHub Actions. |
+| [`infra/`](infra/), [`deploy/`](deploy/) | OpenTofu for Cloudflare DNS/R2, a server + Litestream compose stack on the stephens.page server (behind Apache), and SHA-pinned deploys from GitHub Actions through a restricted SSH key. |
 | [`android/`](android/) | Kotlin/Compose phone and Wear OS clients over the same Rust core. |
 | [`planning/`](planning/) | The original problem statement, plan, decision log, and research. |
 

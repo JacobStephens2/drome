@@ -1,44 +1,6 @@
-# Monitor alerts (fed by the droplet's monitoring agent) + the uptime check on
-# /healthz (plan.md "Resources"). All notify var.alert_email.
-
-resource "digitalocean_monitor_alert" "cpu" {
-  alerts {
-    email = [var.alert_email]
-  }
-  window      = "5m"
-  type        = "v1/insights/droplet/cpu"
-  compare     = "GreaterThan"
-  value       = var.cpu_alert_threshold
-  enabled     = true
-  entities    = [digitalocean_droplet.app.id]
-  description = "Drome: CPU high"
-}
-
-resource "digitalocean_monitor_alert" "memory" {
-  alerts {
-    email = [var.alert_email]
-  }
-  window      = "5m"
-  type        = "v1/insights/droplet/memory_utilization_percent"
-  compare     = "GreaterThan"
-  value       = var.memory_alert_threshold
-  enabled     = true
-  entities    = [digitalocean_droplet.app.id]
-  description = "Drome: memory high"
-}
-
-resource "digitalocean_monitor_alert" "disk" {
-  alerts {
-    email = [var.alert_email]
-  }
-  window      = "5m"
-  type        = "v1/insights/droplet/disk_utilization_percent"
-  compare     = "GreaterThan"
-  value       = var.disk_alert_threshold
-  enabled     = true
-  entities    = [digitalocean_droplet.app.id]
-  description = "Drome: disk high"
-}
+# Uptime check on /healthz (plan.md "Resources"), notifying var.alert_email.
+# It probes the public URL, so it does not care which server hosts drome.day.
+# (The droplet CPU/memory/disk alerts went away with the droplet.)
 
 # Free uptime check on the real health endpoint (which touches the DB, so it
 # can't read green over a wedged server — see server /healthz, docs/PHASE2.md).
