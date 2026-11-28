@@ -74,8 +74,6 @@ jobs:
       TF_VAR_do_token: ${{ secrets.DO_TOKEN }}
       TF_VAR_cloudflare_token: ${{ secrets.CLOUDFLARE_TOKEN }}
       TF_VAR_cloudflare_account_id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
-      TF_VAR_deploy_user_public_key: ${{ secrets.DEPLOY_USER_PUBLIC_KEY }}
       TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
     steps:
       - uses: actions/checkout@v4
@@ -120,8 +118,6 @@ jobs:
       TF_VAR_do_token: ${{ secrets.DO_TOKEN }}
       TF_VAR_cloudflare_token: ${{ secrets.CLOUDFLARE_TOKEN }}
       TF_VAR_cloudflare_account_id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
-      TF_VAR_deploy_user_public_key: ${{ secrets.DEPLOY_USER_PUBLIC_KEY }}
       TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
     steps:
       - uses: actions/checkout@v4
@@ -173,8 +169,6 @@ jobs:
       TF_VAR_do_token: ${{ secrets.DO_TOKEN }}
       TF_VAR_cloudflare_token: ${{ secrets.CLOUDFLARE_TOKEN }}
       TF_VAR_cloudflare_account_id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
-      TF_VAR_deploy_user_public_key: ${{ secrets.DEPLOY_USER_PUBLIC_KEY }}
       TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:

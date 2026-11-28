@@ -1,21 +1,6 @@
-# Non-secret outputs for wiring the deploy step + the Porkbun nameserver flip.
+# Non-secret outputs for the Porkbun nameserver flip and the R2 credentials.
 # The two sensitive R2 outputs derive the S3 credentials so no secret is ever
 # copied by hand.
-
-output "reserved_ip" {
-  description = "The droplet's reserved (floating) IP — this is what the drome.day A record points at."
-  value       = digitalocean_reserved_ip.app.ip_address
-}
-
-output "droplet_id" {
-  description = "DigitalOcean droplet id."
-  value       = digitalocean_droplet.app.id
-}
-
-output "droplet_urn" {
-  description = "Droplet URN (for the DO project / references)."
-  value       = digitalocean_droplet.app.urn
-}
 
 output "cloudflare_zone_id" {
   description = "drome.day Cloudflare zone id."

@@ -71,25 +71,34 @@ Ph3 = watch/web/timelapse, Ph4 = Android.
 
 ---
 
-## Deploy / infrastructure (infra/ + deploy/) · ✅ **LIVE** (applied + deployed 2026-07-07)
+## Deploy / infrastructure (infra/ + deploy/) · ✅ **LIVE on stephens.page** (moved 2026-11-26)
 
-- **`infra/`** applied via OpenTofu on 2026-07-07 — DO droplet (id `582897580`, reserved IP
-  **`209.38.51.117`**, nyc3, Ubuntu 24.04), 10 GB data volume, deny-by-default cloud firewall
-  by tag, monitor + `/healthz` uptime alerts, two R2 buckets (photos + litestream) with scoped
-  tokens, and the **`drome.day` Cloudflare zone (active)** + CAA. OpenTofu state encrypted in R2.
-- **DNS** — Porkbun nameservers flipped to Cloudflare; zone active; apex A → the reserved IP.
-- **`deploy/`** — compose (server + Caddy + Litestream sidecar). Caddy **path-splits**: `/v1/*`
-  and `/healthz` proxy to the server, everything else serves the static marketing site
-  (`deploy/web`), so the landing page stays up even if the app container is down. `deploy.sh`
-  has a healthz gate + litestream restore-before-up guard.
+- **Hosting** — on 2026-11-26 drome.day moved off the `drome-prod` droplet onto the
+  **stephens.page** server (68.183.62.24). The stack lives in **`/srv/drome`** there:
+  `compose.yml` (drome-server on `127.0.0.1:8095` + Litestream sidecar), `litestream.yml`,
+  `.env` (all app secrets, mode 600), `data/drome/` (SQLite, uid 10001), `web/` (static site).
+  **Apache** (not Caddy) terminates TLS with a certbot cert, proxies `/v1/*` and `/healthz` to
+  the server, and serves `web/` for everything else, so the landing page stays up even if the
+  app container is down.
+- **DNS** — Cloudflare zone; apex A → 68.183.62.24 (DNS-only).
+- **`infra/`** — OpenTofu now manages only the Cloudflare zone + records, the two R2 buckets
+  (photos + litestream) with scoped tokens, and the DO `/healthz` uptime check. The droplet,
+  volume, reserved IP, VPC, firewall, tag, SSH key and DO project were removed from the code;
+  the next `tofu apply` destroys whatever of them still exists. OpenTofu state encrypted in R2.
+- **Deploys** — `server-deploy.yml` builds the image to GHCR (pinned by SHA), then
+  `deploy/deploy.sh` SSHes to `drome-deploy@stephens.page`. That key is pinned
+  (`restrict,command=`) to `/usr/local/bin/drome-deploy` (source: `deploy/drome-deploy`), which
+  can only deploy a SHA or report status: pull image, fetch `deploy/web` at that commit,
+  restore-before-up guard, switch `IMAGE_TAG`, wait for `/healthz`, roll back on failure.
+  `compose.yml`/`litestream.yml`/`.env` on the host are edited by hand. Needs the `deploy`
+  environment (`DEPLOY_HOST`, `DEPLOY_SSH_KEY`, `DEPLOY_SSH_HOST_KEY`) and
+  `DEPLOY_ENABLED=true`. Pull auth is the job's own `GITHUB_TOKEN`, so the GHCR package must
+  grant this repo Actions access.
 - **`server/Dockerfile`** — multi-stage **Alpine musl** build (binary is *built* on `rust:alpine`
   and *run* on `alpine` so the musl versions match); CI builds & pushes to GHCR pinned by SHA.
-- **GitOps** — `server-deploy.yml` and `infra-ci.yml` are live. `DEPLOY_ENABLED=true`, so a push
-  to `main` touching `server/`, `core/`, or `deploy/` now **auto-builds and auto-deploys**
-  (normal mode; a real DB exists, so the empty-DB guard is satisfied).
 
 **Live:** `https://drome.day/healthz` → `ok` · `https://drome.day/` + `/privacy` → marketing
-site · Litestream replicating SQLite → R2 · Caddy holds a Let's Encrypt cert.
+site · Litestream replicating SQLite → R2 · certbot holds a Let's Encrypt cert.
 
 **Deploy bugs found + fixed during the 2026-07-07 bootstrap:**
 - cloud-init template had Unicode em-dashes → the YAML parser rejected the whole user-data,
@@ -98,7 +107,8 @@ site · Litestream replicating SQLite → R2 · Caddy holds a Let's Encrypt cert
   then on Alpine (musl **version** mismatch → SIGSEGV at startup). Final fix: build in
   `rust:alpine` so build-musl == runtime-musl.
 - DigitalOcean auto-deletes a droplet's monitor alerts when it's destroyed, so a cloud-init
-  recreate (ForceNew) needs a second `tofu apply` to recreate the cpu/mem/disk alerts.
+  recreate (ForceNew) needed a second `tofu apply` to recreate the cpu/mem/disk alerts
+  (moot since the droplet's removal).
 
 ---
 
@@ -112,8 +122,8 @@ Work now happens from the **`eta`** account (not `admin`).
 - **OpenTofu** runs from **`~/repositories/drome-infra`** (holds the R2-backed `.terraform` +
   gitignored `backend.hcl`); credentials in **`~/.config/drome/infra.env`** (eta, mode 600,
   outside the vault). `tofu` 1.12.3 + the DO/Cloudflare providers are Santa-SHA-allowlisted.
-- Fresh eta-held SSH keys: `~/.ssh/drome_admin` (break-glass root) and `~/.ssh/drome_deploy`
-  (the CI deploy user; its private key lives in the GitHub `deploy` environment).
+- `~/.ssh/drome_admin` / `~/.ssh/drome_deploy` were the droplet's keys (retired with it). The
+  CI key for `drome-deploy@stephens.page` lives only in the GitHub `deploy` environment.
 - Santa Lockdown; no local Docker (Apple Silicon vs amd64) — CI builds the production image.
 
 ---
@@ -134,6 +144,6 @@ Work now happens from the **`eta`** account (not `admin`).
 ## Where things live
 
 `core/` Rust rules engine · `server/` Axum service · `ios/` SwiftUI app + widget ·
-`infra/` OpenTofu · `deploy/` compose/Caddy/Litestream (+ `deploy/web` marketing site) ·
+`infra/` OpenTofu · `deploy/` compose/Litestream + host deploy script (+ `deploy/web` marketing site) ·
 `docs/ARCHITECTURE.md` + `docs/PHASE2.md` (contracts) · **`planning/`** (plan, decisions,
 drome-specs, phase-1 build brief, the sister research note, and `research/`).

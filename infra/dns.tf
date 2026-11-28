@@ -14,22 +14,22 @@ resource "cloudflare_zone" "drome" {
   type = "full"
 }
 
-# Apex A record → the reserved IP. DNS-only (grey cloud / proxied = false) so
-# Caddy on the droplet terminates TLS itself and can complete the ACME HTTP/TLS
-# challenge directly.
+# Apex A record → the stephens.page server. DNS-only (grey cloud / proxied =
+# false) so Apache there terminates TLS itself and certbot can complete the
+# ACME HTTP challenge directly.
 resource "cloudflare_dns_record" "apex_a" {
   zone_id = cloudflare_zone.drome.id
   name    = var.domain
   type    = "A"
-  content = digitalocean_reserved_ip.app.ip_address
+  content = var.server_ipv4
   ttl     = 1 # 1 = automatic
   proxied = false
-  comment = "Apex → droplet reserved IP (IaC-managed)."
+  comment = "Apex -> stephens.page (IaC-managed; moved from drome-prod 2026-11-26)."
 }
 
-# CAA: authorize Let's Encrypt so Caddy's first cert issues. .day is on the HSTS
+# CAA: authorize Let's Encrypt (certbot on stephens.page; formerly Caddy). .day is on the HSTS
 # preload list, so a browser will refuse plain HTTP — cert issuance is on the
-# critical path and this record MUST exist before Caddy's first boot (plan.md).
+# critical path and this record MUST stay in place (plan.md).
 #
 # CAVEAT (plan.md): Cloudflare Universal SSL silently adds its own partner-CA CAA
 # records, so a strict LE-ONLY lockdown is not actually available — this record
@@ -39,7 +39,7 @@ resource "cloudflare_dns_record" "caa_letsencrypt" {
   name    = var.domain
   type    = "CAA"
   ttl     = 1
-  comment = "Authorize Let's Encrypt (Caddy ACME) — see .day HSTS-preload note."
+  comment = "Authorize Let's Encrypt (certbot ACME) — see .day HSTS-preload note."
   data = {
     flags = 0
     tag   = "issue"

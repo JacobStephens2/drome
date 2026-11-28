@@ -1,7 +1,8 @@
 name: server-deploy
 
 # plan.md GitOps "App pipeline": build the amd64 image, push to GHCR tagged with
-# the git SHA (NEVER :latest), then deploy over SSH via deploy/deploy.sh.
+# the git SHA (NEVER :latest), then deploy to stephens.page over SSH via
+# deploy/deploy.sh, which asks the host's drome-deploy script to switch to it.
 #
 # Path-filtered so an iOS-only commit never triggers a server deploy. The build
 # is gated on a `test` job (fmt + clippy + tests) so a commit that merely
@@ -12,9 +13,11 @@ name: server-deploy
 # set to an earlier commit SHA; the image already exists in GHCR, so it skips the
 # build and just re-deploys that SHA.
 #
-# The deploy job is gated on the repo variable DEPLOY_ENABLED == 'true' so the
-# image builds on main BEFORE the droplet exists, but the SSH deploy only starts
-# once the `deploy` environment secrets are in place (deploy milestone).
+# The deploy job is gated on the repo variable DEPLOY_ENABLED == 'true', and
+# needs three secrets in the `deploy` environment: DEPLOY_HOST (stephens.page),
+# DEPLOY_SSH_KEY (the drome-deploy CI key) and DEPLOY_SSH_HOST_KEY (the pinned
+# `ssh-keyscan -t ed25519 stephens.page` line). App secrets (R2, Resend) are
+# not in GitHub at all; they live in /srv/drome/.env on the host.
 
 on:
   push:
@@ -110,8 +113,6 @@ jobs:
     environment: deploy
     steps:
       - uses: actions/checkout@v4
-      - name: Image name (GHCR requires lowercase)
-        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/drome-server" >> "$GITHUB_ENV"
       # rollback_sha and deploy_mode are untrusted workflow_dispatch inputs.
       # Pass them in through env and accept them in this action (not a shell):
       # empty or a 40-hex SHA, and only normal/fresh/restore. Push does not
@@ -137,30 +138,24 @@ jobs:
             core.setOutput('mode', accepted.mode);
       - name: SSH key + known_hosts
         env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_SSH_HOST_KEY: ${{ secrets.DEPLOY_SSH_HOST_KEY }}
         run: |
+          # The key is pinned on the host to /usr/local/bin/drome-deploy
+          # (restrict,command=...), so it can only deploy a SHA or read status.
+          # The host key is pinned too (no trust-on-first-use): we pipe a GHCR
+          # token over this channel.
+          if [ -z "$DEPLOY_SSH_KEY" ] || [ -z "$DEPLOY_SSH_HOST_KEY" ]; then
+            echo "::error::DEPLOY_SSH_KEY and DEPLOY_SSH_HOST_KEY must be set in the deploy environment"
+            exit 1
+          fi
           mkdir -p "$HOME/.ssh"
           printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/id_deploy"
           chmod 600 "$HOME/.ssh/id_deploy"
           KH="$HOME/.ssh/known_hosts"
-          if [ -n "$DEPLOY_SSH_HOST_KEY" ]; then
-            # Pinned host key (captured once after apply, stored as a deploy
-            # secret). Real host authentication: a MITM impersonating DEPLOY_HOST
-            # can't get us to hand it the GHCR token or the R2 secret we pipe over
-            # this channel. StrictHostKeyChecking=yes REFUSES an unknown/changed key.
-            printf '%s\n' "$DEPLOY_SSH_HOST_KEY" > "$KH"
-            chmod 644 "$KH"
-            echo "SSH_OPTS=-i $HOME/.ssh/id_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$KH" >> "$GITHUB_ENV"
-          else
-            # No pinned key yet — genuine first-bootstrap ONLY. Trust-on-first-use;
-            # capture `ssh-keyscan <DEPLOY_HOST>` into the DEPLOY_SSH_HOST_KEY secret
-            # right after the first successful deploy to close this MITM window.
-            echo "::warning::DEPLOY_SSH_HOST_KEY is not set — falling back to ssh-keyscan (trust-on-first-use). Capture the host key into the deploy secret after first boot."
-            ssh-keyscan -H "$DEPLOY_HOST" >> "$KH" 2>/dev/null || true
-            echo "SSH_OPTS=-i $HOME/.ssh/id_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$KH" >> "$GITHUB_ENV"
-          fi
+          printf '%s\n' "$DEPLOY_SSH_HOST_KEY" > "$KH"
+          chmod 644 "$KH"
+          echo "SSH_OPTS=-i $HOME/.ssh/id_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$KH" >> "$GITHUB_ENV"
       - name: Deploy
         run: |
           case "$DEPLOY_MODE" in
@@ -174,20 +169,10 @@ jobs:
           esac
         env:
           DEPLOY_MODE: ${{ steps.deploy_inputs.outputs.mode }}
+          DEPLOY_SHA: ${{ steps.deploy_inputs.outputs.sha }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ vars.DEPLOY_USER }}
-          IMAGE_TAG: ${{ env.IMAGE }}:${{ steps.deploy_inputs.outputs.sha }}
-          GHCR_USER: ${{ github.actor }}
-          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
-          ACME_EMAIL: ${{ secrets.ACME_EMAIL }}
-          DROME_DOMAIN: ${{ vars.DROME_DOMAIN }}
-          DATA_DIR: ${{ vars.DATA_DIR }}
-          BETA_ALL_ENTITLED: ${{ vars.BETA_ALL_ENTITLED }}
-          # Email OTP sign-in. Optional: unset → the server logs codes instead
-          # of emailing. RESEND_FROM must be a verified sender on Resend.
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-          RESEND_FROM: ${{ vars.RESEND_FROM }}
-          LITESTREAM_R2_ENDPOINT: ${{ secrets.LITESTREAM_R2_ENDPOINT }}
-          LITESTREAM_R2_BUCKET: ${{ secrets.LITESTREAM_R2_BUCKET }}
-          LITESTREAM_R2_ACCESS_KEY_ID: ${{ secrets.LITESTREAM_R2_ACCESS_KEY_ID }}
-          LITESTREAM_R2_SECRET_ACCESS_KEY: ${{ secrets.LITESTREAM_R2_SECRET_ACCESS_KEY }}
+          # The job token can read this repo's GHCR package for the length of
+          # the job; the host logs in with a throwaway docker config and logs
+          # out after the pull, so nothing long-lived is stored anywhere.
+          GHCR_PULL_TOKEN: ${{ secrets.GITHUB_TOKEN }}

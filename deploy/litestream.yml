@@ -2,8 +2,8 @@
 # `litestream` bucket (plan.md tech stack). Litestream expands ${...} from its
 # process environment, which compose loads from .env (LITESTREAM_R2_*).
 #
-# The same replica is what `deploy.sh --restore` reads back onto an empty volume
-# in the from-zero recovery path (plan.md "Recreate drills").
+# The same replica is what `drome-deploy deploy <sha> restore` reads back onto an empty data dir
+# in the from-zero recovery path (infra/README.md "Restore drill").
 
 dbs:
   - path: /data/drome/drome-server.sqlite

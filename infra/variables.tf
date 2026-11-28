@@ -7,7 +7,7 @@
 # ---------------------------------------------------------------------------
 
 variable "do_token" {
-  description = "DigitalOcean API token (read+write) — creates the droplet, volume, firewall, monitoring, etc."
+  description = "DigitalOcean API token — only the /healthz uptime check and its alert live on DigitalOcean now."
   type        = string
   sensitive   = true
 }
@@ -34,70 +34,14 @@ variable "state_encryption_passphrase" {
   }
 }
 
-variable "ssh_public_key" {
-  description = "Admin SSH public key registered on the droplet (root/console access for break-glass). The everyday deploy path uses the separate deploy user."
-  type        = string
-}
-
-variable "deploy_user_public_key" {
-  description = "SSH public key for the unprivileged `deploy` user that CI SSHes in as (its private key lives ONLY in the GitHub `deploy` environment). Baked into cloud-init."
-  type        = string
-}
-
 variable "alert_email" {
-  description = "Destination email for DO monitor alerts (CPU/mem/disk) and the uptime-down alert. Not secret, but required."
+  description = "Destination email for the uptime-down alert. Not secret, but required."
   type        = string
-}
-
-# ---------------------------------------------------------------------------
-# Droplet / region tunables
-# ---------------------------------------------------------------------------
-
-variable "region" {
-  description = "DigitalOcean region slug."
-  type        = string
-  default     = "nyc3"
-}
-
-variable "droplet_size" {
-  description = "Droplet size slug. Default is the Premium AMD 1 GB / 1 vCPU NVMe box (~$7/mo) confirmed for stephens.page (plan.md); bump to s-1vcpu-2gb-amd for 2 GB."
-  type        = string
-  default     = "s-1vcpu-1gb-amd"
-}
-
-variable "droplet_image" {
-  description = "Base image slug for the droplet."
-  type        = string
-  default     = "ubuntu-24-04-x64"
-}
-
-variable "deploy_user" {
-  description = "Unprivileged Unix user CI deploys as (docker-group member; the everyday deploy path). Root SSH is key-only break-glass via the admin key, not this user."
-  type        = string
-  default     = "deploy"
-}
-
-variable "data_volume_size_gb" {
-  description = "Size of the block-storage volume holding the SQLite DB, Litestream state, and Caddy's ACME certs (~$0.10/GiB-mo)."
-  type        = number
-  default     = 10
-}
-
-variable "data_mount_path" {
-  description = "Mount point for the data volume inside the droplet (cloud-init mounts it here; compose binds onto it)."
-  type        = string
-  default     = "/mnt/drome-data"
 }
 
 # ---------------------------------------------------------------------------
 # Naming
 # ---------------------------------------------------------------------------
-
-variable "project_name" {
-  description = "DigitalOcean project name that groups these resources."
-  type        = string
-  default     = "Drome"
-}
 
 variable "environment" {
   description = "Environment label used in resource names/tags."
@@ -110,9 +54,15 @@ variable "environment" {
 # ---------------------------------------------------------------------------
 
 variable "domain" {
-  description = "Root domain served by the droplet. .day is an HSTS-preloaded TLD (cert issuance on the critical path — see the CAA note in dns.tf)."
+  description = "Root domain served by the stephens.page server. .day is an HSTS-preloaded TLD (cert issuance on the critical path — see the CAA note in dns.tf)."
   type        = string
   default     = "drome.day"
+}
+
+variable "server_ipv4" {
+  description = "Public IPv4 of the server that hosts drome.day (stephens.page). The apex A record points here."
+  type        = string
+  default     = "68.183.62.24"
 }
 
 variable "healthcheck_url" {
@@ -132,7 +82,7 @@ variable "uptime_regions" {
 # ---------------------------------------------------------------------------
 
 variable "r2_photos_bucket" {
-  description = "R2 bucket name for opt-in encrypted progress photos (Phase 2+; blobs go direct via presigned URLs, never through the droplet)."
+  description = "R2 bucket name for opt-in encrypted progress photos (Phase 2+; blobs go direct via presigned URLs, never through the server)."
   type        = string
   default     = "drome-photos"
 }
@@ -149,24 +99,3 @@ variable "r2_location" {
   default     = "enam"
 }
 
-# ---------------------------------------------------------------------------
-# Monitor alert thresholds (percent)
-# ---------------------------------------------------------------------------
-
-variable "cpu_alert_threshold" {
-  description = "CPU utilization %% that trips the monitor alert."
-  type        = number
-  default     = 80
-}
-
-variable "memory_alert_threshold" {
-  description = "Memory utilization %% that trips the monitor alert."
-  type        = number
-  default     = 80
-}
-
-variable "disk_alert_threshold" {
-  description = "Disk utilization %% that trips the monitor alert."
-  type        = number
-  default     = 80
-}
